@@ -761,14 +761,18 @@ tools](../agents/README.md#session-lifecycle-tools).
 conversation's session application. Live-only `application` (absent means
 HTML chat) describes that application: `id`, `name`, code `version`, state
 `revision`, desktop-only `viewUrl`, `text`, `eventMode`, optional `eventStatus`
-and `error`. `chatAccess` holds desktop-only requested capabilities, read permission,
-sending status `{grantId, allowed, remaining, busy}` and a permission revision. Remote/phone snapshots omit `viewUrl` and `chatAccess`. See
+and `error`. `chatAccess` holds requested capabilities, read permission,
+sending status `{grantId, allowed, remaining, busy}` and a permission revision.
+Remote/phone snapshots omit `viewUrl`; the gateway passes `chatAccess` on
+without `send.grantId` ([what a remote client receives](../remote/README.md#application-chat-access)). See
 [session applications](../session-apps/README.md).
 
-The separate trusted native `set-application-chat-read` and
+The separate trusted `set-application-chat-read` and
 `set-application-chat-send` commands take `{id, applicationId,
-version, revision, allowed}`. It requires a conversation still shown by the
-calling non-remote desktop client, including after a queue wait. App identity,
+version, revision, allowed}`. A desktop connection must still show the
+conversation, including after a queue wait; a paired remote connection must
+show it under its own rule ([application chat access from a paired
+device](#application-chat-access-from-a-paired-device)). App identity,
 code version and permission revision must match. The returned permission status
 is ephemeral; close/reopen, listener restart and successful code replacement
 reset it. No agent tool or app-view route can grant it. Sidebar and pop-out
@@ -1666,6 +1670,17 @@ For a remote connection:
   its client has left while that client's requests still drain. It names no
   conversation and is idempotent, so it cannot be refused for a remote
   connection; the result is `visibility-withdrawn`.
+- `{"action":"report-refused","id":"<conversation or empty>"}` (remote
+  connections only; desktop connections are refused) is sent by the gateway
+  when it refused one of its client's `panel-state` reports, which named
+  `id`. The connection stops counting as visible, and its selection ends
+  unless it is `id`. It never selects a conversation and leaves draft hosting
+  and a pending send alone. It never waits and takes no slot; the result is
+  `report-refused`.
+- `set-application-chat-read` and `set-application-chat-send` follow the
+  remote rule in [application chat access from a paired
+  device](#application-chat-access-from-a-paired-device): allowing needs that
+  connection's own selection on a visible page, stopping only its selection.
 - `send-agent` text allows 1–8000 characters, the desktop composer's bound,
   matching the phone protocol.
 - `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
@@ -1697,6 +1712,82 @@ uses at most 8 of them (see [its limits](../remote/README.md#security-model)),
 which leaves 8 for desktop panels, observers and tools.
 The Unix socket remains the only listener transport; network access, pairing and
 authentication belong to the separate gateway process.
+
+#### Application chat access from a paired device
+
+A conversation's session application may read recent chat text or send chat
+messages only while allowed (`set-application-chat-read`,
+`set-application-chat-send` with `{id, applicationId, version, revision,
+allowed}`). The listener checks **who** asks in `handle()`
+(`src/desktop/runtime.ts`) when the request arrives, and again with the same
+check when the change leaves the application's queue
+(`setChatPermission` in `src/session-apps/applications.ts`), so a selection
+or visibility that changed while it waited counts.
+
+Rules:
+
+1. **Desktop connection** (unchanged): it must show the conversation, as its
+   panel selection or one of its reported pop-out windows. A connection that
+   declared the remote role never passes this check. Refusal: "This
+   conversation is no longer selected on the desktop".
+2. **Remote connection allowing** (`allowed` is anything but `false`): its
+   own selection (its latest `panel-state` `id`) is the conversation **and**
+   that report said `visible: true`.
+3. **Remote connection stopping** (`allowed: false`): its own selection is the
+   conversation, visible or not. Turning access off is never harder than
+   turning it on.
+4. Hence a remote connection that never reported, reports another
+   conversation or none, or has gone, can change nothing; one whose
+   visibility was withdrawn (its client left, `withdraw-visibility`) keeps its
+   selection and can stop but allow nothing. A closed conversation clears
+   every remote selection of it. A remote `panel-state` the listener refuses
+   (for example naming a conversation that has just closed) ends that
+   connection's selection and visibility, since its page has moved on. For
+   a report the gateway refuses itself it sends `report-refused` ([remote
+   panels](#remote-panels)).
+5. Refusals for remote connections: "Open this conversation on this device
+   first" when its selection is not the conversation, "Show this conversation
+   on this device first" when allowing from a page that is not visible. They
+   say nothing about any other connection or device.
+6. Then, for every connection, as before: the application ID, code version
+   and permission revision must be the current ones ("Application or
+   permissions changed; review the current permission controls."); allowing
+   needs the application to request that capability; allowing sending needs
+   sending to be available.
+7. **Preview mode**: rules 1–5 are checked, then the result is `"preview"`
+   and nothing changes.
+8. There is one grant per open conversation's application, in listener
+   memory only. Whoever set it, every connection, desktop or remote, sees the
+   same `chatAccess`, and any connection that rule 1 or 3 admits can stop it.
+   Closing the conversation, replacing the application's code, a listener
+   restart and Stop (for sending) end it, as before.
+
+Cases (tested in `test/unit/remote-app-chat-consent.test.ts`, through the real
+gateway and a real control socket):
+
+| Connection | When the request arrives              | While it waits in the queue      | Allow                  | Stop                  |
+| ---------- | ------------------------------------- | -------------------------------- | ---------------------- | --------------------- |
+| desktop    | shows the conversation                | nothing changes                  | yes                    | yes                   |
+| desktop    | shows another conversation            | —                                | no longer selected     | no longer selected    |
+| desktop    | shows the conversation                | selects another                  | no longer selected     | no longer selected    |
+| remote     | selected, visible                     | nothing changes                  | yes                    | yes                   |
+| remote     | selected, hidden                      | nothing changes                  | Show … first           | yes                   |
+| remote     | another conversation selected         | —                                | Open … first           | Open … first          |
+| remote     | nothing selected (`id: ""`)           | —                                | Open … first           | Open … first          |
+| remote     | never reported                        | —                                | Open … first           | Open … first          |
+| remote     | selected, visibility withdrawn        | —                                | Show … first           | yes                   |
+| remote     | selected, visible                     | becomes hidden                   | Show … first           | yes                   |
+| remote     | selected, visible                     | selects another                  | Open … first           | Open … first          |
+| remote     | selected, visible                     | client leaves (withdrawn)        | Show … first           | yes                   |
+| remote     | selected, hidden                      | becomes visible                  | Show … first (arrival) | yes                   |
+| remote     | selected, visible                     | listener refuses its next report | Open … first           | Open … first          |
+| remote     | selected, visible                     | gateway refuses a hide           | Show … first           | yes                   |
+| remote     | selected, visible                     | gateway refuses a switch         | Open … first           | Open … first          |
+| remote     | selected, visible                     | gateway refuses a deselect       | Open … first           | Open … first          |
+| either     | admitted, wrong application ID        | —                                | permissions changed    | permissions changed   |
+| either     | admitted, old code version            | —                                | permissions changed    | permissions changed   |
+| either     | admitted, old permission revision     | —                                | permissions changed    | permissions changed   |
+| either     | preview mode, admitted / not admitted | —                                | `"preview"` / refusal  | `"preview"` / refusal |
 
 ### Native self-wake visibility
 

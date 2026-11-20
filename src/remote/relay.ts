@@ -33,6 +33,7 @@ import {
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
 import { PhoneOutput } from './outbound.ts';
 import { draftEditBurst } from './request-rate.ts';
+import { remoteChatAccess } from './chat-access.ts';
 import type { RelayFrames } from './frames/handles.ts';
 
 /** WebSocket close codes the phone app understands. */
@@ -68,6 +69,16 @@ const draftEditRefusal = 'Too many draft edits; this edit was not saved';
 
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
 const withdrawalRequestId = 'withdraw';
+
+/** Upstream request ID of the gateway's `report-refused` notices (see reportRefused). */
+const reportRefusedRequestId = 'report-refused';
+
+/**
+ * Before role confirmation, a refused report's place among the queued
+ * requests is kept as this prefix plus the conversation it named (a UUID or
+ * empty). Upstream request IDs are `r<number>`, so the two never collide.
+ */
+const refusedReportMarker = 'refused:';
 
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
@@ -136,6 +147,15 @@ export class Relay {
    * upstream. See withdrawVisibility.
    */
   private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
+  /**
+   * What the listener may still hold for this connection, from the reports
+   * written upstream and the notices since: the selected conversation, and
+   * whether the page may count as visible. Only used to skip notices that
+   * would change nothing (see reportRefused); the listener only ever lowers
+   * its state on a notice, so a needless one is harmless.
+   */
+  private reportedSelection = '';
+  private reportedVisible = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   /**
    * Whether this connection is a draft host (the client asked with
@@ -248,6 +268,9 @@ export class Relay {
         action: parsed.request.action,
         message: 'Too many requests; slow down',
       });
+      if (parsed.request.action === 'panel-state') {
+        this.reportRefused(parsed.request.id);
+      }
       return;
     }
 
@@ -325,6 +348,9 @@ export class Relay {
           ? draftEditRefusal
           : 'Too many unfinished requests; wait for earlier ones',
       });
+      if (request.action === 'panel-state') {
+        this.reportRefused(request.id);
+      }
       return;
     }
 
@@ -368,10 +394,68 @@ export class Relay {
     // started closing) describes a page nobody sees any more: keep its
     // selection and order, but never let it count as visible.
     if (request.action === 'panel-state' && !this.phoneIsOpen()) {
+      this.reportedSelection = request.id;
+      this.reportedVisible = false;
       this.writeUpstream({ ...fields, ...draftHost, visible: false, requestId: upstreamId });
       return;
     }
+    if (request.action === 'panel-state') {
+      this.reportedSelection = request.id;
+      this.reportedVisible = request.visible === true;
+    }
     this.writeUpstream({ ...fields, ...draftHost, requestId: upstreamId });
+  }
+
+  /**
+   * The gateway refused one of the client's `panel-state` reports (request
+   * rate or pending bound), which named conversation `id`. That report may
+   * have hidden the page or moved it, so the listener must not keep counting
+   * what the last forwarded report recorded: an application chat permission
+   * waiting in the listener's queue could otherwise be allowed on a page
+   * nobody sees, and the unread mark would keep clearing. The gateway sends
+   * the listener `{"action":"report-refused","id":…}`: the connection stops
+   * counting as visible, and its selection ends unless it is `id` (a hide of
+   * the same conversation keeps it, so a waiting Stop still runs). The
+   * listener never selects anything or changes draft fields for it.
+   *
+   * Before the role is confirmed, requests wait in `queued`; the notice takes
+   * its place there among them, so it follows exactly the requests admitted
+   * before the refusal and precedes those admitted after it.
+   *
+   * A notice is written only when it can change something, so a flood of
+   * refused reports becomes at most two notices per forwarded report. The
+   * listener never waits on it and takes no slot for it; nobody waits for its
+   * reply. The client's next accepted report replaces its effect.
+   */
+  private reportRefused(id: string): void {
+    if (!this.ready) {
+      const marker = refusedReportMarker + id;
+      const last = this.queued[this.queued.length - 1];
+      if (last === marker) {
+        return;
+      }
+      if (last?.startsWith(refusedReportMarker)) {
+        // Two refusals in a row naming different conversations: together
+        // they keep no selection. One notice for no conversation says so.
+        this.queued[this.queued.length - 1] = refusedReportMarker;
+        return;
+      }
+      this.queued.push(marker);
+      return;
+    }
+    if (this.upstream.destroyed) {
+      return;
+    }
+
+    const endsSelection = this.reportedSelection !== '' && this.reportedSelection !== id;
+    if (!this.reportedVisible && !endsSelection) {
+      return;
+    }
+    this.reportedVisible = false;
+    if (endsSelection) {
+      this.reportedSelection = '';
+    }
+    this.writeUpstream({ action: 'report-refused', id, requestId: reportRefusedRequestId });
   }
 
   /** The device's rate limit is shared by all its connections. */
@@ -487,6 +571,11 @@ export class Relay {
       return;
     }
 
+    if (isReply && message.requestId === reportRefusedRequestId) {
+      // Nobody waits for the gateway's own report either.
+      return;
+    }
+
     if (isReply && typeof message.requestId === 'string') {
       const pending = this.pending.get(message.requestId);
       if (!pending) {
@@ -560,6 +649,11 @@ export class Relay {
 
     // Requests sent while the role was being declared keep their order.
     for (const upstreamId of this.queued.splice(0)) {
+      if (upstreamId.startsWith(refusedReportMarker)) {
+        // A report refused while the role was being declared (in its place).
+        this.reportRefused(upstreamId.slice(refusedReportMarker.length));
+        continue;
+      }
       const pending = this.pending.get(upstreamId);
       if (pending) {
         this.sendRequest(upstreamId, pending.request);
@@ -586,6 +680,17 @@ export class Relay {
       ) {
         this.rewriteSession(message.result as { id?: unknown; messages?: unknown });
       }
+      if (
+        request.action === 'set-application-chat-read' ||
+        request.action === 'set-application-chat-send'
+      ) {
+        return {
+          type: 'result',
+          requestId: request.requestId,
+          action: request.action,
+          result: this.permissionResult(message.result),
+        };
+      }
       return {
         type: 'result',
         requestId: request.requestId,
@@ -599,6 +704,20 @@ export class Relay {
       action: request.action,
       message: String(message.message ?? 'Request failed').slice(0, 600),
     };
+  }
+
+  /**
+   * The result of an accepted permission change: `"preview"` in preview mode,
+   * otherwise the new permission state as for sessions (chat-access.ts), or
+   * null if the listener's answer is malformed. The change itself was made,
+   * and the listener published the conversation's new state before it
+   * answered, so the client keeps the latest `chatAccess` it received.
+   */
+  private permissionResult(result: unknown): unknown {
+    if (result === 'preview') {
+      return result;
+    }
+    return remoteChatAccess(result) ?? null;
   }
 
   private drainedIfDone(): void {
@@ -681,9 +800,18 @@ export class Relay {
       if (application && typeof application === 'object') {
         const applicationFrame = this.options.frames?.application(value.id, application.viewUrl);
         delete application.viewUrl;
-        delete application.chatAccess;
         if (applicationFrame) {
           application.frameUrl = applicationFrame;
+        }
+
+        // The permission state, rebuilt field by field without the send
+        // grant's ID (chat-access.ts), so a client can show and change it.
+        // Malformed state is not sent at all.
+        const chatAccess = remoteChatAccess(application.chatAccess);
+        if (chatAccess) {
+          application.chatAccess = chatAccess;
+        } else {
+          delete application.chatAccess;
         }
       }
       this.rewriteSession(value);

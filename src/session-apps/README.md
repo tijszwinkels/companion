@@ -23,18 +23,18 @@ trusted HTML chat. Patches replace the whole session object, so a patch without
 it means there is none. It is live-only and never saved in the conversation
 archive; the application's own record is the durable source.
 
-| Field         | Meaning                                                                        |
-| ------------- | ------------------------------------------------------------------------------ |
-| `id`          | Stable UUID, kept across code replacement.                                     |
-| `name`        | Library bundle name of the current code.                                       |
-| `version`     | Code version: 1 on first apply, +1 per replacement. Host-assigned.             |
-| `revision`    | State revision: +1 per committed state change.                                 |
-| `viewUrl`     | Desktop-only view capability, `http://127.0.0.1:<port>/view/<64 hex>`.         |
-| `text`        | The bundle's readable text description (1–4000 characters).                    |
-| `eventMode`   | `immediate` (default) or `next-input`; see [Events](#user-edit-events).        |
-| `eventStatus` | Delivery state of user-edit events (display only).                             |
-| `chatAccess`  | Desktop-only requested capabilities, read/send status and permission revision. |
-| `error`       | The saved application could not be restored; `viewUrl` is absent, data kept.   |
+| Field         | Meaning                                                                      |
+| ------------- | ---------------------------------------------------------------------------- |
+| `id`          | Stable UUID, kept across code replacement.                                   |
+| `name`        | Library bundle name of the current code.                                     |
+| `version`     | Code version: 1 on first apply, +1 per replacement. Host-assigned.           |
+| `revision`    | State revision: +1 per committed state change.                               |
+| `viewUrl`     | Desktop-only view capability, `http://127.0.0.1:<port>/view/<64 hex>`.       |
+| `text`        | The bundle's readable text description (1–4000 characters).                  |
+| `eventMode`   | `immediate` (default) or `next-input`; see [Events](#user-edit-events).      |
+| `eventStatus` | Delivery state of user-edit events (display only).                           |
+| `chatAccess`  | Requested capabilities, read/send status and permission revision.            |
+| `error`       | The saved application could not be restored; `viewUrl` is absent, data kept. |
 
 When `error` is present the saved record could not be used. If the file is
 unreadable, `id` and `name` are empty and `version`/`revision` are 0. The file is
@@ -43,7 +43,9 @@ conversation's chat and history stay available.
 
 `viewUrl` stays the same when code is replaced; the open view reloads itself
 when it sees a new `version`. Closing the conversation revokes it; reopening
-issues a new one. The phone gateway removes `viewUrl` and `chatAccess`. Agent
+issues a new one. The phone gateway removes `viewUrl` and passes `chatAccess` on
+without `send.grantId`, so a paired device can show and change the permissions
+([application chat access](../remote/README.md#application-chat-access)). Agent
 tools never receive the view capability or the trusted permission-control revision.
 
 ## Bundles
@@ -213,10 +215,13 @@ its escape bar and the trusted draft remain separate from authored content.
 ### Consent and lifetime
 
 `chatAccess` contains `{requested, read, send, revision}` (`send` is absent on older
-hosts and otherwise contains `{grantId, allowed, remaining, busy}`). A trusted desktop client
+hosts and otherwise contains `{grantId, allowed, remaining, busy}`). A trusted client
 uses `set-application-chat-read` with `{id, applicationId, version, revision,
-allowed}`. The conversation must still be shown by that non-remote desktop
-connection when the command is admitted **and** when its queued mutation runs.
+allowed}`. The conversation must still be shown by that connection when the
+command is admitted **and** when its queued mutation runs: by a desktop
+connection as before, or by a paired remote connection, which must show it on
+a visible page to allow and need only have it selected to stop
+([who may set a permission](../desktop/README.md#application-chat-access-from-a-paired-device)).
 The application ID, code version and permission revision must still match.
 The new permission revision is returned. Agents' tool dispatch and application
 view dispatch have no grant operation. Declaring `chat.read` is required before
@@ -303,8 +308,8 @@ replacement/renewal, lifetime, hiding not revoking backend consent and the fact
 that existing app-edit notifications remain separate from this chat-send quota.
 
 The separate trusted `set-application-chat-send` command takes the same identity,
-permission revision and allowed flag as reading, with the same shown/non-remote
-connection recheck. An explicit grant or renewal permits at most five attempts,
+permission revision and allowed flag as reading, with the same check of the
+requesting connection, again when the queued change runs. An explicit grant or renewal permits at most five attempts,
 one reserved/queued/running/uncertain send at a time, with at least two seconds
 between admissions (also across renewals). Read and send consent are independent. An uncertain handoff keeps
 its quota charge and returns an unknown receipt; it is never refunded/replayed

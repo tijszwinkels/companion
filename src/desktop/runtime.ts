@@ -138,15 +138,14 @@ function presentResult(request: Record<string, unknown>): AgentPresentOutcome {
  * answers, the capture-storage switch and the defaults for new sessions. A
  * remote panel (such as the phone gateway) cannot observe or own any of
  * these, so the listener refuses them for remote connections. (`draft-set`
- * is checked where it is handled: a remote draft host may write drafts.)
+ * is checked where it is handled: a remote draft host may write drafts.
+ * `set-application-chat-read`/`-send` have their own rule for remote
+ * connections, see `checkRemotePermissionChange`.)
  */
 const desktopOnlyActions = new Set([
   'paste',
   // Capture storage is a desktop privacy setting; v1 has no remote control.
   'set-capture-storage',
-  // Application conversation access is granted only in trusted desktop UI.
-  'set-application-chat-read',
-  'set-application-chat-send',
   // Only the desktop Activity page shows the defaults for new sessions.
   'coding-defaults',
   'set-coding-defaults',
@@ -865,6 +864,28 @@ export class DesktopRuntime {
   private markShownConversationsRead(): void {
     for (const id of this.visiblyShownConversations()) {
       this.options.agents?.markRead(id);
+    }
+  }
+
+  /**
+   * The rule for a remote connection changing an application's chat
+   * permission for conversation `id`; throws when it may not:
+   * - allowing (`allowing`) needs this connection's own selection to be `id`
+   *   and its latest report to have said `visible: true` (`visibleSelection`);
+   * - stopping needs only its selection to be `id`, visible or not, so that
+   *   turning access off is never harder than turning it on.
+   * A connection whose visibility was withdrawn (its client left) can allow
+   * nothing. The record is looked up on every call: a connection that has
+   * gone, or a conversation that closed (which clears the selection), fails.
+   * The messages say what the person can do and name no other device.
+   */
+  private checkRemotePermissionChange(clientId: number, id: string, allowing: boolean): void {
+    const remote = this.remoteClients.get(clientId);
+    if (!remote || id === '' || remote.selection !== id) {
+      throw Error('Open this conversation on this device first');
+    }
+    if (allowing && remote.visibleSelection !== id) {
+      throw Error('Show this conversation on this device first');
     }
   }
 
@@ -2168,6 +2189,29 @@ export class DesktopRuntime {
       return 'visibility-withdrawn';
     }
 
+    if (request.action === 'report-refused') {
+      // Sent by the gateway when it refused one of its client's panel
+      // reports (request rate or pending bound; src/remote/relay.ts). That
+      // report may have hidden the page or moved it, so this connection stops
+      // counting as visible, and its selection ends unless the refused report
+      // named the same conversation (a hide keeps it, so Stop still works).
+      // It only ever lowers what the connection shows: it never selects a
+      // conversation and leaves draft hosting and a pending send alone.
+      // Never waits; never refused for a remote connection with a valid `id`.
+      if (!remote) {
+        throw Error('Only remote panels can report a refused panel report');
+      }
+      if (typeof request.id !== 'string') {
+        throw Error("Expected the refused report's conversation id (or empty id)");
+      }
+      remote.visibleSelection = '';
+      if (remote.selection !== request.id) {
+        remote.selection = '';
+        this.publishRemoteAgentActions(clientId);
+      }
+      return 'report-refused';
+    }
+
     if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
       throw Error('This action is only available on the desktop');
     }
@@ -2219,12 +2263,29 @@ export class DesktopRuntime {
         throw Error('Expected a conversation');
       }
       const id = request.id;
-      const validateDesktop = () => {
-        if (!this.showsConversation(clientId, id) || this.remoteClients.has(clientId)) {
-          throw Error('This conversation is no longer selected on the desktop');
-        }
-      };
-      validateDesktop();
+
+      // Who may change the permission (src/desktop/README.md, "Application
+      // chat access from a paired device"). The check runs now and again when
+      // the change leaves the application's queue, so a selection or
+      // visibility that changed while it waited counts. A desktop connection
+      // keeps exactly its previous rule; a remote connection has its own.
+      let validateShown: () => void;
+      if (remote) {
+        // Anything but an explicit `false` asks to allow, so it needs the
+        // stricter check (the application service refuses non-booleans).
+        const allowing = request.allowed !== false;
+        validateShown = () => {
+          this.checkRemotePermissionChange(clientId, id, allowing);
+        };
+      } else {
+        validateShown = () => {
+          if (!this.showsConversation(clientId, id) || this.remoteClients.has(clientId)) {
+            throw Error('This conversation is no longer selected on the desktop');
+          }
+        };
+      }
+      validateShown();
+
       if (this.options.preview) {
         return 'preview';
       }
@@ -2240,7 +2301,7 @@ export class DesktopRuntime {
           revision: request.revision,
           allowed: request.allowed,
         },
-        validateDesktop,
+        validateShown,
       );
     }
 
@@ -2594,20 +2655,34 @@ export class DesktopRuntime {
       // Remote panels report which conversation they show, whether their
       // page is visible and, as draft hosts, a send they are waiting for.
       // Focus and navigation fields describe the desktop and are ignored.
+      //
+      // A report refused below still means the page moved on (for example
+      // to a conversation that has just closed), so it no longer shows what
+      // the previous report recorded: the connection's selection and
+      // visibility end. Otherwise a permission change waiting in an
+      // application's queue could be allowed for a conversation the person
+      // has left (src/desktop/README.md, "Application chat access from a
+      // paired device").
+      const refused = (message: string): Error => {
+        remote.selection = '';
+        remote.visibleSelection = '';
+        this.publishRemoteAgentActions(clientId);
+        return Error(message);
+      };
       if (
         typeof request.id !== 'string' ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
-        throw Error('Expected a visible agent session id (or empty id)');
+        throw refused('Expected a visible agent session id (or empty id)');
       }
       if (request.visible !== undefined && typeof request.visible !== 'boolean') {
-        throw Error('Expected visible to be true or false');
+        throw refused('Expected visible to be true or false');
       }
       if (request.draftHost !== undefined && typeof request.draftHost !== 'boolean') {
-        throw Error('Expected draftHost to be true or false');
+        throw refused('Expected draftHost to be true or false');
       }
       if (request.pendingSend !== undefined && typeof request.pendingSend !== 'string') {
-        throw Error('Expected pendingSend to be a conversation id or empty');
+        throw refused('Expected pendingSend to be a conversation id or empty');
       }
       // Pop-out windows are desktop windows; a remote panel cannot claim any.
       if (
@@ -2615,7 +2690,7 @@ export class DesktopRuntime {
         request.rail !== undefined ||
         request.popouts !== undefined
       ) {
-        throw Error('Remote panels cannot report pop-out windows');
+        throw refused('Remote panels cannot report pop-out windows');
       }
       remote.selection = request.id;
       // Every report is complete: one without `visible` (an older phone app)
