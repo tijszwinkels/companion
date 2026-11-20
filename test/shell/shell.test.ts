@@ -886,6 +886,13 @@ test(
     await page.waitFor(inView('History row 399'));
     const from = sockets.sent.length;
 
+    // A scroll that is not the reader's (no input, as a layout change makes
+    // it) keeps the page at the live end and asks for nothing.
+    await page.evaluate(`document.querySelector('.transcript').scrollTop = 300`);
+    await sleep(300);
+    assert.ok(await page.evaluate<boolean>(inView('History row 399')), 'back at the live end');
+    assert.deepEqual(pageRequests(sockets, from), []);
+
     // At the live end the reader presses the scroll bar, holds it still for
     // more than a second, then drags it to the top: their own scrolling, so
     // the view stays where they took it and the previous page is asked for.

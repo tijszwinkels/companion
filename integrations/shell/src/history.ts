@@ -60,8 +60,12 @@ export interface HistoryHost {
   visibleKeys(): Record<string, boolean>;
   /** Key of the row at the transcript's top edge, or ''. */
   topKey(): string;
-  /** Rows or status changed outside `show` (a page arrived, a deadline passed). */
-  changed(): void;
+  /**
+   * Rows or status changed outside `show` (a page arrived, a deadline
+   * passed). `rowsChanged` is true when a page's rows were applied: the page
+   * must then get the new rows before the status that ends loading.
+   */
+  changed(rowsChanged?: boolean): void;
 }
 
 /** One outstanding (or failed) page request. */
@@ -181,7 +185,7 @@ export class ResidentHistory {
     const shownBefore = this.shownHistory();
     if (shownBefore && HistoryRows.comparePositions(shownBefore.end, live.start) >= 0) {
       this.joinLiveWindow(this.historyRows);
-      this.host.changed();
+      this.host.changed(true);
       if (!this.detached()) {
         return;
       }
@@ -375,7 +379,7 @@ export class ResidentHistory {
       this.stalled = new Set();
       this.followEnd = false;
       this.replaceHistory(rows);
-      this.host.changed();
+      this.host.changed(true);
       return;
     }
 
@@ -425,7 +429,7 @@ export class ResidentHistory {
         this.joinLiveWindow(this.historyRows);
       }
     }
-    this.host.changed();
+    this.host.changed(rows.length > 0);
   }
 
   private stopDeadline(): void {

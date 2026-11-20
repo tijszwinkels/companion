@@ -34,7 +34,9 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 - It sends the page the same `rows` and `status` messages as the Qt host, with
   the same sequence-number rules: every message is numbered, `ready()` resends
   everything in full, rows are diffed with `ChatState.diffRows` and coalesced
-  for 30 ms, status is sent whole when it changed. A conversation switch sends
+  for 30 ms, status is sent whole when it changed. One exception: the rows of
+  an arrived history page go out at once, before the status that ends
+  loading (see [the paging rule](#the-paging-rule)). A conversation switch sends
   the new rows and status at once. Rows are built with `ChatState.chatRow` from
   a TypeScript port of `SessionView.rowData()` (`src/rows.ts`).
 - It checks every page request again against the shown conversation, like the
@@ -123,12 +125,10 @@ the browser and in the Qt host:
 > when the transcript grows.
 
 The page tells its own scrolls from the reader's by the scroll positions it
-set itself; the browser's pull-back is the one scroll whose previous position
-lies beyond the new end. The same distinction decides when the reader leaves
-the live end: a scroll they made leaves it even when they held the scroll bar
-still for more than a second first (previously only scrolls within a second of
-their input counted, and such a drag was pulled back to the end). No input events are interpreted, so a
-touch pan (which the browser reports as pointerdown, pointercancel and then
+set itself; the browser's pull-back is the one scroll after which the scroll
+range shrank below the previous position and the view sits at the new end
+(`pulledBack` in `Chat.tsx`). No input events are interpreted for paging, so
+a touch pan (which the browser reports as pointerdown, pointercancel and then
 scroll events only) counts like any other scroll. The bridge answers `newer`
 with the next page below the snapshot, or joins the live rows when the
 snapshot already ends where they start; it sends nothing while a page is
@@ -151,10 +151,14 @@ the rule allows for each, and a second table of page-made scrolls at the end
 of a detached snapshot (a downward wheel where nothing scrolls, a narrower
 window with the mouse held still, a wider window, a taller window that pulls
 the view back to the end) followed by the reader's own 3-pixel scroll there,
-which does ask. Further tests cover a scroll bar held still for more than a
-second before dragging away from the live end (it leaves the end and asks for
-the previous page) and, in `bridge.test.ts`, that an arriving page reaches the
-page as rows before the status that ends loading: the page never sees a
+which does ask. Further tests cover a scroll without input at the live end
+(the page stays there and asks for nothing) and a scroll bar held still for
+more than a second before dragging away from it (it leaves the end and asks
+for the previous page). `bridge.test.ts` has a table for `pulledBack`
+(fractional positions, a reader's 1- and 3-pixel scroll at the very end, a
+reader landing just before a new end), and checks that an arriving page
+reaches the page as rows before the status that ends loading, while a failed
+request leaves queued rows to their 30 ms coalescing: the page never sees a
 request settled while it still shows the previous rows, so a scroll that
 continues meanwhile (a key's smooth scrolling, a fling) cannot ask for the
 page after one it has not shown yet.
@@ -178,9 +182,11 @@ were made for the browser:
    classic view does.
 2. It pages by [the paging rule](#the-paging-rule): it asks for `newer` near
    the end of a detached snapshot, and asks for nothing (`older` included)
-   on scrolls it makes itself. A scroll the reader makes also leaves the live
-   end when they held the scroll bar still for more than a second before
-   dragging (it used to be pulled back to the end).
+   on scrolls it makes itself. Leaving the live end still needs the reader's
+   input within the last second, as before, or now also a pointer held
+   pressed in the transcript: a scroll bar held still for more than a second
+   before dragging used to be pulled back to the end. A scroll without input
+   (a layout change) still keeps the page at the live end.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):

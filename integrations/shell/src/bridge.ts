@@ -154,14 +154,19 @@ export class GatewayChatBridge implements NativeBridge {
       requestPage: (request) => this.requestPage(request),
       visibleKeys: () => this.visibleKeys(),
       topKey: () => this.topKey(),
-      changed: () => {
-        // A page arrived (or failed): its rows go out at once, before the
-        // status that ends "loading". Otherwise the page could see the
-        // request settled while it still shows the previous rows, and a
-        // scroll continuing meanwhile (a key's smooth scrolling, a fling)
-        // would ask for the page after the one it has not shown yet.
-        this.cancelRowsTimer();
-        this.publishRows();
+      changed: (rowsChanged) => {
+        if (rowsChanged) {
+          // A page's rows were applied: they go out at once, before the
+          // status that ends "loading" (the one exception to coalescing
+          // rows). Otherwise the page could see the request settled while
+          // it still shows the previous rows, and a scroll continuing
+          // meanwhile (a key's smooth scrolling, a fling) would ask for the
+          // page after the one it has not shown yet.
+          this.cancelRowsTimer();
+          this.publishRows();
+        } else {
+          this.scheduleRows();
+        }
         this.scheduleStatus();
       },
     });

@@ -4,6 +4,7 @@ import test from 'node:test';
 import { historyPage, type HistoryPage } from '../../src/agents/history-pages.ts';
 import { chatMessage, type AgentSession } from '../../src/agents/types.ts';
 import type { Store } from '../../integrations/mobile/src/store.ts';
+import { pulledBack } from '../../integrations/session-apps/chat/Chat.tsx';
 import type { ChatStatus, HostMessage } from '../../integrations/session-apps/chat/protocol.ts';
 import { GatewayChatBridge } from '../../integrations/shell/src/bridge.ts';
 import { ResidentHistory, type PageRequest } from '../../integrations/shell/src/history.ts';
@@ -949,4 +950,101 @@ test('a page that arrives reaches the page as rows before the status that ends l
   );
   assert.ok(settled >= 0, 'loading ended');
   assert.ok(newRows >= 0 && newRows < settled, 'the rows came first');
+});
+
+/**
+ * The chat page's paging rule counts every scroll except the page's own and
+ * the browser pulling the view back into a scroll range that shrank
+ * (Chat.tsx `pulledBack`). Each case: the position and largest position at
+ * the previous scroll event, then at this one (CSS pixels, fractional as at
+ * a fractional device scale), and whether it is a pull-back.
+ */
+const pullBackCases: {
+  name: string;
+  previous: { top: number; maximumTop: number };
+  current: { top: number; maximumTop: number };
+  pulledBack: boolean;
+}[] = [
+  {
+    name: 'the transcript grows 200 px taller at the very end',
+    previous: { top: 1200, maximumTop: 1200 },
+    current: { top: 1000, maximumTop: 1000 },
+    pulledBack: true,
+  },
+  {
+    name: 'half a pixel pulled back at a fractional position',
+    previous: { top: 600.5, maximumTop: 650 },
+    current: { top: 600, maximumTop: 600 },
+    pulledBack: true,
+  },
+  {
+    name: 'the reader scrolls up 1 px at the very end',
+    previous: { top: 1200, maximumTop: 1200 },
+    current: { top: 1199, maximumTop: 1200 },
+    pulledBack: false,
+  },
+  {
+    name: 'the reader scrolls up 3 px at the very end',
+    previous: { top: 1200, maximumTop: 1200 },
+    current: { top: 1197, maximumTop: 1200 },
+    pulledBack: false,
+  },
+  {
+    name: 'the range shrinks and the reader lands 3 px before its new end',
+    previous: { top: 900, maximumTop: 900 },
+    current: { top: 797, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'the range shrinks while the reader is far above its end',
+    previous: { top: 300, maximumTop: 900 },
+    current: { top: 250, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'the reader scrolls down to the end',
+    previous: { top: 1000, maximumTop: 1200 },
+    current: { top: 1200, maximumTop: 1200 },
+    pulledBack: false,
+  },
+];
+
+for (const pullBackCase of pullBackCases) {
+  test(`pull-back: ${pullBackCase.name}`, () => {
+    assert.equal(pulledBack(pullBackCase.previous, pullBackCase.current), pullBackCase.pulledBack);
+  });
+}
+
+test('a failed page request leaves queued rows to their 30 ms coalescing', async () => {
+  const { store, bridge, messages } = harness();
+  const rows = [];
+  for (let index = 0; index < 600; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  const shown = { ...full, messages: live.messages, history: live.history };
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, shown) });
+  await settle();
+  bridge.following(sessionA, false);
+  bridge.history(sessionA, 'older');
+  await settle();
+
+  // A row streams in, then the page request fails before 30 ms passed.
+  const streamed = {
+    ...shown,
+    messages: [...shown.messages, chatMessage('new', 'assistant', 'New')],
+  };
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, streamed) });
+  const from = messages.length;
+  store.pending.splice(0)[0].reject(Error('Synthetic page failure'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(
+    messages.slice(from).some((message) => message.type === 'rows'),
+    false,
+    'no rows sent at once',
+  );
+  await settle();
+  assert.ok(messages.slice(from).some((message) => message.type === 'rows'));
+  assert.equal(lastStatus(messages).history?.error, 'Synthetic page failure');
 });
