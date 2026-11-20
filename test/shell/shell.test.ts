@@ -251,9 +251,9 @@ test(
     await page.waitFor(`document.querySelector('.message.user')`);
     assert.match(await transcriptText(page), /Second synthetic question/);
     assert.doesNotMatch(await transcriptText(page), /First synthetic question/);
-    // The screenshot viewer is a later slice: no button that cannot work.
-    assert.equal(await page.evaluate(`Boolean(${buttonExpression('View screenshot')})`), false);
-    assert.match(await text(page, '.message.user .heading'), /screenshot unavailable/);
+    // A kept screenshot offers the viewer (details-browser.test.ts opens it).
+    assert.equal(await page.evaluate(`Boolean(${buttonExpression('View screenshot')})`), true);
+    assert.match(await text(page, '.message.user .heading'), /screenshot attached/);
     // Out of scope controls are hidden through the status fields.
     assert.equal(await page.evaluate(`Boolean(${buttonExpression('Record')})`), false);
     assert.match(await text(page, '.chat-bar-title'), /Second synthetic question/);

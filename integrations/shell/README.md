@@ -1,6 +1,6 @@
 # Companion browser shell
 
-Status: fourth slice (2026-11). The desktop chat page in an ordinary browser,
+Status: fifth slice (2026-11). The desktop chat page in an ordinary browser,
 against the existing remote gateway, with the conversation list on its left
 and the Activity column on its right.
 The goal of the larger project is the whole sidebar in a browser, so the
@@ -29,7 +29,10 @@ A paired browser can:
 8. show how long each running turn has been going, how long the last one
    took and when each message was written, and switch those displays and
    the listener's sound, intent and shortcut switches on a **settings
-   screen** (see [Settings, turn timers and message times](#settings-turn-timers-and-message-times)).
+   screen** (see [Settings, turn timers and message times](#settings-turn-timers-and-message-times));
+9. open a tool group in place and read its calls page by page, view a kept
+   screenshot over the page, and see and change the conversation's model
+   (see [Tool details, screenshots and the model picker](#tool-details-screenshots-and-the-model-picker)).
 
 Not yet in the browser: Activity history of earlier listener runs, inserting
 text into desktop applications, and widgets.
@@ -825,6 +828,231 @@ Rule (`src/times/message-time.ts`):
 | Message timestamps off                                          | any                  | nothing (no field) |
 | A streaming answer updated ten times                            | any                  | its first time     |
 
+## Tool details, screenshots and the model picker
+
+Three things the desktop sidebar offers, with the desktop's look and rules.
+Each uses the phone panel's requests through its `Store` and `Connection`:
+`agent-tool-page`, the authenticated screenshot route, `agent-models`,
+`claude-models` and `set-agent-model` (see the
+[gateway README](../../src/remote/README.md)).
+
+### Tool details
+
+A tool-group row opens and closes its details in place, as the desktop's
+classic view does (`../panel/ToolDetails.qml`, ported in
+`src/tools/tool-details.ts`). The bridge sends each tool row an optional
+`tools` field (see [changes to the shared chat page](#changes-to-the-shared-chat-page)),
+and the page draws what it says and reports the reader's actions.
+
+The rule:
+
+1. A closed group shows only its heading (`▸ 3 tool calls`, with `·
+running` or `· failed or stopped`) and asks for nothing.
+2. Opening it asks for the first page of its first call
+   (`agent-tool-page`, index 0, offset 0, with the conversation's ID and
+   tool epoch and the group's revision) and says "Loading tool details…".
+3. A page holds at most 8,192 characters of one call: its name, input and
+   output, as plain text (the listener's bound). Its status line says which
+   call and characters it shows (`Tool 2 of 3 · running · characters
+1–8192`). Next page continues in the same call (naming the call's
+   revision, so another call's text never follows) and then with the next
+   call; From start goes back to the first page; Refresh page loads the
+   shown page again; Copy page copies it. A page replaces the one shown.
+4. One request per group at a time; the actions wait while it is on its
+   way. A failure (the listener's refusal in its words, a lost answer, or no
+   answer within 10 s) is shown with **Try again**, which asks again for the
+   page that failed: the same call and offset, read afresh with the group's
+   current revision (without the call revision a Next page named, which the
+   listener would refuse again if the call changed meanwhile). Nothing is
+   retried by itself.
+5. While the turn runs and more calls arrive, the group's count follows and
+   the page shown stays, with "New tool output is available. Refresh this
+   page to update it." above its status line.
+6. Only the latest request's answer is applied, and only to the
+   conversation lifetime (ID and tool epoch) and group it was asked for.
+   Switching to another conversation closes every open group (also when the
+   reader comes back), as on the desktop; a conversation closed and reopened
+   under the same ID is another lifetime: its groups start closed and the old
+   answers are dropped.
+7. Losing the connection clears every open group's page and says
+   "Disconnected. Reload after reconnecting."; after reconnecting (once the
+   new snapshot arrived) the group offers Try again, which asks for the page
+   that was on its way, had failed or was shown, and loads only when the
+   reader asks.
+8. A tool row without stored calls (an old single tool message) opens to its
+   own input and output, without a request.
+
+A group in an older page loaded while scrolling up opens too: the listener
+looks its calls up in the conversation's whole transcript, as long as the
+lifetime and the group's revision are still the ones the page has.
+
+`test/shell/tool-details.test.ts` plays the rule's table through the real
+bridge with a stand-in Store: closed; opening; loaded one page; more pages
+(next page in the call, the next call, From start); failed and retried
+(also a refused continuation, read afresh);
+opened while the turn still runs and more calls arrive; the conversation
+switched and back; closed and reopened under the same ID; disconnected while
+loading and back; plus closing an open group, a row without stored calls and
+the deadline (also on a later page, which Try again asks for again, also
+after a reconnect). `test/shell/details-browser.test.ts` opens a group in the real
+page against the gateway and listener and pages through it.
+
+### Screenshots
+
+A message whose screenshot the listener kept shows the desktop's View
+screenshot control; choosing it shows the image over the page
+(`src/screenshots/`), scaled down to fit, with the conversation's title and
+a close button.
+
+The rule:
+
+1. **Kept**: the message's screenshot was saved and the gateway put its
+   authenticated route (`api/screenshots/<conversation>`) in place of the
+   listener's file URL. Only that exact route is used (`screenshotPath` in
+   `src/rows.ts`); the heading says "screenshot attached" and View
+   screenshot is offered.
+2. **Not kept** (capture storage was off: "screenshot not saved"), or no
+   route ("screenshot unavailable"): today's text, no control.
+3. Opening shows "Loading screenshot…", then the image. The rest of the page
+   is inert meanwhile; Tab stays in the viewer.
+4. **Removed since the message was drawn** (the gateway answers 404): the
+   viewer says "Companion no longer has this screenshot." and the row then
+   shows "screenshot unavailable" without the control, for that
+   conversation lifetime. The gateway grants a connection a screenshot when
+   it relays the screenshot's route on that connection, so a 404 counts as
+   removed only for a fetch asked and answered on the same connection after
+   its snapshot arrived, for a row of the live window (which that snapshot
+   relayed). Otherwise (asked before the snapshot, answered on a newer
+   connection, or a row of an older page kept from an earlier connection,
+   as after a gateway restart) it is shown like a lost connection (rule 6),
+   with Try again.
+5. **Fetch refused** (401, 403 or another refusal): "Companion did not allow
+   this browser to load the screenshot.", no Try again.
+6. **Disconnected** (the gateway cannot be reached, or a server error): "Could
+   not load the screenshot. Check the connection and try again." with Try
+   again. An answer the browser cannot show as an image: "The screenshot
+   could not be shown.", with Try again.
+7. **Closed** by its × button, by Escape or by a click outside the image
+   (beside it or on the backdrop), and by browser Back. Focus returns to
+   where it was (View screenshot), or to the bar's heading when that control
+   is gone (rule 4). Closing aborts a request on its way.
+8. **A second one opened** replaces the first: its request is aborted and its
+   image revoked. The viewer also closes when another conversation or
+   lifetime is shown, and on sign-out.
+
+**How the request is authorised, and why nothing leaks.** The image is
+fetched with `fetch()` from the gateway's own origin, with the device token
+in the `Authorization: Bearer` header, `credentials: 'omit'`, `cache:
+'no-store'` and `referrerPolicy: 'no-referrer'` (`fetchScreenshot` in
+`../mobile/src/screenshots.ts`, shared with the phone panel). Its address is
+the bare route, without the token or any query. The image is shown from a
+`blob:` address made from the answer, which holds only the image and works
+only in this document; it is revoked as soon as the image element has
+loaded it (the element keeps showing what it decoded), and otherwise when
+the viewer closes or shows another one. So:
+
+- **No URL carries the token**: neither the request's address nor the
+  image's. The image's address leads nowhere once the image is shown, so
+  opening it in another tab or copying it gets nothing, and never a
+  credential.
+- **No cache**: the gateway answers `Cache-Control: private, no-store`, and
+  the request asks for no caching too.
+- **No referrer**: the gateway sends `Referrer-Policy: no-referrer`, the
+  request sets it as well, and the request goes only to the page's own
+  origin.
+- **No history**: the page's address never changes; the viewer's history
+  entry (so that Back closes it, the phone panel's `Modal`) holds only a
+  number.
+- **No storage**: nothing about the screenshot is written to
+  `localStorage` or `sessionStorage`.
+
+The gateway's Content-Security-Policy is unchanged: `img-src 'self' blob:`
+already allows the image.
+
+`test/shell/screenshot-viewer.test.ts` plays the rule's table (kept; its
+address revoked once loaded; not decodable; not kept; removed since drawn;
+a 404 before the connection was admitted, answered on a newer connection,
+or asked again once admitted; fetch refused; disconnected; closed; a second
+one opened) against the viewer's state and the row data, with the bridge's
+checks. `test/shell/details-browser.test.ts` opens a kept screenshot in the
+real page, closes it each of the three ways with focus back on View
+screenshot, checks that the image requests' addresses are exactly the bare
+route, that the image's `blob:` address is revoked while it is shown, that
+the page's address and storage are unchanged, and that a screenshot deleted
+on the listener's side ends as "screenshot unavailable" with focus on the
+bar's heading.
+
+### Model picker
+
+In the bar above the chat, next to the conversation's state, a button names
+the model its next turn uses; it opens the desktop footer's picker
+(`../panel/ModelPicker.qml`, rules in `src/models/model-choice.ts`) below
+the bar.
+
+The rule:
+
+1. **Pi conversations**: the button names the conversation's own choice;
+   without one, the profile's default once the list was read, else the model
+   of its last turn. The picker offers "Use coding default · <model>" (or
+   quick-question), which clears the conversation's choice, then the pinned
+   models (Show all models lists every model). A choice the list no longer
+   has is still shown, marked "(unavailable)".
+2. **Claude Code conversations**: the listener's Claude models, the
+   configured default marked; the conversation's own model is always
+   listed. Its effort is fixed ("Effort · high · fixed. Same Claude history;
+   effort stays as it started."), as the listener decides: a Claude Code
+   conversation's model can change for its next turn, its effort cannot.
+3. **Idle and running**: a choice applies to the next turn, and the listener
+   accepts it while a turn runs, so the picker offers it then too.
+4. The list is read when the reader first opens the picker (`agent-models`
+   or `claude-models`, kept in the Store), not for every conversation shown.
+   Until it has loaded (or failed) nothing can be chosen. **The list fails to
+   load**: its failure is shown with ↻, and the profile default (Pi) or the
+   conversation's own model (Claude Code) can still be chosen, as on the
+   desktop.
+5. A choice sends `set-agent-model` for this conversation; one at a time
+   ("Changing the model…"; the list keeps keyboard focus meanwhile and only
+   says it is unavailable). **The change is refused**: the listener's
+   words, and the picker shows the conversation's model again. If the
+   picker was closed meanwhile (or the reader moved on), the refusal is a
+   toast. An answer that arrives after signing out (or a new pairing) is
+   dropped.
+6. **Changed elsewhere** (the desktop, a phone): the conversation's next
+   update shows it here, in the button and the picker.
+7. Nothing can be chosen while not connected (after reconnecting, once the
+   new snapshot arrived).
+8. **No conversation shown** (Previous sessions, nothing selected) and **the
+   settings screen open**: the bar has no picker. The picker belongs to one
+   conversation lifetime: another conversation starts with it closed.
+9. Keyboard: the button opens and closes it (Enter, Space); Tab moves
+   through its controls; the model list is a native select; Escape closes it
+   wherever the focus is and returns focus to the button. A click outside closes it, and so does
+   keyboard focus moving on to another control of the page. At 420 px it
+   stays inside the window.
+
+`test/shell/model-choice.test.ts` plays the rule's table for the data it
+shows (Pi and Claude Code, idle and running, a quick question, an unlisted
+choice, changed elsewhere, the list not read yet, loading or failed, a
+change on its way, not connected). `test/shell/details-browser.test.ts`
+covers the rows that need the page against the real gateway and listener:
+opened by keyboard, Show all models, a change during a running turn reaching
+the listener, a refusal shown, Escape with focus back, a refusal arriving after
+the picker was closed (a toast), Tab out of the picker closing it, a change made
+elsewhere appearing, the settings screen and Previous sessions without a
+picker, and a Claude Code conversation's models and fixed effort.
+
+Known limit: the picker keeps its "change on its way" state while it is
+drawn. Leaving the conversation for the settings screen and coming back
+while a change is still on its way draws it anew, so a second choice can be
+sent then. If the two changes overlap at the listener, it refuses the
+second ("its model/effort is already being changed") before changing
+anything, and the picker shows that refusal.
+
+The same file checks the layout with an open tool group, the open picker and
+the viewer at 420, 1280 and 1600 px: no horizontal overflow, the picker and
+the image inside the window. With `COMPANION_SHELL_SCREENSHOTS` set it saves
+screenshots of each.
+
 ## How it works
 
 ```text
@@ -848,12 +1076,15 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 - It checks every page request again against the shown conversation, like the
   Qt bridge, and maps it to a gateway action: Send/Queue → `send-agent`,
   choices → `choose-agent`, Stop → `stop-agent-run` (see the Stop rule below), Close
-  session → `close-agent`, history → `agent-history-page`. These are all in
+  session → `close-agent`, history → `agent-history-page`, tool details →
+  `agent-tool-page`. These are all in
   the gateway's remote allowlist (`src/remote/protocol.ts`); besides them
   only the phone Store's own `panel-state` selection report, the
   Activity column's requests (see [Activity](#activity)) and the settings
   screen's `toggle-sounds` and `set-intent-enabled` (see
-  [listening switches](#listening-switches)) leave the page. The
+  [listening switches](#listening-switches)) and the model picker's
+  `agent-models`, `claude-models` and `set-agent-model` leave the page,
+  and the screenshot viewer's authenticated image request. The
   Store reads this run's Activity history (`activity-history`), as on the
   phone.
 - A send names the draft revision its text is based on and is refused when
@@ -986,7 +1217,7 @@ page after one it has not shown yet.
 
 ### Changes to the shared chat page
 
-`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Three changes
+`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Four changes
 were made for the browser:
 
 1. Its transcript does not count the end of a **detached** history snapshot
@@ -1018,6 +1249,16 @@ were made for the browser:
    changes there (`test/shell/chat-heading.test.ts` compares the page's
    HTML with a reference drawn before the change). The shell's stylesheet
    aligns it right; `ChatState.mjs` and QML are unchanged.
+4. A tool row may carry one optional field, `tools` (`ChatToolDetails` in
+   `protocol.ts`): whether the group is open, its status line, the page's
+   text and which actions are offered. With it, the row's heading opens and
+   closes the details in place (`aria-expanded`) and the page draws them
+   (`ToolGroup` in `Chat.tsx`), reporting the reader's actions through one
+   optional bridge method, `toolDetails(sessionId, key, action)`. Without
+   the field the row is exactly as before: its heading opens the classic
+   view. The Qt host sends neither, so nothing changes there
+   (`chat-heading.test.ts` again compares with the reference drawn before
+   the change). The shell's stylesheet styles the details.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -1105,16 +1346,17 @@ chat of a conversation with more than about a thousand rows,
 Shown as unavailable through the existing `status` fields, not by changing
 the chat page:
 
-| Desktop feature                                | In the browser                                                                                         |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Recording into the text box                    | `recording.available: false` (no Record button)                                                        |
-| Listener-owned and agent-proposed drafts       | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty       |
-| Classic view, tool details, widgets            | The page's Classic view and tool-group buttons show "not available in the browser yet" in `inputError` |
-| Session applications                           | `application: null`                                                                                    |
-| Screenshots                                    | Labelled "screenshot unavailable"; no viewer yet                                                       |
-| Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                     |
-| Model picker                                   | Not in this slice                                                                                      |
-| Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                          |
+| Desktop feature                                | In the browser                                                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Recording into the text box                    | `recording.available: false` (no Record button)                                                         |
+| Listener-owned and agent-proposed drafts       | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty        |
+| Classic view, widgets                          | The page's Classic view button and widget cards show "not available in the browser yet" in `inputError` |
+| Tool details                                   | In place, as in the classic view (see [tool details](#tool-details))                                    |
+| Session applications                           | `application: null`                                                                                     |
+| Screenshots                                    | View screenshot opens the viewer (see [screenshots](#screenshots)); no zoom                             |
+| Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                      |
+| Model picker                                   | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker                      |
+| Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                           |
 
 Known limit: two tabs of the same browser under the same pairing each keep
 the phone Store's draft map and save it whole, so a draft typed in one tab can
@@ -1146,7 +1388,10 @@ a new entry is heard every 40 seconds (six in all) to show the marker.
 For the times, the invoice conversation was asked "yesterday" and continued
 today (the listener's clock is set back by a day for its first turn only),
 the flaky-test conversation's turn keeps running (its timer counts), and the
-others show how long their last turn took. No
+others show how long their last turn took. The bug-fix conversation has a
+tool group (one call's output is long enough to page through), the city
+trip kept its synthetic screenshot (View screenshot), and the bar's model
+picker lists two Pi models. No
 model, microphone, screen capture or personal data is involved. Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
@@ -1369,45 +1614,51 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 
 ## Structure
 
-| File                                 | Responsibility                                                                |
-| ------------------------------------ | ----------------------------------------------------------------------------- |
-| `src/main.tsx`                       | Creates the phone Store, the bridge and the chat page's ChatStore             |
-| `src/App.tsx`                        | Pairing, connection banner, toasts; the workspace once paired                 |
-| `src/workspace/Workspace.tsx`        | List, main area and Activity column with their dividers; held input           |
-| `src/workspace/ChatBar.tsx`          | The bar above the chat: ☰, title, state, gear, Activity ☰                   |
-| `src/workspace/BarState.tsx`         | The bar's state: `working · 2:16`, `working…`, `ready · last turn 0:42`       |
-| `src/workspace/focus-hand-off.ts`    | Focus kept when a focused ☰ goes away because another tab changed the column |
-| `src/workspace/PreviousSessions.tsx` | Previous sessions with Reopen                                                 |
-| `src/list/ConversationList.tsx`      | The conversation list: entries, markers, close, drag wiring, Previous entry   |
-| `src/list/entries.ts`                | What each entry shows, from the Store (number, icon, markers, last line)      |
-| `src/list/reorder-gesture.ts`        | The reorder gesture's rules, without DOM access                               |
-| `src/layout/list-width.ts`           | Width rules: strip, full list, snapping, keyboard, narrow windows             |
-| `src/layout/stored-layout.ts`        | The remembered width and hidden state in `localStorage`                       |
-| `src/layout/useListLayout.ts`        | The layout of this page: preference, window width, remembering                |
-| `src/layout/Divider.tsx`             | The draggable, keyboard-operable divider (list and Activity)                  |
-| `src/layout/activity-width.ts`       | Activity column width rules: range, keys, wide and narrow windows             |
-| `src/layout/useActivityLayout.ts`    | The Activity column's layout of this page: preference, shown, remembering     |
-| `src/activity/ActivityColumn.tsx`    | The Activity column: header, listening, start a conversation, history         |
-| `src/activity/HistoryEntry.tsx`      | One history entry and its actions                                             |
-| `src/activity/entry-actions.ts`      | Which actions an entry offers and enables, without DOM access                 |
-| `src/activity/new-activity.ts`       | The new-activity marker's rule, without DOM access                            |
-| `src/activity/listening.ts`          | The listening state's wording                                                 |
-| `src/activity/requests.ts`           | Activity requests awaiting their answer, per entry                            |
-| `src/activity/select-started.ts`     | Selecting a started conversation unless what is shown changed meanwhile       |
-| `src/activity/ActionButton.tsx`      | Buttons that stay focusable while unavailable (`aria-disabled`)               |
-| `src/settings/SettingsScreen.tsx`    | The settings screen: Display and Listening sections                           |
-| `src/settings/display-settings.ts`   | The Display switches and their `localStorage` entries                         |
-| `src/settings/useDisplaySettings.ts` | The Display switches in a component, following changes                        |
-| `src/settings/listening-switches.ts` | The listener's sound, intent and shortcut switches, without DOM access        |
-| `src/times/listener-clock.ts`        | The listener clock's offset from each state message                           |
-| `src/times/turn-times.ts`            | What the bar and the list show about turns, without DOM access                |
-| `src/times/turn-ticker.ts`           | Advances every shown running time each second, without drawing the page       |
-| `src/times/TurnTimer.tsx`            | One running time on the page, written by the ticker                           |
-| `src/times/message-time.ts`          | A message's time text for the reader                                          |
-| `src/times/page-times.ts`            | The page's time parts, handed from `main.tsx` to the workspace                |
-| `src/bridge.ts`                      | `NativeBridge` over the gateway: rows/status messages, request mapping        |
-| `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
-| `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
-| `src/styles.css`                     | The frame around the chat; the chat keeps its desktop stylesheet              |
-| `build.ts`                           | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
-| `demo.ts`                            | Synthetic end-to-end demo                                                     |
+| File                                   | Responsibility                                                                |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| `src/main.tsx`                         | Creates the phone Store, the bridge and the chat page's ChatStore             |
+| `src/App.tsx`                          | Pairing, connection banner, toasts; the workspace once paired                 |
+| `src/workspace/Workspace.tsx`          | List, main area and Activity column with their dividers; held input           |
+| `src/workspace/ChatBar.tsx`            | The bar above the chat: ☰, title, state, model, gear, Activity ☰            |
+| `src/workspace/BarState.tsx`           | The bar's state: `working · 2:16`, `working…`, `ready · last turn 0:42`       |
+| `src/workspace/focus-hand-off.ts`      | Focus kept when a focused ☰ goes away because another tab changed the column |
+| `src/workspace/PreviousSessions.tsx`   | Previous sessions with Reopen                                                 |
+| `src/list/ConversationList.tsx`        | The conversation list: entries, markers, close, drag wiring, Previous entry   |
+| `src/list/entries.ts`                  | What each entry shows, from the Store (number, icon, markers, last line)      |
+| `src/list/reorder-gesture.ts`          | The reorder gesture's rules, without DOM access                               |
+| `src/layout/list-width.ts`             | Width rules: strip, full list, snapping, keyboard, narrow windows             |
+| `src/layout/stored-layout.ts`          | The remembered width and hidden state in `localStorage`                       |
+| `src/layout/useListLayout.ts`          | The layout of this page: preference, window width, remembering                |
+| `src/layout/Divider.tsx`               | The draggable, keyboard-operable divider (list and Activity)                  |
+| `src/layout/activity-width.ts`         | Activity column width rules: range, keys, wide and narrow windows             |
+| `src/layout/useActivityLayout.ts`      | The Activity column's layout of this page: preference, shown, remembering     |
+| `src/activity/ActivityColumn.tsx`      | The Activity column: header, listening, start a conversation, history         |
+| `src/activity/HistoryEntry.tsx`        | One history entry and its actions                                             |
+| `src/activity/entry-actions.ts`        | Which actions an entry offers and enables, without DOM access                 |
+| `src/activity/new-activity.ts`         | The new-activity marker's rule, without DOM access                            |
+| `src/activity/listening.ts`            | The listening state's wording                                                 |
+| `src/activity/requests.ts`             | Activity requests awaiting their answer, per entry                            |
+| `src/activity/select-started.ts`       | Selecting a started conversation unless what is shown changed meanwhile       |
+| `src/activity/ActionButton.tsx`        | Buttons that stay focusable while unavailable (`aria-disabled`)               |
+| `src/settings/SettingsScreen.tsx`      | The settings screen: Display and Listening sections                           |
+| `src/settings/display-settings.ts`     | The Display switches and their `localStorage` entries                         |
+| `src/settings/useDisplaySettings.ts`   | The Display switches in a component, following changes                        |
+| `src/settings/listening-switches.ts`   | The listener's sound, intent and shortcut switches, without DOM access        |
+| `src/times/listener-clock.ts`          | The listener clock's offset from each state message                           |
+| `src/times/turn-times.ts`              | What the bar and the list show about turns, without DOM access                |
+| `src/times/turn-ticker.ts`             | Advances every shown running time each second, without drawing the page       |
+| `src/times/TurnTimer.tsx`              | One running time on the page, written by the ticker                           |
+| `src/times/message-time.ts`            | A message's time text for the reader                                          |
+| `src/times/page-times.ts`              | The page's time parts, handed from `main.tsx` to the workspace                |
+| `src/bridge.ts`                        | `NativeBridge` over the gateway: rows/status messages, request mapping        |
+| `src/history.ts`                       | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
+| `src/rows.ts`                          | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
+| `src/tools/tool-details.ts`            | Open tool groups, their pages and requests (port of ToolDetails.qml)          |
+| `src/screenshots/screenshot-viewer.ts` | The viewer's state: request, image, failures, without DOM access              |
+| `src/screenshots/ScreenshotViewer.tsx` | The viewer over the page (the phone panel's Modal)                            |
+| `src/models/model-choice.ts`           | What the model picker shows and offers, without DOM access                    |
+| `src/models/ModelPicker.tsx`           | The model button and picker in the bar                                        |
+| `src/styles.css`                       | The frame around the chat; the chat keeps its desktop stylesheet              |
+| `build.ts`                             | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
+| `demo.ts`                              | Synthetic end-to-end demo                                                     |
+| `synthetic-window.ts`                  | A synthetic window picture (PNG) for the demo's kept screenshot and tests     |

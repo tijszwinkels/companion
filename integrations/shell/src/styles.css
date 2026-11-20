@@ -90,8 +90,11 @@ body {
 /* ---- Theme -------------------------------------------------------------------- */
 
 /* The chat page's default theme (chat/styles.css `.chat`) and the rail's
-   unread color (rail/styles.css), for the frame around the chat. */
-.shell {
+   unread color (rail/styles.css), for the frame around the chat. The
+   screenshot viewer is drawn outside `.shell` (in a layer of its own at the
+   end of the page, see screenshots/ScreenshotViewer.tsx) and gets the same. */
+.shell,
+.modal-layer {
   --foreground: #a9b1d6;
   --background: #1a1b26;
   --accent: #7aa2f7;
@@ -1380,4 +1383,251 @@ body {
 
 .toast.success {
   border-color: #9ece6a;
+}
+
+/* ---- Tool details in place (chat page's ToolGroup, ChatRow.tools) ------------- */
+
+/* As the classic view's ToolDetails: a muted status line, the page as
+   wrapped monospace text, then the page actions in a wrapping row. */
+.message.tool .tool-details {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--u));
+  margin-top: calc(8 * var(--u));
+}
+
+.message.tool .tool-status {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(11 * var(--u));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message.tool .tool-status.error {
+  color: var(--danger);
+}
+
+/* A page is at most 8,192 characters (the listener's bound); long lines
+   wrap so the transcript never scrolls sideways. */
+.message.tool .tool-page {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: calc(14 * var(--u));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.message.tool .tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(8 * var(--u));
+}
+
+.message.tool .tool-heading[aria-expanded] {
+  cursor: pointer;
+}
+
+/* ---- Model picker in the bar (models/ModelPicker.tsx) --------------------------- */
+
+/* The picker opens below the bar, at its right; the bar is its anchor. */
+.chat-bar {
+  position: relative;
+}
+
+.model-button {
+  display: inline-flex;
+  flex: 0 1 auto;
+  max-width: 22ch;
+  min-width: 0;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.model-button:hover,
+.model-button[aria-expanded='true'] {
+  color: var(--foreground);
+  border-color: var(--foreground);
+}
+
+.model-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-panel {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(380px, calc(100% - 20px));
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  /* Opaque, like the desktop's menus, so the chat does not show through. */
+  background: color-mix(in srgb, var(--selection) 100%, var(--background));
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.model-caption {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.model-select {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: var(--selection);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.model-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.model-select:disabled {
+  color: var(--muted);
+}
+
+.model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-note,
+.model-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.model-refusal {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Screenshot viewer (screenshots/ScreenshotViewer.tsx) ------------------------ */
+
+/* Over the whole page, as the desktop's ScreenshotViewer: the theme's
+   background nearly opaque, the title and × at the top, the image below,
+   scaled down to fit (never enlarged). */
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.modal-layer .backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--background) 96%, transparent);
+}
+
+.screenshot-viewer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--foreground);
+  font-family: var(--mono);
+}
+
+.screenshot-viewer:focus {
+  outline: none;
+}
+
+.screenshot-viewer .viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px 8px 32px;
+}
+
+.screenshot-viewer .viewer-title {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screenshot-viewer .viewer-close {
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
+}
+
+.screenshot-viewer .viewer-image {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 10px 24px 24px;
+}
+
+.screenshot-viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  /* A faint frame, as the desktop's, so a dark image keeps its edge. */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--foreground) 15%, transparent);
+}
+
+.screenshot-viewer .viewer-note {
+  margin: 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+.screenshot-viewer .viewer-note p {
+  margin: 0 0 10px;
+}
+
+@media (max-width: 479px) {
+  .screenshot-viewer .viewer-bar {
+    padding: 10px;
+  }
+
+  .screenshot-viewer .viewer-image {
+    padding: 6px 10px 10px;
+  }
 }

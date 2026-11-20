@@ -19,6 +19,9 @@
     "../../test/shell/layout.test.ts",
     "../../test/shell/listening-switches.test.ts",
     "../../test/shell/reorder-gesture.test.ts",
-    "../../test/shell/times.test.ts"
+    "../../test/shell/times.test.ts",
+    "../../test/shell/tool-details.test.ts",
+    "../../test/shell/screenshot-viewer.test.ts",
+    "../../test/shell/model-choice.test.ts"
   ]
 }

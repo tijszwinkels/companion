@@ -21,6 +21,9 @@
     "integrations/shell/src",
     "test/shell/bridge.test.ts",
     "test/shell/times.test.ts",
+    "test/shell/tool-details.test.ts",
+    "test/shell/screenshot-viewer.test.ts",
+    "test/shell/model-choice.test.ts",
     "integrations/session-apps/chat",
     "integrations/session-apps/rail",
     "integrations/session-apps/web-channel.ts"

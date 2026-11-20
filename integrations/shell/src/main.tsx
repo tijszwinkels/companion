@@ -6,7 +6,9 @@
  *   reconnection and the conversations (integrations/mobile/src/store.ts);
  * - the gateway bridge, which plays the Qt host's part for the chat page;
  * - the chat page's own ChatStore, attached to that bridge exactly as the Qt
- *   host attaches it to QWebChannel (integrations/session-apps/chat/main.tsx).
+ *   host attaches it to QWebChannel (integrations/session-apps/chat/main.tsx);
+ * - the screenshot viewer, which the bridge opens for the page's View
+ *   screenshot (screenshots/).
  *
  * The page is static and self-contained: it loads nothing but its own files
  * and talks only to its own origin (the gateway's CSP enforces both).
@@ -14,6 +16,7 @@
 
 import { render } from 'preact';
 
+import { fetchScreenshot } from '../../mobile/src/screenshots.ts';
 import { StoreContext } from '../../mobile/src/hooks.ts';
 import { Store } from '../../mobile/src/store.ts';
 import { ChatStore } from '../../session-apps/chat/store.ts';
@@ -27,6 +30,7 @@ import './styles.css';
 import { ListenerClock } from './times/listener-clock.ts';
 import type { PageTimes } from './times/page-times.ts';
 import { TurnTicker } from './times/turn-ticker.ts';
+import { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 
 /**
  * Where the chat page's rows are on screen. Chat.tsx draws one `.message`
@@ -113,6 +117,30 @@ const bridge = new GatewayChatBridge(store, transcriptView, {
 const chat = new ChatStore();
 chat.attach(bridge);
 
+// The page's View screenshot opens the viewer. The image is fetched with
+// this pairing's token in a header, never in an address (screenshots/).
+const viewer = new ScreenshotViewerState((path, signal) =>
+  fetchScreenshot(path, store.connection, signal),
+);
+bridge.onScreenshot((request) => viewer.open(request));
+
+// The viewer shows a screenshot of the shown conversation only: it closes
+// when another conversation (or another lifetime of the same one) is shown,
+// and on sign-out or revocation.
+let viewedLifetime = '';
+store.subscribe(() => {
+  const state = store.state;
+  let lifetime = '';
+  const shown = state.sessions.get(state.selected);
+  if (shown && state.connection.status !== 'unpaired') {
+    lifetime = shown.id + ' ' + (shown.toolEpoch ?? '');
+  }
+  if (lifetime !== viewedLifetime) {
+    viewedLifetime = lifetime;
+    viewer.close();
+  }
+});
+
 // Signed out or revoked: text only the chat editor held (input the bridge
 // refused) belongs to the previous pairing and must not be offered to the
 // next one. The Store and the bridge clear their own state.
@@ -153,7 +181,7 @@ window.addEventListener('storage', (event) => {
 
 render(
   <StoreContext.Provider value={store}>
-    <App chat={chat} bridge={bridge} times={times} settingsView={settingsView} />
+    <App chat={chat} bridge={bridge} times={times} settingsView={settingsView} viewer={viewer} />
   </StoreContext.Provider>,
   document.getElementById('app')!,
 );
