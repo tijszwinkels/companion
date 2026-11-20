@@ -1,8 +1,16 @@
 /*
  * Browser shell around the trusted chat page. The chat itself keeps the
  * desktop chat stylesheet (integrations/session-apps/chat/styles.css, bundled
- * first); this file only lays out the frame: header, connection banner,
- * conversation list, pairing and toasts, in the chat's default dark colors.
+ * first); this file lays out the frame: the conversation list, its divider,
+ * the bar above the chat, the chat column, Previous sessions, the connection
+ * banner, pairing and toasts.
+ *
+ * Colors, sizes and shapes are the current Companion's, none of this page's
+ * own: the chat page's default theme (chat/styles.css: foreground,
+ * background, accent, muted, selection, tint, PanelAction buttons) and the
+ * native rail's tabs (session-apps/rail/styles.css at theme unit 1: badge,
+ * number, turning ring, unread dot and tint, selection bar, close button).
+ * The full list's text sizes and the bar's are those of the agreed design.
  *
  * The chat stylesheet makes html and body fill the window without scrolling;
  * the list and the transcript scroll inside their own areas.
@@ -32,38 +40,9 @@ body {
   box-sizing: border-box;
 }
 
-/* ---- Header and banner ---------------------------------------------------- */
+/* ---- Buttons and banner ------------------------------------------------------ */
 
-.shell-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #292e42;
-  min-width: 0;
-}
-
-.shell-title {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.connection-state {
-  flex: none;
-  font-size: 12px;
-  color: #737b9c;
-}
-
-.connection-state.online {
-  color: #9ece6a;
-}
-
+/* Pairing, banner and toasts keep slice 1's buttons. */
 .shell-button {
   flex: none;
   min-height: 32px;
@@ -108,34 +87,548 @@ body {
   min-width: 0;
 }
 
-/* ---- Main area ---------------------------------------------------------------- */
+/* ---- Theme -------------------------------------------------------------------- */
 
-.shell-main {
+/* The chat page's default theme (chat/styles.css `.chat`) and the rail's
+   unread color (rail/styles.css), for the frame around the chat. */
+.shell {
+  --foreground: #a9b1d6;
+  --background: #1a1b26;
+  --accent: #7aa2f7;
+  --muted: #737b9c;
+  --selection: #292e42;
+  --unread: #91dbb5;
+  --tint: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --mono: monospace;
+  --prose: sans-serif;
+}
+
+/* ---- Workspace: list | divider | main ----------------------------------------- */
+
+.workspace {
   display: flex;
-  flex-direction: column;
   flex: 1;
   min-height: 0;
   min-width: 0;
 }
 
-/* The chat page fills the area; wide windows keep a readable column. */
-.chat-host {
+.workspace-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The chat in a centred column of at most 860 px; the chat page fills it. */
+.chat-column {
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 960px;
+  max-width: 860px;
   margin: 0 auto;
+  padding: 12px 16px;
 }
+
+/* Previous sessions and the empty view, in the same column. */
+.page-column {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 12px 16px;
+}
+
+.workspace-empty {
+  margin: 12px 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* ---- Bar above the chat --------------------------------------------------------- */
+
+.chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 20%, transparent);
+  font-family: var(--mono);
+}
+
+.chat-bar-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-bar-state {
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* The chat page's PanelAction button (chat/styles.css `.panel-action`). */
+.bar-button {
+  flex: none;
+  min-height: 28px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--selection);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.bar-button:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.bar-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.bar-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.bar-button.list-toggle {
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ---- Divider --------------------------------------------------------------------- */
+
+/* A 7 px handle over a 1 px line; hovered, dragged or focused, a 3 px accent line. */
+.list-divider {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  width: 7px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.list-divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
+.list-divider:hover::after,
+.list-divider.dragging::after,
+.list-divider:focus-visible::after {
+  left: 2px;
+  width: 3px;
+  background: var(--accent);
+}
+
+.list-divider:focus-visible {
+  outline: none;
+}
+
+/* ---- Conversation list ------------------------------------------------------------ */
+
+.conversations {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-height: 0;
+  color: var(--foreground);
+  font-family: var(--mono);
+}
+
+.conversation-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 8px 8px 0;
+}
+
+/* The chat transcript's thin handle (chat/styles.css). */
+.conversation-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.conversation-scroll::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: var(--muted);
+}
+
+.conversation-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conversation-none {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+}
+
+.conversations.full .conversation-none {
+  font-size: 12px;
+  text-align: left;
+}
+
+.conversation-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One conversation: the rail's tab (rail/styles.css `.session`). */
+.conversation-entry {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  user-select: none;
+}
+
+.conversation-entry:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.conversation-entry.selected {
+  background: var(--selection);
+}
+
+.conversation-entry.unread {
+  border-color: color-mix(in srgb, var(--unread) 25%, transparent);
+  background: color-mix(in srgb, var(--unread) 12%, transparent);
+}
+
+/* The one cue that means "this conversation is shown". */
+.conversation-entry.selected::after,
+.previous-entry.selected::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 0;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 1.5px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.entry-select,
+.previous-entry {
+  display: flex;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.entry-select:focus-visible,
+.previous-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 5px;
+}
+
+.entry-badge {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.entry-glyph {
+  font-size: 10px;
+}
+
+.entry-glyph.emoji {
+  font-size: 15px;
+}
+
+.conversation-entry.selected .entry-glyph,
+.previous-entry.selected .entry-glyph {
+  color: var(--accent);
+}
+
+/* With an emoji badge, the session number stays readable top-left. */
+.entry-number {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+/* Working: an open ring turning around the badge. */
+.entry-working {
+  position: absolute;
+  inset: 2px;
+  border: 1.5px solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: entry-turn 1.6s linear infinite;
+}
+
+@keyframes entry-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.entry-unread {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--unread);
+}
+
+.entry-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.entry-title {
+  color: var(--foreground);
+  overflow: hidden;
+}
+
+.entry-last-line {
+  color: var(--muted);
+  font-family: var(--prose);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-entry.selected .entry-title {
+  color: var(--accent);
+}
+
+.conversation-entry.unread .entry-title {
+  color: var(--unread);
+}
+
+/* Close: only on hover or keyboard focus, like the rail's (rail/styles.css). */
+.entry-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--selection);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms;
+  /* Invisible, it takes no input: a first tap on that corner of an entry
+     (touch has no hover) selects instead of closing unseen. */
+  pointer-events: none;
+}
+
+.conversation-entry:hover .entry-close,
+.conversation-entry:focus-within .entry-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.entry-close:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.entry-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.entry-close:disabled {
+  opacity: 0;
+  cursor: default;
+}
+
+.conversation-entry:hover .entry-close:disabled,
+.conversation-entry:focus-within .entry-close:disabled {
+  opacity: 0.45;
+}
+
+/* Previous sessions: pinned below the conversations. */
+.previous-entry {
+  position: relative;
+  flex: none;
+  margin: 8px 8px 8px;
+  width: auto;
+  border-radius: 5px;
+}
+
+.previous-entry:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.previous-entry.selected {
+  background: var(--selection);
+}
+
+/* -- The strip: icon and number, a short name below (the rail's tab). -- */
+
+.conversations.strip .entry-select,
+.conversations.strip .previous-entry {
+  flex-direction: column;
+  align-items: center;
+  min-height: 62px;
+  padding: 3px;
+}
+
+.conversations.strip .entry-text {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.conversations.strip .entry-title {
+  display: -webkit-box;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.conversations.strip .conversation-entry.selected .entry-title {
+  color: var(--accent);
+}
+
+.conversations.strip .conversation-entry.unread .entry-title {
+  color: var(--unread);
+}
+
+.conversations.strip .entry-last-line {
+  display: none;
+}
+
+/* -- The full list: icon, title and the last line in one muted line. -- */
+
+.conversations.full .entry-select,
+.conversations.full .previous-entry {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px;
+}
+
+.conversations.full .entry-text {
+  flex: 1;
+}
+
+.conversations.full .entry-title {
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversations.full .entry-last-line {
+  margin-top: 2px;
+  font-size: 11.5px;
+}
+
+/* -- Reordering: the dragged conversation is dimmed and a line shows where it
+      will go (rail/styles.css). -- */
+
+.conversations.dragging {
+  cursor: grabbing;
+}
+
+.conversation-entry.dragged {
+  opacity: 0.45;
+}
+
+.drop-marker {
+  height: 3px;
+  margin: -5.5px 0;
+  border-radius: 1.5px;
+  background: var(--accent);
+}
+
+/* ---- Previous sessions --------------------------------------------------------- */
+
+.previous-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A chat panel (chat/styles.css `.message .panel`): a rounded tint. */
+.previous-session {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--tint);
+  color: var(--foreground);
+}
+
+.previous-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Text only the editor holds ------------------------------------------------ */
 
 .held-input {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 8px auto 0;
+  margin-bottom: 12px;
   padding: 8px 12px;
-  width: calc(100% - 24px);
-  max-width: 936px;
   border: 1px solid #e0af68;
   border-radius: 8px;
   font-size: 13px;
@@ -148,78 +641,6 @@ body {
 
 .held-feedback {
   color: #737b9c;
-}
-
-.list-empty {
-  padding: 24px 16px;
-  color: #737b9c;
-}
-
-.conversation-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  margin: 0 auto;
-  padding: 8px 12px;
-  width: 100%;
-  max-width: 960px;
-  list-style: none;
-}
-
-.conversation-list li + li {
-  margin-top: 6px;
-}
-
-.conversation {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 12px;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #292e42;
-  border-radius: 8px;
-  background: #1f2335;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.conversation:hover {
-  border-color: #7aa2f7;
-}
-
-.conversation-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.conversation-state {
-  font-size: 12px;
-  color: #737b9c;
-}
-
-.conversation-preview {
-  grid-column: 1 / -1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  color: #737b9c;
-}
-
-.unread {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: #7aa2f7;
-  vertical-align: middle;
 }
 
 /* ---- Pairing ------------------------------------------------------------------- */

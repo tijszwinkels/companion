@@ -196,6 +196,20 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   const scriptedRun: AgentBackend['run'] = async (request, signal, emit, publishChoices) => {
     const question = request.prompt.text;
 
+    // The "working" conversation of the demo: its turn runs until it is
+    // stopped (Stop in the chat, or closing it), so the list shows the
+    // turning ring and the bar shows `working…`.
+    if (/flaky/i.test(question)) {
+      emit({
+        ...chatMessage(randomUUID(), 'assistant', 'Running the suite 20 times…'),
+        state: 'running',
+      });
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return;
+    }
+
     if (/test|code|bug|fix/i.test(question)) {
       const calls: [string, string, string][] = [
         [
@@ -280,9 +294,16 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   runtimeStarted = true;
   continueStartup();
 
-  // Two conversations: a coding question and a quick question.
-  sessions.start(frame('Why does the list test fail? Please fix the bug.'), controller.signal);
-  sessions.start(frame('Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
+  // Several conversations for the list: coding questions, a quick question
+  // and one whose turn keeps running (see scriptedRun). Their answers
+  // complete before the browser pairs, so the browser shows them unread at
+  // first (the phone Store's rule for a fresh page); opening one marks it
+  // read.
+  sessions.start(frame('🐛 Why does the list test fail? Please fix the bug.'), controller.signal);
+  sessions.start(frame('🗺️ Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
+  sessions.start(frame('🧾 Explain the invoice export'), controller.signal);
+  sessions.start(frame('🧪 Find the flaky test'), controller.signal);
+  sessions.start(frame('Notification rules: summarise them'), controller.signal, 'quickQuestion');
 
   // ---- Gateway --------------------------------------------------------------------
 
