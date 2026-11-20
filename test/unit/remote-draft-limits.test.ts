@@ -292,6 +292,19 @@ function maskedFrame(payload: Buffer): Buffer {
   return Buffer.concat([header, mask, masked]);
 }
 
+/**
+ * The messages in what a socket has received so far, from complete lines
+ * only. A read can end in the middle of a message; the text after the last
+ * newline is unfinished and is parsed once the rest has arrived.
+ */
+function completeMessages(buffered: string): Message[] {
+  const complete = buffered.slice(0, buffered.lastIndexOf('\n') + 1);
+  return complete
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => JSON.parse(line) as Message);
+}
+
 test("limits: the listener's request line holds a long draft; several in one read are all kept", async (context) => {
   const fixture = await remoteFixture({ backend: async () => {} });
   context.after(() => fixture.close());
@@ -307,11 +320,7 @@ test("limits: the listener's request line holds a long draft; several in one rea
     buffered += chunk;
   });
   const replies = () =>
-    buffered
-      .split('\n')
-      .filter((line) => line !== '')
-      .map((line) => JSON.parse(line) as Message)
-      .filter((message) => message.action === 'draft-set');
+    completeMessages(buffered).filter((message) => message.action === 'draft-set');
 
   const write = (requests: object[]) => {
     socket.write(requests.map((request) => JSON.stringify(request) + '\n').join(''));
@@ -590,11 +599,7 @@ test('limits: the listener itself allows a remote send of 8,000 characters, not 
   });
   const answer = async (requestId: string) => {
     const find = () =>
-      buffered
-        .split('\n')
-        .filter((line) => line !== '')
-        .map((line) => JSON.parse(line) as Message)
-        .find((message) => message.requestId === requestId);
+      completeMessages(buffered).find((message) => message.requestId === requestId);
     await waitFor(() => find() !== undefined, 3000);
     return find()!;
   };

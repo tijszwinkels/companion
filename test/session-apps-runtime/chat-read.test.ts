@@ -270,7 +270,7 @@ test('undeclared read access and malformed read requests are refused', async (co
 });
 
 for (const mode of ['read', 'send'] as const) {
-  test(`real desktop ${mode} permission requires a shown conversation and rejects remote role`, async (context) => {
+  test(`real desktop ${mode} permission requires a shown conversation, also for a remote role`, async (context) => {
     const fixture = await setup(context);
     const { sessions, id, application } = fixture;
     const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);
@@ -288,7 +288,9 @@ for (const mode of ['read', 'send'] as const) {
     desktop.send({ action, id, ...permission(application(), false) });
     assert.equal((await desktop.reply(action)).type, 'result');
 
-    // A fresh connection may declare remote; it cannot use desktop-only consent.
+    // A fresh connection may declare remote. It may allow only for its own
+    // selection on a visible page (src/desktop/README.md, "Application chat
+    // access from a paired device"); a report without `visible` is hidden.
     const remote = createConnection(desktop.socketPath);
     context.after(() => remote.destroy());
     const replies: { action?: string; type: string; message?: string }[] = [];
@@ -314,7 +316,7 @@ for (const mode of ['read', 'send'] as const) {
     assert.equal((await send({ action: 'panel-state', id })).type, 'result');
     assert.match(
       (await send({ action, id, ...permission(application(), true) })).message!,
-      /only available on the desktop/,
+      /Show this conversation on this device first/,
     );
     assert.equal(allowed(), false);
   });

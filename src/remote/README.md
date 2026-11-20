@@ -170,7 +170,10 @@ page a secure context.
   the listener. Desktop-bound actions (paste, typed Activity submission with a
   window target, media reports, composer focus, draft replies) are not exposed and
   are refused again by the listener for remote connections. Draft editing is
-  available only to a connection that asked for it ([drafts](#drafts)).
+  available only to a connection that asked for it ([drafts](#drafts)). A
+  session application's chat permissions can be changed only for the
+  conversation the connection itself shows
+  ([application chat access](#application-chat-access)).
 - **Content.** The app is served with a strict CSP (`default-src 'none'`, self
   scripts/styles only, no inline script, `frame-ancestors 'none'`). Transcript text
   is rendered as text or sanitized Markdown, never as HTML.
@@ -296,16 +299,19 @@ listener side is [`src/widgets/socket.ts`](../widgets/socket.ts) and
   the frame origin exactly as on the gateway.
 
 When both options are absent nothing changes: no second listener, the relay
-removes view addresses as before, and every gateway response and header is
-byte-identical to the previous release.
+removes view addresses as before, and every gateway HTTP response and header
+is byte-identical to the previous release. (Relayed sessions now also carry
+each application's `chatAccess`, with or without frames; see
+[application chat access](#application-chat-access).)
 
 ### What a client receives
 
 For remote clients the relay replaces the listener's `viewUrl` with
 `frameUrl = <frame origin>/f/<handle>/` in widget attachments (messages in
 snapshots, events and `agent-history-page` replies, and the pinned
-attachment) and in a conversation's `application` descriptor. `viewUrl` and
-`application.chatAccess` are still removed. A client embeds `frameUrl` exactly
+attachment) and in a conversation's `application` descriptor. `viewUrl` is
+still removed; `application.chatAccess` is passed on without the send grant's
+ID ([application chat access](#application-chat-access)). A client embeds `frameUrl` exactly
 as given, without adding a query or fragment, in
 `<iframe sandbox="allow-scripts allow-same-origin allow-forms">`. The page
 finds its own address from its location. Clients that ignore `frameUrl` keep
@@ -378,7 +384,10 @@ below, including refusals of upgrades and `CONNECT`.
    operation: 404 `Not found`, the same answer as step 4. Steps 3–7 never
    look at the handle.
 9. The device's budget, 40 requests per second with bursts of 120, separate
-   from the WebSocket's: 429. Connections and handles stay.
+   from the WebSocket's: 429. Connections and handles stay. The budget
+   refills on the monotonic clock ([`request-rate.ts`](request-rate.ts)), so
+   setting the system clock back or forward neither stalls nor speeds up a
+   device's frames.
 10. More than 16 forwarded requests at a time, or 8 for one device: 503.
 
 | Operation      | Method | Body limit | Widget | Application |
@@ -396,9 +405,9 @@ below, including refusals of upgrades and `CONNECT`.
 The list and limits come from
 [`src/widgets/frame-operations.ts`](../widgets/frame-operations.ts), shared
 with the widget service. `popout`, `frame`, `layout`, `input` and `/agent` are
-never forwarded. Chat reading and sending still need the desktop's explicit
-per-application grants; `chatAccess`, which a client would need to ask for
-them, stays removed for remote clients.
+never forwarded. Chat reading and sending still need an explicit
+per-application grant, given on the desktop or by a paired device that shows
+the conversation ([application chat access](#application-chat-access)).
 
 Forwarded requests carry only a fixed `Host`, and for POST `Content-Type:
 application/json` and `Content-Length`; no cookie, origin, credential or other
@@ -508,7 +517,9 @@ synthetic widget and application (`test/frame-fixture.ts`) and real control
 and widget sockets. The headers file also compares a gateway without frame
 options with a recording made on the revision before this feature
 (`test/fixtures/gateway-base-output.json`). `remote-frames-options.test.ts`
-covers option combinations and CLI usage errors, `widgets-socket.test.ts` the
+covers option combinations and CLI usage errors, `remote-frames-budget.test.ts`
+the request budget's clock (a wall-clock step, a clock going back, reconnects),
+`widgets-socket.test.ts` the
 listener's socket route, and `remote-frames-browser.test.ts` embeds a frame in
 headless Chromium from a gateway page and from a third origin. The widget
 renderer is synthetic in these tests (the bundle's own reducers run in Node);
@@ -655,8 +666,7 @@ draft events included, and reconnects from a fresh snapshot.
 
 Everything else remote connections cannot do stays refused, draft host or
 not: `paste`, `submit-utterance`, `media-playback`, `composer-focus`,
-`agent-draft-result`, `set-capture-storage`, `set-application-chat-read`,
-`set-application-chat-send`, `coding-defaults`, `set-coding-defaults`,
+`agent-draft-result`, `set-capture-storage`, `coding-defaults`, `set-coding-defaults`,
 `agent-browser-open-result`, `agent-present-result`, `start-recording`,
 `stop-recording`, `recording-append-result` and `cancel-agent-wake`, and the
 events `agent-actions`, `agent-view-actions`, `agent-select`, `agent-present`,
@@ -674,6 +684,12 @@ What a paired device can now read and change:
 | Move the desktop's selection or focus      | no     | no                          | no                                                |
 | Follow-up length (`send-agent`)            | 4,000  | 8,000                       | 8,000                                             |
 | Largest message                            | 32 KiB | 128 KiB                     | 128 KiB                                           |
+| See an application's chat permissions      | no     | yes (`chatAccess`)          | yes (`chatAccess`)                                |
+| Allow an application to read or send chat  | no     | its visible conversation    | its visible conversation                          |
+| Stop an application reading or sending     | no     | its selected conversation   | its selected conversation                         |
+
+The last three rows are [application chat access](#application-chat-access);
+"Before" means before each feature.
 
 Authenticated `{ "type": "ping" }` messages receive `{ "type": "pong" }`
 without contacting the listener. The phone checks every 15 seconds. After 30
@@ -704,6 +720,111 @@ unavailable (including unsupported remote role), 4001 gateway stopped. Transient
 every 20 seconds terminate peers missing the next pong and release their slots.
 TLS certificates are read once at startup; installing a renewed certificate
 requires an explicitly arranged gateway restart.
+
+## Application chat access
+
+A conversation's [session application](../session-apps/README.md) may read
+recent chat text or send chat messages only while a person allows it. Any
+paired device that shows the conversation may allow and stop it, under the
+same checks as the desktop; the listener applies them
+([its rules and cases](../desktop/README.md#application-chat-access-from-a-paired-device)).
+
+1. **Requests.** `set-application-chat-read` and `set-application-chat-send`
+   carry exactly the fields the desktop sends:
+   `{"type":"request","requestId":"…","action":"set-application-chat-read","id":"<conversation>","applicationId":"<uuid>","version":1,"revision":"<uuid>","allowed":true}`.
+   [`protocol.ts`](protocol.ts) checks each: `id`, `applicationId` and
+   `revision` are lowercase UUIDs, `version` a non-negative integer,
+   `allowed` a boolean; any other field is refused. They count against the
+   device's request rate like any request.
+2. **Who.** Allowing needs the conversation selected on a visible page of
+   **this** connection (its latest `panel-state` with `visible: true`);
+   stopping needs only that it is selected there. The listener checks this
+   when the request arrives and again when the change runs, so a page hidden
+   or switched in between allows nothing. When the gateway refuses one of a
+   client's `panel-state` reports (request rate or pending bound), that
+   report may have hidden the page or moved it, so the gateway sends the
+   listener `{"action":"report-refused","id":"<the refused report's id>"}`:
+   the connection stops counting as visible, and its selection ends unless
+   the refused report named the same conversation (a refused hide keeps it,
+   so a waiting Stop still runs). The notice never selects anything and
+   never changes draft fields. Before the role is confirmed it keeps its
+   place among the queued requests. The gateway sends one only when it can
+   change something (at most two per forwarded report), and nobody waits for
+   its reply. The client's next accepted report replaces its effect. A report the listener itself refuses (for example for
+   a conversation that has just closed) likewise ends the connection's
+   selection and visibility. A connection whose client left
+   (`withdraw-visibility`) can stop but not allow. Refusals say "Open this
+   conversation on this device first" or "Show this conversation on this
+   device first" and say nothing about other devices. The application ID, code
+   version and permission revision must be the current ones, as on the
+   desktop.
+3. **Receipts.** Both are state-changing and keep a receipt like every other
+   mutating request ([below](#requests-receipts-and-reconnection)): a repeat
+   after a reconnect is answered with the first request's real outcome. Run a
+   second time, a change would only be refused, because the permission
+   revision changes with every change, and the person would see a misleading
+   "permissions changed".
+4. **Result.** The new permission state, in the shape below, or `"preview"` in
+   preview mode; `null` if the listener's answer were malformed. The change
+   was made, and the listener sends the conversation's new state before it
+   answers, so a client that receives `null` keeps showing the latest
+   `chatAccess` it received (or reconnects for a fresh snapshot); it does not
+   wait for another event.
+5. **What a client receives.** Each conversation's `application.chatAccess`
+   (snapshots, events) and the result above are rebuilt field by field by
+   [`chat-access.ts`](chat-access.ts), and dropped whole if any field is
+   missing or malformed:
+
+   ```json
+   {
+     "requested": ["chat.read", "chat.send"],
+     "read": false,
+     "send": { "allowed": true, "remaining": 4, "busy": false },
+     "revision": "<uuid>"
+   }
+   ```
+
+   - `requested`: the names the application's code asks for (`chat.read`,
+     `chat.send`), each at most once. Names grant nothing.
+   - `read`, `send.allowed`, `send.remaining`, `send.busy`: what is allowed,
+     how many messages the send grant may still send (0–1000; 5 per grant
+     today) and whether one is waiting or running.
+   - `revision`: changes with every permission change, code replacement and
+     reopen. A change must name it, so a decision taken on stale controls is
+     refused. It grants nothing by itself: the listener still checks the
+     connection.
+   - `send` is absent from older listeners; absence never means allowed.
+   - **Removed:** `send.grantId`, the identity the application puts into each
+     message it sends. A client drawing the controls never needs it, so no
+     WebSocket message carries it. This is a rule for the gateway's messages
+     only: the application itself, running in its frame on the same browser,
+     still reads its own grant ID from its view's `state` (`chatSend`), as it
+     must to send, exactly as on the desktop.
+   - Never present: view addresses (`viewUrl` stays replaced by `frameUrl`),
+     paths or capabilities. Fields the listener adds later are dropped until
+     reviewed.
+
+   There is one grant per open conversation's application, held in the
+   listener's memory. The desktop and every device see the same state and any
+   of them can stop it. Closing the conversation, replacing the application's
+   code and a listener restart end it, as before. An older client that ignores
+   `chatAccess` is unaffected.
+
+| State                                    | `chatAccess` a remote client receives                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------ |
+| No grant                                 | `read: false`, `send: {allowed: false, remaining: 0, busy: false}`       |
+| Reading allowed only                     | `read: true`, `send.allowed: false`                                      |
+| Sending allowed, messages left           | `send: {allowed: true, remaining: 1–5}`, `busy` while one waits or runs  |
+| Sending allowed, all sent                | `send: {allowed: true, remaining: 0, busy: false}`                       |
+| Stopped by the desktop or another device | `read: false` / `send.allowed: false`, new `revision`                    |
+| Application code replaced                | `read: false`, `send.allowed: false`, new `revision`                     |
+| Conversation closed and reopened         | `read: false`, `send.allowed: false`, new `revision`                     |
+| Any of the above                         | no `grantId`, no `viewUrl`; `frameUrl` when a frame origin is configured |
+
+`test/unit/remote-app-chat-received.test.ts` tests this table and
+`test/unit/remote-app-chat-consent.test.ts` the listener's table of who may
+change a permission, both through the real gateway and listener;
+`test/unit/remote-chat-access.test.ts` tests the field checks.
 
 ## Tests
 

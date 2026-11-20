@@ -88,7 +88,8 @@ const cases: LifetimeCase[] = [
       const everything = JSON.stringify(phone.messages);
       assert.ok(!everything.includes('/view/'));
       assert.ok(!everything.includes('viewUrl'));
-      assert.ok(!everything.includes('chatAccess'));
+      // Application chat permissions reach remote clients without the grant ID.
+      assert.ok(!everything.includes('grantId'));
 
       const document = await fixture.frameRequest(frames.widget);
       assert.equal(document.status, 200);
