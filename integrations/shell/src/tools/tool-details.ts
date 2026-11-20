@@ -17,10 +17,13 @@
  *   new lifetime of the same one (another tool epoch) drop older answers.
  *   An answer is also checked against the conversation, lifetime and group
  *   it was asked for, as the desktop does.
- * - A failure (a refusal, a lost connection, the 10 s deadline) is shown
- *   with Try again, which repeats the failed request; nothing is retried by
- *   itself. Losing the connection clears every open group's page (the
- *   desktop's "Disconnected. Reload after reconnecting.").
+ * - A failure (a refusal, a lost answer, the 10 s deadline) is shown with
+ *   Try again, which asks again for the page that failed, as a fresh read
+ *   of that position (without the call revision a continuation named: a
+ *   call that changed meanwhile would otherwise be refused again and
+ *   again); nothing is retried by itself. Losing the connection clears
+ *   every open group's page (the desktop's "Disconnected. Reload after
+ *   reconnecting.").
  * - The group's revision changes while calls arrive (the turn still runs):
  *   the page shown stays, marked as having newer output; Refresh page loads
  *   the shown page again. The count follows the row.
@@ -413,6 +416,8 @@ export class ToolDetails {
         return;
       }
       this.invalidate(group, toolTexts.timedOut);
+      // Try again asks for the page that timed out, not the first one.
+      group.failedPosition = retryPosition(position);
       this.host.changed();
     }, toolPageDeadlineMilliseconds);
 
@@ -444,7 +449,7 @@ export class ToolDetails {
         this.stopDeadline(group);
         group.pending = 0;
         group.pendingPosition = null;
-        group.failedPosition = position;
+        group.failedPosition = retryPosition(position);
         let message = toolTexts.failed;
         if (failure instanceof Error && failure.message) {
           message = failure.message;
@@ -481,7 +486,7 @@ export class ToolDetails {
       answer.epoch !== asked.epoch ||
       answer.groupId !== group.groupId
     ) {
-      group.failedPosition = position;
+      group.failedPosition = retryPosition(position);
       group.error = toolTexts.failed;
       return;
     }
@@ -489,13 +494,13 @@ export class ToolDetails {
     // not a continuation of one call: refresh to see the current output.
     if (answer.revision !== group.revision && !request.callRevision) {
       group.outdated = true;
-      group.failedPosition = { index: position.index, offset: position.offset, callRevision: '' };
+      group.failedPosition = retryPosition(position);
       group.error = toolTexts.changed;
       return;
     }
     // A continuation of a call that changed meanwhile is another call's text.
     if (request.callRevision && answer.callRevision !== request.callRevision) {
-      group.failedPosition = { index: position.index, offset: position.offset, callRevision: '' };
+      group.failedPosition = retryPosition(position);
       group.error = toolTexts.changed;
       return;
     }
@@ -511,6 +516,14 @@ export class ToolDetails {
     group.outdated = answer.revision !== group.revision;
     group.loaded = true;
   }
+}
+
+/**
+ * The request Try again sends after `position` failed: the same call and
+ * offset, read afresh with the group's current revision.
+ */
+function retryPosition(position: PagePosition): PagePosition {
+  return { index: position.index, offset: position.offset, callRevision: '' };
 }
 
 /** A closed group: present, so the page offers to open it here. */

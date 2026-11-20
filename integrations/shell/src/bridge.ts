@@ -1246,15 +1246,23 @@ export class GatewayChatBridge implements NativeBridge {
     if (path === '' || this.goneScreenshots.has(gone)) {
       return;
     }
+    // The gateway grants a connection its screenshots with the snapshot it
+    // relays; a 404 is final only for a request made and answered while
+    // requests are admitted (after that snapshot), in the same lifetime.
+    const admittedWhenAsked = this.online;
+    const pairing = this.pairing;
     const request: ScreenshotRequest = {
       path: path,
       title: this.shownSession?.title || 'Screenshot',
       gone: () => {
-        // Only for the lifetime it was asked in.
+        if (!admittedWhenAsked || !this.online || this.pairing !== pairing) {
+          return false;
+        }
         if (this.lifetime(this.shownSession) === lifetime) {
           this.goneScreenshots.add(gone);
           this.scheduleRows();
         }
+        return true;
       },
     };
     for (const listener of this.screenshotListeners) {

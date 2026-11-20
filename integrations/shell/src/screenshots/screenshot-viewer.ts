@@ -9,9 +9,11 @@
  * The image is fetched from the gateway's authenticated route with the
  * device token in a header (fetchScreenshot, shared with the phone panel)
  * and shown from a `blob:` URL that this object owns: it is revoked as soon
- * as the viewer closes or shows another screenshot, and dropped when a
- * newer request replaced the one it answers. Nothing is written to storage
- * or history; the token never appears in an address.
+ * as the image element has loaded it (`imageLoaded`), so the address cannot
+ * be opened in another tab or kept beyond the viewer; until then, closing
+ * the viewer or showing another screenshot revokes it, and an answer to a
+ * request that was replaced makes none. Nothing is written to storage or
+ * history; the token never appears in an address.
  *
  * One screenshot at a time: opening another (or the same one again) aborts
  * the request on its way and forgets the image shown.
@@ -25,8 +27,15 @@ export interface ScreenshotRequest {
   path: string;
   /** The conversation's title, for the viewer's heading. */
   title: string;
-  /** Called when the gateway no longer has this screenshot (HTTP 404). */
-  gone(): void;
+  /**
+   * Called when the gateway answers that it does not have this screenshot
+   * (HTTP 404). Returns whether that is final: false when the answer may
+   * only mean that the gateway has not yet granted this connection its
+   * screenshots (asked before the connection's snapshot arrived, for
+   * example right after a gateway restart); the viewer then offers Try
+   * again.
+   */
+  gone(): boolean;
 }
 
 export type ViewerState =
@@ -83,6 +92,19 @@ export class ScreenshotViewerState {
     this.load();
   }
 
+  /**
+   * The image element has decoded the image: its `blob:` address is revoked
+   * now. The element keeps showing what it decoded; the address no longer
+   * leads anywhere (another tab, a copied link).
+   */
+  imageLoaded(imageUrl: string): void {
+    if (imageUrl === '' || imageUrl !== this.imageUrl) {
+      return;
+    }
+    this.objectUrls.revoke(this.imageUrl);
+    this.imageUrl = '';
+  }
+
   /** Fetch the open screenshot again after a failure. */
   retry(): void {
     if (this.state.kind !== 'failed' || !this.state.canRetry || !this.request) {
@@ -122,8 +144,8 @@ export class ScreenshotViewerState {
           return;
         }
         this.controller = null;
-        if (failure instanceof ScreenshotRefused && failure.status === 404) {
-          request.gone();
+        const notFound = failure instanceof ScreenshotRefused && failure.status === 404;
+        if (notFound && request.gone()) {
           this.set({
             kind: 'failed',
             title: request.title,
@@ -132,7 +154,8 @@ export class ScreenshotViewerState {
           });
           return;
         }
-        if (failure instanceof ScreenshotRefused && failure.status < 500) {
+        // A 404 that is not final falls through to Try again below.
+        if (!notFound && failure instanceof ScreenshotRefused && failure.status < 500) {
           this.set({
             kind: 'failed',
             title: request.title,

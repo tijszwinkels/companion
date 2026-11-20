@@ -70,7 +70,9 @@ export function ChatBar(props: {
           state does not fit beside the title (a narrow window), it goes on
           a second line instead of pushing the buttons out. */}
       <div class="chat-bar-heading">
-        <h1 class="chat-bar-title" title={props.title}>
+        {/* The page heading a closed dialog gives focus to when the
+            control that opened it is gone (the phone panel's Modal). */}
+        <h1 class="chat-bar-title" title={props.title} data-page-heading tabIndex={-1}>
           {props.title}
         </h1>
         {props.state ? <span class="chat-bar-state">{props.state}</span> : null}

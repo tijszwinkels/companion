@@ -267,10 +267,8 @@ test(
       `document.querySelector('.screenshot-viewer img').src`,
     );
     assert.match(imageSource, /^blob:/);
-    await screenshot(page, 'viewer-1280');
-    await clickButton(page, '×');
-    await closedWithFocusBack();
-    // The image's address is revoked with the viewer.
+    // Once shown, the image's address already leads nowhere: it cannot be
+    // opened in another tab or kept beyond the viewer.
     assert.equal(
       await page.evaluate(`new Promise((resolve) => {
         const probe = new Image();
@@ -280,6 +278,14 @@ test(
       })`),
       'gone',
     );
+    // The image shown is still drawn.
+    assert.equal(
+      await page.evaluate(`document.querySelector('.screenshot-viewer img').naturalWidth`),
+      640,
+    );
+    await screenshot(page, 'viewer-1280');
+    await clickButton(page, '×');
+    await closedWithFocusBack();
 
     // 2. Escape.
     await opened();
@@ -316,6 +322,8 @@ test(
     await page.waitFor(`!document.querySelector('.screenshot-viewer')`);
     await page.waitFor(`!${buttonExpression('View screenshot')}`);
     assert.match(await text(page, '.message.user .heading'), /screenshot unavailable/);
+    // Its opener is gone: focus goes to the page heading, not nowhere.
+    await page.waitFor(`document.activeElement?.classList.contains('chat-bar-title')`);
 
     assertOwnOrigin(fixture, page, sockets);
     await assertNoViolations(page);
@@ -326,15 +334,24 @@ test(
   'the model picker lists the listener’s models, a change reaches it, a change elsewhere shows',
   { skip },
   async (context) => {
-    // The second catalogue read (the listener's check of a choice) no
-    // longer has the ghost model, so choosing it is refused.
+    // Only the first catalogue read (the picker's list) has the ghost
+    // model; the listener's later reads (its check of each choice) do not,
+    // so choosing it is refused. The fourth read waits until released, so
+    // the picker can be closed while that choice is on its way.
     let catalogueReads = 0;
+    let releaseFourth = () => {};
+    const fourth = new Promise<void>((resolve) => {
+      releaseFourth = resolve;
+    });
     const { fixture, browser } = await setup(context, {
       models: async () => {
         catalogueReads++;
         const models = ['local/qwen-synthetic', 'cloud/synthetic-large'];
         if (catalogueReads === 1) {
           models.push('ghost/model');
+        }
+        if (catalogueReads === 4) {
+          await fourth;
         }
         return {
           models,
@@ -393,6 +410,27 @@ test(
     await press(page, 'Escape', 27);
     await page.waitFor(`!document.querySelector('#model-picker')`);
     assert.equal(await page.evaluate(`document.activeElement.className`), 'model-button');
+
+    // Closed while a choice is on its way: its refusal is still told (a toast).
+    await press(page, 'Enter', 13);
+    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await choose('ghost/model');
+    await waitFor(() => catalogueReads === 4);
+    await press(page, 'Escape', 27);
+    await page.waitFor(`!document.querySelector('#model-picker')`);
+    releaseFourth();
+    await page.waitFor(
+      `[...document.querySelectorAll('.toast')].some((toast) => toast.textContent.includes('available configured Pi model'))`,
+    );
+
+    // Keyboard focus leaving the open picker (Tab past its last control) closes it.
+    await press(page, 'Enter', 13);
+    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await page.evaluate(
+      `document.querySelector('[aria-label="Refresh available Pi models"]').focus()`,
+    );
+    await press(page, 'Tab', 9);
+    await page.waitFor(`!document.querySelector('#model-picker')`);
 
     // Changed elsewhere (another client): shown here.
     await fixture.sessions.setModel(id, 'local/qwen-synthetic', signal());

@@ -64,7 +64,15 @@ export function ScreenshotViewer(props: { viewer: ScreenshotViewerState }) {
 function ViewerBody(props: { state: ViewerState; viewer: ScreenshotViewerState }) {
   const { state, viewer } = props;
   if (state.kind === 'shown') {
-    return <img src={state.imageUrl} alt="Screenshot attached to this message" />;
+    // Once loaded, the image's blob: address is revoked (screenshot-viewer.ts).
+    const imageUrl = state.imageUrl;
+    return (
+      <img
+        src={imageUrl}
+        alt="Screenshot attached to this message"
+        onLoad={() => viewer.imageLoaded(imageUrl)}
+      />
+    );
   }
   if (state.kind === 'failed') {
     return (

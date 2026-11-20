@@ -60,8 +60,15 @@ class FakeUrls {
   };
 }
 
-function request(gone: string[] = [], title = 'Trip'): ScreenshotRequest {
-  return { path: route, title, gone: () => gone.push(route) };
+function request(gone: string[] = [], title = 'Trip', final = true): ScreenshotRequest {
+  return {
+    path: route,
+    title,
+    gone: () => {
+      gone.push(route);
+      return final;
+    },
+  };
 }
 
 /** The viewer's state now (read through a call, so no earlier check narrows it). */
@@ -103,6 +110,23 @@ const cases: Case[] = [
     },
   },
   {
+    name: 'shown: once the image has loaded its blob: address is revoked, and only once',
+    async run() {
+      const fetcher = new FakeFetch();
+      const urls = new FakeUrls();
+      const viewer = new ScreenshotViewerState(fetcher.fetch, urls);
+      viewer.open(request());
+      fetcher.answer(0).resolve(image);
+      await settled();
+      viewer.imageLoaded('blob:test/1');
+      assert.deepEqual(urls.revoked, ['blob:test/1']);
+      // Closing afterwards revokes nothing more; a stale load report is ignored.
+      viewer.imageLoaded('blob:test/1');
+      viewer.close();
+      assert.deepEqual(urls.revoked, ['blob:test/1']);
+    },
+  },
+  {
     name: 'not kept: no View screenshot, the existing text',
     async run() {
       // Capture storage off when it was sent.
@@ -138,6 +162,22 @@ const cases: Case[] = [
       const page = pageRow(row(message({ screenshotUrl: route })), { screenshotGone: true });
       assert.equal(page.screenshotAvailable, false);
       assert.equal(page.screenshotNotSaved, false);
+    },
+  },
+  {
+    name: 'a 404 before the connection was admitted (gateway restart): not final, Try again',
+    async run() {
+      const fetcher = new FakeFetch();
+      const viewer = new ScreenshotViewerState(fetcher.fetch, new FakeUrls());
+      viewer.open(request([], 'Trip', false));
+      fetcher.answer(0).reject(new ScreenshotRefused(404));
+      await settled();
+      assert.deepEqual(viewer.state, {
+        kind: 'failed',
+        title: 'Trip',
+        message: viewerTexts.unreachable,
+        canRetry: true,
+      });
     },
   },
   {
@@ -276,13 +316,23 @@ test('screenshot: the bridge opens only a kept screenshot of the shown conversat
   bridge.openScreenshot(conversation, 'missing');
   assert.equal(opened.length, 0);
 
+  // Asked before this connection's snapshot arrived: a 404 is not final.
   bridge.openScreenshot(conversation, 'kept@0');
   assert.equal(opened.length, 1);
   assert.equal(opened[0].path, route);
   assert.equal(opened[0].title, 'Trip');
+  assert.equal(opened[0].gone(), false);
 
-  // Gone: not opened again.
-  opened[0].gone();
+  // The connection's snapshot (a new engine object): requests are admitted.
+  store.state = { ...store.state, engine: { paused: false } };
+  for (const listener of listeners) {
+    listener();
+  }
   bridge.openScreenshot(conversation, 'kept@0');
-  assert.equal(opened.length, 1);
+  assert.equal(opened.length, 2);
+
+  // Gone while admitted: final, and not opened again.
+  assert.equal(opened[1].gone(), true);
+  bridge.openScreenshot(conversation, 'kept@0');
+  assert.equal(opened.length, 2);
 });

@@ -360,6 +360,27 @@ const cases: Case[] = [
     },
   },
   {
+    name: 'a continuation refused because the call changed: Try again reads that page afresh',
+    async run(h) {
+      await h.until('a closed group', (tools) => tools !== undefined);
+      h.act('toggle');
+      const first = await h.requested(1);
+      first.resolve(page(first, 'a'.repeat(8192), { next: { index: 0, offset: 8192 } }));
+      await h.until('page 1', (tools) => tools?.next === true);
+      h.act('next');
+      const second = await h.requested(2);
+      assert.equal(second.parameters.callRevision, 'call-0');
+      second.reject(Error('Tool output changed; reload this page.'));
+      await h.until('the refusal', (tools) => tools?.failed === true);
+      h.act('reload');
+      const third = await h.requested(3);
+      // The same position, without the call revision that was refused.
+      assert.equal(third.parameters.index, 0);
+      assert.equal(third.parameters.offset, 8192);
+      assert.equal(third.parameters.callRevision, undefined);
+    },
+  },
+  {
     name: 'opened while the turn runs and more calls arrive: the page stays, newer output is offered',
     async run(h) {
       h.store.put(
@@ -506,4 +527,28 @@ test('tool details: a page that takes longer than the deadline fails with Try ag
   await microtasks();
   assert.equal(h.tools()!.status, toolTexts.timedOut);
   assert.equal(h.tools()!.reload, 'Try again');
+});
+
+test('tool details: Try again after a later page timed out asks for that page', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = new Harness();
+  context.mock.timers.tick(100);
+  await microtasks();
+  h.act('toggle');
+  const first = h.toolRequests()[0];
+  first.resolve(page(first, 'a'.repeat(8192), { next: { index: 0, offset: 8192 } }));
+  await microtasks();
+  context.mock.timers.tick(100);
+  await microtasks();
+  assert.equal(h.tools()!.next, true);
+  h.act('next');
+  assert.equal(h.toolRequests().length, 2);
+  context.mock.timers.tick(toolPageDeadlineMilliseconds);
+  context.mock.timers.tick(100);
+  await microtasks();
+  assert.equal(h.tools()!.status, toolTexts.timedOut);
+  h.act('reload');
+  const retry = h.toolRequests()[2];
+  assert.equal(retry.parameters.index, 0);
+  assert.equal(retry.parameters.offset, 8192);
 });

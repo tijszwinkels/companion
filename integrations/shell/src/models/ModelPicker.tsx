@@ -40,6 +40,10 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
   const panel = useRef<HTMLDivElement>(null);
   // Whether this picker is still drawn, for answers that arrive later.
   const mounted = useRef(true);
+  // Whether the picker is open now (not as of the render a request started
+  // in), so a refusal that arrives after it was closed is still seen.
+  const openNow = useRef(open);
+  openNow.current = open;
 
   const choice = modelChoice(session, state, { admitted, changing, showAll });
 
@@ -117,10 +121,11 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
       if (failure instanceof Error) {
         message = failure.message;
       }
-      if (mounted.current) {
+      if (mounted.current && openNow.current) {
         setRefusal(message);
       } else {
-        // The reader moved on: still say that the change did not happen.
+        // The picker was closed or the reader moved on: still say that the
+        // change did not happen.
         store.toast(message, 'error');
       }
     } finally {
@@ -145,6 +150,16 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
           event.preventDefault();
           event.stopPropagation();
           closeToButton();
+        }
+      }}
+      onFocusOut={(event) => {
+        // Keyboard focus moved on to another control of the page (Tab past
+        // the picker's last control): the picker closes, so it never stays
+        // open where Escape can no longer reach it. Focus leaving the
+        // window (no next element) keeps it open.
+        const next = event.relatedTarget as Node | null;
+        if (open && next && !event.currentTarget.contains(next)) {
+          setOpen(false);
         }
       }}
     >

@@ -860,8 +860,11 @@ running` or `· failed or stopped`) and asks for nothing.
    shown page again; Copy page copies it. A page replaces the one shown.
 4. One request per group at a time; the actions wait while it is on its
    way. A failure (the listener's refusal in its words, a lost answer, or no
-   answer within 10 s) is shown with **Try again**, which repeats the
-   failed request. Nothing is retried by itself.
+   answer within 10 s) is shown with **Try again**, which asks again for the
+   page that failed: the same call and offset, read afresh with the group's
+   current revision (without the call revision a Next page named, which the
+   listener would refuse again if the call changed meanwhile). Nothing is
+   retried by itself.
 5. While the turn runs and more calls arrive, the group's count follows and
    the page shown stays, with "New tool output is available. Refresh this
    page to update it." above its status line.
@@ -884,11 +887,12 @@ scrolling up gets its refusal, as on the desktop.
 
 `test/shell/tool-details.test.ts` plays the rule's table through the real
 bridge with a stand-in Store: closed; opening; loaded one page; more pages
-(next page in the call, the next call, From start); failed and retried;
+(next page in the call, the next call, From start); failed and retried
+(also a refused continuation, read afresh);
 opened while the turn still runs and more calls arrive; the conversation
 switched and back; closed and reopened under the same ID; disconnected while
 loading and back; plus closing an open group, a row without stored calls and
-the deadline. `test/shell/details-browser.test.ts` opens a group in the real
+the deadline (also on a later page, which Try again asks for again). `test/shell/details-browser.test.ts` opens a group in the real
 page against the gateway and listener and pages through it.
 
 ### Screenshots
@@ -912,7 +916,12 @@ The rule:
 4. **Removed since the message was drawn** (the gateway answers 404): the
    viewer says "Companion no longer has this screenshot." and the row then
    shows "screenshot unavailable" without the control, for that
-   conversation lifetime.
+   conversation lifetime. A 404 counts as removed only for a request made
+   and answered while requests are admitted: the gateway grants a
+   connection its screenshots with the snapshot it relays, so a request
+   before that (right after a gateway restart, for example) can be refused
+   for a screenshot that is still there; it is shown like a lost connection
+   (rule 6), with Try again.
 5. **Fetch refused** (401, 403 or another refusal): "Companion did not allow
    this browser to load the screenshot.", no Try again.
 6. **Disconnected** (the gateway cannot be reached, or a server error): "Could
@@ -920,8 +929,8 @@ The rule:
    again.
 7. **Closed** by its × button, by Escape or by a click outside the image
    (beside it or on the backdrop), and by browser Back. Focus returns to
-   where it was (View screenshot). Closing aborts a request on its way and
-   revokes the image's `blob:` address.
+   where it was (View screenshot), or to the bar's heading when that control
+   is gone (rule 4). Closing aborts a request on its way.
 8. **A second one opened** replaces the first: its request is aborted and its
    image revoked. The viewer also closes when another conversation or
    lifetime is shown, and on sign-out.
@@ -932,13 +941,15 @@ in the `Authorization: Bearer` header, `credentials: 'omit'`, `cache:
 'no-store'` and `referrerPolicy: 'no-referrer'` (`fetchScreenshot` in
 `../mobile/src/screenshots.ts`, shared with the phone panel). Its address is
 the bare route, without the token or any query. The image is shown from a
-`blob:` address made from the answer, which holds only the image, works only
-in this document and is revoked when the viewer closes or shows another
-one. So:
+`blob:` address made from the answer, which holds only the image and works
+only in this document; it is revoked as soon as the image element has
+loaded it (the element keeps showing what it decoded), and otherwise when
+the viewer closes or shows another one. So:
 
 - **No URL carries the token**: neither the request's address nor the
-  image's; opening or copying the image's address elsewhere gets nothing
-  once it is revoked, and never a credential.
+  image's. The image's address leads nowhere once the image is shown, so
+  opening it in another tab or copying it gets nothing, and never a
+  credential.
 - **No cache**: the gateway answers `Cache-Control: private, no-store`, and
   the request asks for no caching too.
 - **No referrer**: the gateway sends `Referrer-Policy: no-referrer`, the
@@ -953,15 +964,17 @@ one. So:
 The gateway's Content-Security-Policy is unchanged: `img-src 'self' blob:`
 already allows the image.
 
-`test/shell/screenshot-viewer.test.ts` plays the rule's table (kept; not kept;
-removed since drawn; fetch refused; disconnected; closed; a second one
-opened) against the viewer's state and the row data, with the bridge's
+`test/shell/screenshot-viewer.test.ts` plays the rule's table (kept; its
+address revoked once loaded; not kept; removed since drawn; a 404 before
+the connection was admitted; fetch refused; disconnected; closed; a second
+one opened) against the viewer's state and the row data, with the bridge's
 checks. `test/shell/details-browser.test.ts` opens a kept screenshot in the
 real page, closes it each of the three ways with focus back on View
 screenshot, checks that the image requests' addresses are exactly the bare
-route, that the image's `blob:` address is revoked, that the page's address
-and storage are unchanged, and that a screenshot deleted on the listener's
-side ends as "screenshot unavailable".
+route, that the image's `blob:` address is revoked while it is shown, that
+the page's address and storage are unchanged, and that a screenshot deleted
+on the listener's side ends as "screenshot unavailable" with focus on the
+bar's heading.
 
 ### Model picker
 
@@ -994,7 +1007,8 @@ The rule:
 5. A choice sends `set-agent-model` for this conversation; one at a time
    ("Changing the model…"). **The change is refused**: the listener's
    words, and the picker shows the conversation's model again. If the
-   reader has moved on, the refusal is a toast.
+   picker was closed meanwhile (or the reader moved on), the refusal is a
+   toast.
 6. **Changed elsewhere** (the desktop, a phone): the conversation's next
    update shows it here, in the button and the picker.
 7. Nothing can be chosen while not connected (after reconnecting, once the
@@ -1004,7 +1018,8 @@ The rule:
    conversation lifetime: another conversation starts with it closed.
 9. Keyboard: the button opens and closes it (Enter, Space); Tab moves
    through its controls; the model list is a native select; Escape closes it
-   and returns focus to the button. A click outside closes it. At 420 px it
+   and returns focus to the button. A click outside closes it, and so does
+   keyboard focus moving on to another control of the page. At 420 px it
    stays inside the window.
 
 `test/shell/model-choice.test.ts` plays the rule's table for the data it
@@ -1013,7 +1028,8 @@ choice, changed elsewhere, the list not read yet, loading or failed, a
 change on its way, not connected). `test/shell/details-browser.test.ts`
 covers the rows that need the page against the real gateway and listener:
 opened by keyboard, Show all models, a change during a running turn reaching
-the listener, a refusal shown, Escape with focus back, a change made
+the listener, a refusal shown, Escape with focus back, a refusal arriving after
+the picker was closed (a toast), Tab out of the picker closing it, a change made
 elsewhere appearing, the settings screen and Previous sessions without a
 picker, and a Claude Code conversation's models and fixed effort.
 
