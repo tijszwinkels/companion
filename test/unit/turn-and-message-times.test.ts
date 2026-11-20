@@ -21,6 +21,9 @@ import { desktopFixture, stopped, waitFor } from '../desktop-fixture.ts';
 import { callTool, harnessFixture } from '../harness-fixture.ts';
 import { deferred, frame, signal } from '../helpers.ts';
 import { remoteFixture } from '../remote-fixture.ts';
+import { WidgetRenderer } from '../../src/widgets/renderer.ts';
+import { WidgetService } from '../../src/widgets/service.ts';
+import type { WidgetRecord } from '../../src/widgets/types.ts';
 
 /**
  * Turn times (`turnStartedAt`, `lastTurnDurationMs`), message creation times
@@ -181,6 +184,8 @@ test('several attempts inside one backend run are one turn and one measurement',
   });
   await fixture.sessions.idle();
 
+  // Assertions inside the script would fail the turn, not the test.
+  assert.equal(fixture.view(id).status, 'completed');
   assert.equal(fixture.runs.length, 1);
   assert.equal(fixture.view(id).lastTurnDurationMs, 2_500);
 });
@@ -256,6 +261,8 @@ for (const harness of harnesses) {
     releaseFirst.resolve();
     await fixture.sessions.idle();
 
+    // Assertions inside the scripts would fail the turn, not the test.
+    assert.equal(fixture.view(id).status, 'completed');
     assert.equal(fixture.runs.length, 2);
     assert.equal(fixture.view(id).turnStartedAt, undefined);
     assert.equal(fixture.view(id).lastTurnDurationMs, 700);
@@ -1027,4 +1034,83 @@ test('a recovered timer notice keeps the same time on every reopen and restart',
     assert.equal(notice.createdAt, scheduledAt);
     await instance.close();
   }
+});
+
+/** Describes a widget from its props, so that no browser is started. */
+class SummaryRenderer extends WidgetRenderer {
+  override async describe(record: WidgetRecord): Promise<string> {
+    return String(record.props.title);
+  }
+}
+
+test('a widget row repaired after a failed close gets no invented time', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const id = '5e1f2a3b-4c5d-4e6f-8a7b-0123456789ab';
+  await writeConversation(fixture.directory, oldFormatConversation(id));
+
+  // A widget committed for the conversation, without a row in its
+  // transcript: as when the display snapshot was interrupted.
+  const widgets = new WidgetService(
+    join(fixture.directory, '.companion-widgets'),
+    async () => {},
+    undefined,
+    new SummaryRenderer(),
+  );
+  let widgetId = '';
+  try {
+    const lease = await widgets.lease(id, new AbortController().signal);
+    const response = await fetch(lease.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${lease.token}` },
+      body: JSON.stringify({
+        method: 'publish',
+        widget: 'todo',
+        requestId: 'repair',
+        props: { title: 'Repaired widget', items: [] },
+        presentation: { placement: 'inline' },
+      }),
+    });
+    assert.equal(response.status, 200);
+    widgetId = ((await response.json()) as { id: string }).id;
+  } finally {
+    await widgets.close();
+  }
+  const rowId = 'widget:' + widgetId;
+
+  // Reopening repairs the row without a time.
+  clock.advance(60_000);
+  await fixture.sessions.loadPrevious();
+  await fixture.sessions.reopen(id);
+  const reopened = fixture.view(id).messages.find((message) => message.id === rowId);
+  assert.ok(reopened, 'the widget row is repaired on reopen');
+  assert.equal('createdAt' in reopened, false);
+
+  // As if reopen's repair had failed: the live transcript lacks the row.
+  // Reaches into the private conversation state on purpose.
+  const live = (
+    fixture.sessions as unknown as { sessions: Map<string, { view: AgentSession }> }
+  ).sessions.get(id)!.view;
+  live.messages = live.messages.filter((message) => message.id !== rowId);
+
+  // A close whose save fails repairs the row again; the retry saves it.
+  clock.advance(60_000);
+  const saves = holdSaves(fixture.sessions);
+  saves.hold();
+  const closing = fixture.sessions.remove(id);
+  try {
+    await waitFor(() => saves.waiting() === 1);
+  } finally {
+    saves.release(Error('Synthetic save failure'));
+  }
+  await assert.rejects(closing, /Synthetic save failure/);
+  const repaired = fixture.view(id).messages.find((message) => message.id === rowId);
+  assert.ok(repaired, 'the failed close restores the widget row');
+  assert.equal('createdAt' in repaired, false);
+
+  await fixture.sessions.remove(id);
+  const saved = await savedJson(fixture.directory, id);
+  const savedRow = saved.messages.find((message: AgentMessage) => message.id === rowId);
+  assert.ok(savedRow);
+  assert.equal('createdAt' in savedRow, false);
 });

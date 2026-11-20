@@ -2177,14 +2177,16 @@ export class AgentSessions implements InspectableModule {
 
   /**
    * Add or update one row of the conversation and schedule its publication.
-   * `createdAt` is the creation time for a new row when listener code knows
-   * a better one than now (a timer notice); it is ignored for an update.
+   * `createdAt` is the creation time for a new row: absent means now; a
+   * number is a time listener code knows better (a timer notice); `null`
+   * means unknown, for a repaired row created at an unrecorded time. It is
+   * ignored for an update, which keeps the existing row's time.
    */
   private message(
     session: RunningSession,
     message: AgentMessage,
     persistTool = false,
-    createdAt?: number,
+    createdAt?: number | null,
   ): void {
     if (message.kind === 'tool' && !message.toolGroup) {
       const existingGroup = this.store.tools.groupFor(session.view.id, message.id);
@@ -2218,12 +2220,18 @@ export class AgentSessions implements InspectableModule {
     }
 
     // Creation time belongs to the row, not to this update: a new row is
-    // stamped now (or at `createdAt`); an update keeps the existing row's
+    // stamped now (or per `createdAt`); an update keeps the existing row's
     // time, or its absence for a row saved before times were recorded. A
     // time inside `message` (for example from a backend) is never trusted.
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
     if (index < 0) {
-      message = withCreationTime(message, createdAt ?? this.clock());
+      let newRowCreatedAt: number | undefined;
+      if (createdAt === undefined) {
+        newRowCreatedAt = this.clock();
+      } else if (createdAt !== null) {
+        newRowCreatedAt = createdAt;
+      }
+      message = withCreationTime(message, newRowCreatedAt);
       session.view.messages.push(message);
     } else {
       message = withCreationTime(message, session.view.messages[index].createdAt);
@@ -2350,10 +2358,13 @@ export class AgentSessions implements InspectableModule {
         try {
           session.application = await this.widgets.applications.descriptor(id);
           for (const { record, reference } of await this.widgets.restored(id)) {
-            this.message(session, {
+            // Like reopen's repair: a widget row missing from the transcript
+            // was committed at an unrecorded time and gets none.
+            const widgetRow = {
               ...chatMessage('widget:' + record.id, 'assistant', record.text),
               widget: reference,
-            });
+            };
+            this.message(session, widgetRow, false, null);
           }
         } catch (error) {
           this.log(
