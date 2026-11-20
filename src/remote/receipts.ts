@@ -12,6 +12,8 @@
  * mutations automatically, which is the primary guard.
  */
 
+import { createHash } from 'node:crypto';
+
 import type { GatewayMessage } from './protocol.ts';
 
 export const receiptLifetimeMilliseconds = 10 * 60 * 1000;
@@ -132,9 +134,15 @@ export class ReceiptBook {
   }
 }
 
-/** Stable text for comparing two requests, ignoring key order and the ID. */
+/**
+ * Stable digest for comparing two requests, ignoring key order and the ID.
+ * A receipt keeps only this SHA-256 digest (64 hex characters), not the
+ * request text, so a device's 512 receipts stay small whatever was sent
+ * (a follow-up may be 8,000 characters, up to 48,000 once escaped).
+ */
 export function requestFingerprint(request: Record<string, unknown>): string {
   const { requestId: _ignored, ...rest } = request;
   const keys = Object.keys(rest).sort();
-  return JSON.stringify(keys.map((key) => [key, rest[key]]));
+  const canonical = JSON.stringify(keys.map((key) => [key, rest[key]]));
+  return createHash('sha256').update(canonical).digest('hex');
 }

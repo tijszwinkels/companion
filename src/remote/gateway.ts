@@ -57,11 +57,12 @@ import {
   maximumClientMessageBytes,
   maximumConnectionsPerDevice,
   maximumRemoteConnections,
+  maximumUnauthenticatedBytes,
   type OverloadedReason,
 } from './protocol.ts';
 import { ReceiptBook } from './receipts.ts';
 import { closeCodes, Relay } from './relay.ts';
-import { DeviceRequestRate } from './request-rate.ts';
+import { DeviceRequestRate, draftEditRateLimit } from './request-rate.ts';
 import { tailscaleRefusal } from './tailscale-headers.ts';
 import { acquireLifetimeLock, claimUnixSocket, type UnixSocketClaim } from './unix-socket-claim.ts';
 
@@ -270,6 +271,8 @@ export class Gateway {
   private readonly devices: DeviceStore;
   private readonly receipts = new ReceiptBook();
   private readonly requestRate = new DeviceRequestRate();
+  /** Draft edits have their own per-device bucket (see request-rate.ts). */
+  private readonly draftEditRate = new DeviceRequestRate(undefined, draftEditRateLimit);
   /** Every relay that still holds a listener connection, with its device ID. */
   private readonly relays = new Map<Relay, string>();
   private readonly screenshots = new Map<string, Set<string>>();
@@ -892,11 +895,15 @@ export class Gateway {
       return;
     }
 
-    this.sockets.handleUpgrade(request, socket, head, (phone) => this.authenticate(phone));
+    this.sockets.handleUpgrade(request, socket, head, (phone) => this.authenticate(phone, socket));
   }
 
-  /** Wait for the first message: it must carry a valid device token. */
-  private authenticate(phone: WebSocket): void {
+  /**
+   * Wait for the first message: it must carry a valid device token.
+   * `socket` is the connection under the WebSocket, used only to count what
+   * the client sends before it has authenticated.
+   */
+  private authenticate(phone: WebSocket, socket: Duplex): void {
     // Protocol errors (oversized payload, invalid UTF-8, bad frame) are emitted
     // on the WebSocket even before authentication. Contain them to this client.
     phone.on('error', () => phone.terminate());
@@ -905,6 +912,22 @@ export class Gateway {
     phone.once('close', () => this.alive.delete(phone));
     this.unauthenticated++;
     let settled = false;
+
+    // `maxPayload` admits 128 KiB messages, for drafts. Until its relay
+    // starts, a socket may send no more than one 32 KiB message in all
+    // (`maximumUnauthenticatedBytes`, counted on the wire), so the larger
+    // bound never lets an unauthenticated socket make the gateway hold more
+    // than before. That includes a socket still closing after it was refused
+    // (not paired, timed out, over a connection limit). Counted first
+    // (prepended), before the WebSocket parser buffers the bytes.
+    let unauthenticatedBytes = 0;
+    const countUnauthenticated = (chunk: Buffer | string) => {
+      unauthenticatedBytes += Buffer.byteLength(chunk);
+      if (unauthenticatedBytes > maximumUnauthenticatedBytes) {
+        phone.terminate();
+      }
+    };
+    socket.prependListener('data', countUnauthenticated);
 
     const finish = () => {
       if (!settled) {
@@ -924,10 +947,12 @@ export class Gateway {
     phone.once('message', async (data, isBinary) => {
       let token: unknown;
       let incrementalSessions = false;
+      let drafts = false;
       try {
         const message = JSON.parse(String(data));
         token = !isBinary && message?.type === 'auth' ? message.token : undefined;
         incrementalSessions = !isBinary && message?.incrementalSessions === true;
+        drafts = !isBinary && message?.drafts === true;
       } catch {
         token = undefined;
       }
@@ -958,7 +983,9 @@ export class Gateway {
         return;
       }
 
-      this.startRelay(phone, device, incrementalSessions);
+      // Authenticated and admitted: from here on `maxPayload` bounds each message.
+      socket.off('data', countUnauthenticated);
+      this.startRelay(phone, device, { incrementalSessions, drafts });
     });
   }
 
@@ -994,7 +1021,15 @@ export class Gateway {
     return false;
   }
 
-  private startRelay(phone: WebSocket, device: PairedDevice, incrementalSessions: boolean): void {
+  /**
+   * Relay one authenticated connection. `capabilities` are what its client
+   * asked for in its `auth` message (see AuthMessage in protocol.ts).
+   */
+  private startRelay(
+    phone: WebSocket,
+    device: PairedDevice,
+    capabilities: { incrementalSessions: boolean; drafts: boolean },
+  ): void {
     phone.send(
       JSON.stringify({ type: 'authenticated', deviceId: device.id, deviceName: device.name }),
     );
@@ -1005,7 +1040,9 @@ export class Gateway {
       deviceId: device.id,
       receipts: this.receipts,
       takeToken: () => this.requestRate.take(device.id),
-      incrementalSessions,
+      takeDraftToken: () => this.draftEditRate.take(device.id),
+      incrementalSessions: capabilities.incrementalSessions,
+      drafts: capabilities.drafts,
       allowScreenshot: (deviceId, sessionId) => {
         let allowed = this.screenshots.get(deviceId);
         if (!allowed) {
@@ -1016,9 +1053,10 @@ export class Gateway {
       },
       onClosed: () => {
         this.relays.delete(relay);
-        // The rate bucket lives as long as one of the device's connections.
+        // The rate buckets live as long as one of the device's connections.
         if (!this.deviceConnected(device.id)) {
           this.requestRate.forget(device.id);
+          this.draftEditRate.forget(device.id);
         }
       },
       log: this.options.log,

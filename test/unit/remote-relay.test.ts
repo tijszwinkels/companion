@@ -322,6 +322,7 @@ test('a report forwarded while the phone is closing is never visible', async (co
     deviceId: 'device',
     receipts: new ReceiptBook(),
     takeToken: () => true,
+    takeDraftToken: () => true,
     allowScreenshot: () => {},
     onClosed: () => {},
     log: () => {},
@@ -350,4 +351,56 @@ test('a report forwarded while the phone is closing is never visible', async (co
   await waitFor(() => received.length === 2);
   assert.equal(received[1].action, 'panel-state');
   assert.equal(received[1].visible, false);
+});
+
+test('draft events reach only connections that asked for drafts, and panel reports say so', async (context) => {
+  // A listener that misbehaves: it sends draft events and a desktop focus
+  // request to every connection. The gateway's own filter must hold.
+  const reports: Record<string, unknown>[] = [];
+  const setup = await fixture(context, (socket, request) => {
+    if (request.action === 'client-role') {
+      roleAccepted(socket);
+      return;
+    }
+    if (request.action === 'panel-state') {
+      reports.push(request);
+    }
+    const events = [
+      {
+        type: 'draft-snapshot',
+        sequence: 1,
+        drafts: [{ id: 'x', text: 'secret', source: '', sequence: 1 }],
+      },
+      { type: 'draft', id: 'x', text: 'secret', source: '', sequence: 2 },
+      { type: 'agent-draft-focus', id: 'x' },
+    ];
+    for (const event of events) {
+      socket.write(JSON.stringify(event) + '\n');
+    }
+    socket.write(
+      JSON.stringify({ type: 'result', requestId: request.requestId, result: 'panel-recorded' }) +
+        '\n',
+    );
+  });
+  const url = `ws://${new URL(setup.origin).host}/api/socket`;
+  const host = await connectPhone(url, setup.paired.token, setup.origin, false, { drafts: true });
+  const plain = await connectPhone(url, setup.paired.token, setup.origin);
+
+  for (const client of [host, plain]) {
+    await waitFor(() => client.messages.some((message) => message.type === 'authenticated'));
+    client.send({ requestId: 'report', action: 'panel-state', id: '', visible: true });
+    await client.reply('report');
+  }
+  await delay(100);
+
+  const engineTypes = (client: typeof host) =>
+    client.messages
+      .filter((message) => message.type === 'engine')
+      .map((message) => (message as { message: { type: string } }).message.type);
+  assert.deepEqual(engineTypes(host), ['draft-snapshot', 'draft']);
+  assert.deepEqual(engineTypes(plain), []);
+
+  // The gateway declared only the opted-in connection a draft host.
+  assert.equal(reports.length, 2);
+  assert.deepEqual(reports.map((report) => report.draftHost).sort(), [true, undefined].sort());
 });

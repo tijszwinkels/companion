@@ -169,7 +169,8 @@ page a secure context.
   [`protocol.ts`](protocol.ts); unknown actions/fields are refused before reaching
   the listener. Desktop-bound actions (paste, typed Activity submission with a
   window target, media reports, composer focus, draft replies) are not exposed and
-  are refused again by the listener for remote connections.
+  are refused again by the listener for remote connections. Draft editing is
+  available only to a connection that asked for it ([drafts](#drafts)).
 - **Content.** The app is served with a strict CSP (`default-src 'none'`, self
   scripts/styles only, no inline script, `frame-ancestors 'none'`). Transcript text
   is rendered as text or sanitized Markdown, never as HTML.
@@ -190,17 +191,29 @@ page a secure context.
   limits are exported as `maximumConnectionsPerDevice` and
   `maximumRemoteConnections` from [`protocol.ts`](protocol.ts). Eight
   unauthenticated sockets (the upgrade is refused with 503 beyond that or beyond
-  16 sockets in all), 32 KiB client messages, 30-request bursts at 10/s per
+  16 sockets in all). Client messages of at most 128 KiB
+  (`maximumClientMessageBytes`), enough for a 16,000-unit draft written as
+  escaped JSON; a larger message closes that connection. Before its relay
+  starts, a socket may send at most 32 KiB + 8 bytes in all, counted on the
+  wire with frame headers (`maximumUnauthenticatedBytes`: one 32 KiB message
+  in one frame, the bound every message had before drafts), so an
+  unauthenticated socket, or one still closing after it was refused, never
+  makes the gateway hold more than before; past it the socket is cut at once.
+  30-request bursts at 10/s per
   device, shared by all of that device's connections, so more tabs never raise
-  a device's rate ([`request-rate.ts`](request-rate.ts)); a device's bucket is
-  dropped when its last connection has closed. Each connection's output writes
+  a device's rate ([`request-rate.ts`](request-rate.ts)). Draft edits draw from
+  a separate bucket per device (bursts of 120 at 40/s, see [drafts](#drafts)).
+  A device's buckets are dropped when its last connection has closed.
+  Receipts keep a SHA-256 digest of each request, not its text. Each connection's output writes
   one message at a time and bounds the waiting queue to 16 MiB / 256 messages;
   a write stalled for 30 seconds disconnects it. With 8 connections the gateway
   may therefore hold up to 8 × 16 MiB of queued output at worst. Routine state snapshots
   coalesce behind a pending write; ordered events and receipts never do. The
   initial full snapshot is ordered and is not subject to the waiting-queue size
   cap (the upstream line limit still applies). A relay admits at most 32 pending
-  requests, waits at most 5 seconds for
+  requests, plus at most 120 pending draft edits counted apart (the device's
+  draft-edit burst, which a stalled network may deliver at once; the listener
+  answers each edit at once), waits at most 5 seconds for
   remote-role confirmation and 15 seconds for a request reply. Draining relays
   continue counting toward capacity and remain subject to revocation. Malformed
   WebSocket frames disconnect only that client. Compression is disabled.
@@ -262,7 +275,9 @@ snapshot or a queued phone write delivers `listenerTime` late by that wait, so
 the phone should refresh its clock offset from every later `state` message.
 
 Desktop-selection events (`agent-actions`, `agent-view-actions`, `agent-draft`,
-`agent-select`) are not relayed; the phone uses `remote-agent-actions` for its own selection.
+`agent-draft-focus`, `agent-select`) are not relayed; the phone uses
+`remote-agent-actions` for its own selection. `draft-snapshot` and `draft` are
+relayed only to [draft hosts](#drafts).
 
 A connection reports its selection with `panel-state` `{id, visible?}`.
 `visible` is a boolean: whether the page showing `id` is visible to the person
@@ -283,6 +298,98 @@ declared remote event set is forwarded, and initial snapshots stay at the gatewa
 until the listener confirms the remote role. Reopen and Activity-based starts
 open in the background on the desktop, just like typed phone starts. Activity-based
 starts reuse an existing saved screenshot; they do not capture a new one.
+
+## Drafts
+
+The listener keeps each conversation's unsent text, the **draft**, in memory
+([text-box drafts](../desktop/README.md#text-box-drafts-listener-owned-last-write-wins)).
+A remote connection can share those drafts with the desktop instead of keeping
+its own. It is opt-in per connection, uses the one remote role and needs no
+per-device grant.
+
+Rules:
+
+1. **Opting in.** A client asks in its first message:
+   `{"type":"auth","token":"…","drafts":true}`. For that connection, and only
+   for it, the gateway adds `"draftHost": true` to every `panel-state` it
+   forwards to the listener; the client cannot send `draftHost` itself. The
+   listener makes the connection a draft host at its first such report and
+   keeps it one until it disconnects. A client should send `panel-state` as
+   soon as it is authenticated (the phone already does). A connection that
+   never asks behaves exactly as before: `draft-set` is refused as "This
+   action is not available remotely", `pendingSend` and `draftHost` as unknown
+   fields, and no draft event reaches it.
+2. **Reading.** At its first report a draft host receives
+   `{"type":"engine","message":{"type":"draft-snapshot","sequence":12,"drafts":[{"id","text","source","sequence"}]}}`
+   with every nonempty draft, then a `draft` event
+   (`{"type":"draft","id","text","source","sequence","editId"?}`) for every
+   accepted change, wherever it came from: a desktop editor, another remote
+   draft host, an agent's proposal, a send that cleared it (empty `text`).
+   `editId` is present only on the connection that wrote the change.
+3. **Writing.** A draft host sends
+   `{"type":"request","requestId":"…","action":"draft-set","id":"<conversation>","text":"…","editId":"…"}`
+   with at most 16,000 UTF-16 units of text and a 1–100 character `editId`.
+   The listener accepts it for any conversation it knows, open or saved; the
+   last edit it receives wins, from any connection, as on the desktop. The
+   result is `{"accepted":true,"sequence":13}` or
+   `{"accepted":false,"reason":"…"}`. A refused or unanswered edit changes
+   nothing; the client keeps the text and shows it as not saved. Draft edits
+   have **no receipt**: they are never answered from a receipt and the
+   client must never resend one by itself (an old edit replayed over newer
+   text would be wrong). An edit sent before the connection's first
+   `panel-state` is refused as "This action is only available on the desktop".
+4. **Rate.** Draft edits draw from their own bucket per device, shared by
+   its connections and separate from the request bucket: bursts of 120, then
+   40 per second (`draftEditBurst`, `draftEditsPerSecond` in
+   [`request-rate.ts`](request-rate.ts)). One keyboard types into one tab at a
+   time; holding a key repeats about 30 times a second, and four tabs each at
+   a fast 10 keystrokes a second add up to 40, so ordinary typing is never
+   refused while a flood is. A refused edit is answered
+   `{"type":"error","requestId","action":"draft-set","message":"Too many draft edits; this edit was not saved"}`;
+   the connection stays open and its request bucket is untouched.
+5. **Agent proposals.** An agent's proposed draft reaches a remote draft host
+   as an ordinary `draft` change whose `source` carries the label the desktop
+   shows (the proposing conversation's title, or `external (unverified) · …`).
+   It is stored when any draft host, desktop or remote, is connected
+   (`offline` only when none is). `focus: true` moves only a desktop panel; a
+   remote connection never receives `agent-draft-focus` and never becomes the
+   navigation owner.
+6. **Pending send.** A draft host may add `"pendingSend":"<conversation>"`
+   (or `""`) to `panel-state` while its `send-agent` from that conversation
+   waits for a reply, as the desktop does. Agent proposals for it are a
+   `conflict` meanwhile. Each report replaces the previous value.
+7. **Sending.** When a draft host's `send-agent` is accepted, the listener
+   clears the draft if it still equals exactly the sent text, as for a desktop
+   send. A send from a connection that is not a draft host leaves the draft
+   alone. `send-agent` allows 1–8,000 characters for every remote connection
+   (the desktop composer's bound; it used to be 4,000).
+8. **Lifetime.** Drafts live in the listener's memory only. They survive
+   conversations being closed and reopened and remote connections coming and
+   going: a reconnecting draft host gets a fresh `draft-snapshot`. A listener
+   restart loses them; relays close with 4503 and a reconnect starts from an
+   empty snapshot.
+
+Everything else remote connections cannot do stays refused, draft host or
+not: `paste`, `submit-utterance`, `media-playback`, `composer-focus`,
+`agent-draft-result`, `set-capture-storage`, `set-application-chat-read`,
+`set-application-chat-send`, `coding-defaults`, `set-coding-defaults`,
+`agent-browser-open-result`, `agent-present-result`, `start-recording`,
+`stop-recording`, `recording-append-result` and `cancel-agent-wake`, and the
+events `agent-actions`, `agent-view-actions`, `agent-select`, `agent-present`,
+`agent-draft-focus`, `recording-append` and `recording-finished`.
+
+What a paired device can now read and change:
+
+|                                            | Before | Connection without `drafts` | Draft host (`drafts: true`)                       |
+| ------------------------------------------ | ------ | --------------------------- | ------------------------------------------------- |
+| Read conversations' unsent drafts          | no     | no                          | yes, all of them (`draft-snapshot`, `draft`)      |
+| Change a draft                             | no     | no                          | yes, any open or saved conversation (`draft-set`) |
+| Block agent proposals while its send waits | no     | no                          | yes (`pendingSend`)                               |
+| Clear a draft by sending it                | no     | no                          | yes, only if it equals the sent text              |
+| See which agent proposed a draft           | no     | no                          | yes, the desktop's label (`source`)               |
+| Move the desktop's selection or focus      | no     | no                          | no                                                |
+| Follow-up length (`send-agent`)            | 4,000  | 8,000                       | 8,000                                             |
+| Largest message                            | 32 KiB | 128 KiB                     | 128 KiB                                           |
 
 Authenticated `{ "type": "ping" }` messages receive `{ "type": "pong" }`
 without contacting the listener. The phone checks every 15 seconds. After 30
@@ -331,6 +438,13 @@ slot freed by a close, a revoked device, unauthenticated sockets, the listener's
 16 slots and the shared per-device request rate) and
 `test/unit/listener-unread.test.ts` the unread mark through the gateway and the
 `visible` validation, both against the real gateway and listener.
+`test/unit/remote-drafts.test.ts` tables the [draft rules](#drafts) (who edits
+× what happens), and `test/unit/remote-draft-limits.test.ts` the message sizes
+for authenticated and unauthenticated sockets, the draft-edit rate, receipts
+and the send length, both against the real gateway and listener.
+`test/unit/remote-plain-unchanged.test.ts` compares everything a connection
+without `drafts` receives in a scripted session with a transcript recorded
+on the revision before remote drafts (`test/fixtures/remote-plain-transcript.json`).
 `test/unit/remote-serve-check.test.ts` covers the Serve matcher, the read
 retries, and the CLI flags and warnings against a fake `tailscale` script. Real Tailscale is never used.
 The supervised service (`src/remote/service/`) has its own tests; see

@@ -97,7 +97,7 @@ test('remote starts, agent tools and wakes keep the 4000-character bound', async
   );
 });
 
-test('the desktop socket carries 8000-character composer messages but remote panels keep 4000', async (context) => {
+test('the desktop socket and remote panels carry 8000-character follow-ups', async (context) => {
   const { sessions, view } = await harnessFixture(context);
   const desktop = await desktopFixture(async () => Buffer.alloc(0), sessions);
   context.after(() => desktop.close());
@@ -117,9 +117,10 @@ test('the desktop socket carries 8000-character composer messages but remote pan
   context.after(() => remote.close());
   remote.send({ action: 'client-role', role: 'remote', requestId: 'role' });
   assert.equal((await remote.reply('client-role')).result, 'role-recorded');
-  remote.send({ action: 'send-agent', id, text: 'p'.repeat(4001) });
-  assert.match(String((await remote.reply('send-agent')).message), /1–4000 characters/);
-  remote.send({ action: 'send-agent', id, text: 'p'.repeat(4000) });
+  // Remote follow-ups allow the desktop composer's 8000 characters too.
+  remote.send({ action: 'send-agent', id, text: 'p'.repeat(8001) });
+  assert.match(String((await remote.reply('send-agent')).message), /1–8000 characters/);
+  remote.send({ action: 'send-agent', id, text: 'p'.repeat(8000) });
   assert.equal((await remote.reply('send-agent')).result, 'submitted');
   // New-session defaults are a desktop-only setting.
   remote.send({ action: 'coding-defaults' });
@@ -129,7 +130,7 @@ test('the desktop socket carries 8000-character composer messages but remote pan
   const questions = view(id).messages.filter((message) => message.kind === 'user');
   assert.deepEqual(
     questions.map((message) => message.text.length),
-    [frame.utterance.length, 8000, 4000],
+    [frame.utterance.length, 8000, 8000],
   );
   assert.equal(questions[1].text, escaped, 'Escaped text arrives unchanged');
 });

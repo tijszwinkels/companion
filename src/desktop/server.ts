@@ -23,6 +23,16 @@ export const maximumStallMilliseconds = 30_000;
  */
 export const maximumClients = 16;
 
+/**
+ * Longest request line a client may send, in characters (UTF-16 units after
+ * decoding). A 16,000-unit `draft-set` (`draftEditLimit` in draft-store.ts)
+ * may expand to six JSON characters per unit (`\u0001`), 96,000 plus the
+ * request's other fields; an 8,000-character `send-agent` to 48,000. Only an
+ * unfinished line is held, so with 16 clients the listener buffers at most
+ * 16 × (128 Ki characters + one read) of incoming requests.
+ */
+export const maximumRequestLineCharacters = 128 * 1024;
+
 /** Per-connection outbound bounds; tests use smaller values. */
 export interface OutboundLimits {
   backlogBytes: number;
@@ -363,20 +373,21 @@ export class DesktopServer {
     socket.on('data', (chunk: string) => {
       buffered += chunk;
 
-      // An 8000-character composer message (MAX_DIRECT_USER_MESSAGE_LENGTH)
-      // may expand to six JSON characters per code unit: 48,000 plus the
-      // request's other fields. Keep framing bounded without rejecting
-      // escaped text.
-      if (buffered.length > 65536) {
-        socket.destroy();
-        return;
-      }
-
+      // Framing is bounded per line (`maximumRequestLineCharacters`), not per
+      // read: one read may carry several complete requests, such as a burst
+      // of draft edits relayed by the gateway, which together exceed the
+      // bound while each line is well within it. A line over the bound, or
+      // an unfinished one that has already grown past it, disconnects.
       let newline: number;
 
       while ((newline = buffered.indexOf('\n')) >= 0) {
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
+
+        if (line.length > maximumRequestLineCharacters) {
+          socket.destroy();
+          return;
+        }
 
         let value: unknown;
 
@@ -442,14 +453,16 @@ export class DesktopServer {
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
-        // Panel reports and visibility withdrawals are the exception: their
-        // handlers never wait, so each finishes in the microtask right after
-        // this read (in arrival order, like every request), and they neither
-        // need nor take a slot. A report therefore never makes a following
-        // request in the same read look busy, and the gateway can withdraw a
-        // departed phone's visibility while that phone's requests fill the
-        // slots.
-        const neverWaits = action === 'panel-state' || action === 'withdraw-visibility';
+        // Panel reports, visibility withdrawals and draft edits are the
+        // exception: their handlers never wait, so each finishes in the
+        // microtask right after this read (in arrival order, like every
+        // request), and they neither need nor take a slot. A report therefore
+        // never makes a following request in the same read look busy, the
+        // gateway can withdraw a departed phone's visibility while that
+        // phone's requests fill the slots, and keystrokes that arrive in one
+        // read (or while another request runs) are all kept.
+        const neverWaits =
+          action === 'panel-state' || action === 'withdraw-visibility' || action === 'draft-set';
         if (!neverWaits && ((control && controlsInFlight >= 16) || (!control && handling))) {
           this.send(connection, {
             type: 'error',
@@ -488,6 +501,10 @@ export class DesktopServer {
           });
 
         this.requests.add(request);
+      }
+
+      if (buffered.length > maximumRequestLineCharacters) {
+        socket.destroy();
       }
     });
   }
