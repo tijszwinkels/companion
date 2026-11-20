@@ -1,8 +1,8 @@
 /**
- * The paired browser shell's arrangement, the same at every window width:
+ * The paired browser shell's arrangement:
  *
- *   [conversation list] | [bar above the chat               ]
- *    strip or full list | [   chat in a centred column       ]
+ *   [conversation list] | [bar above the chat               ] | [Activity]
+ *    strip or full list | [   chat in a centred column       ] | [column  ]
  *
  * - The conversation list (../list/ConversationList.tsx) and the divider
  *   that changes its width (../layout/Divider.tsx), both hidden by the ☰
@@ -13,29 +13,116 @@
  *   column at most 860 px wide, centred), Previous sessions, or an empty
  *   view when nothing is selected. Sign out is offered in the bar when no
  *   conversation is shown, as on slice 1's list page.
+ * - The Activity column (../activity/ActivityColumn.tsx), hidden at first,
+ *   shown and hidden by the ☰ at the bar's right end (the column's own ☰
+ *   while shown) and by the list's Activity entry; its width and shown
+ *   state are remembered too (../layout/useActivityLayout.ts). In a wide
+ *   window it sits beside the chat with its own divider; in a narrow one it
+ *   lies over the chat (../layout/activity-width.ts).
+ *
+ * The workspace also owns the new-activity marker and the Activity
+ * requests on their way; both belong to this pairing and go with it.
  */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import { Chat } from '../../../session-apps/chat/Chat.tsx';
 import type { ChatStore } from '../../../session-apps/chat/store.ts';
+import { ActivityColumn, activityColumnId } from '../activity/ActivityColumn.tsx';
+import { NewActivity } from '../activity/new-activity.ts';
+import { ActivityRequests } from '../activity/requests.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
+import {
+  activityMaximum,
+  activityMinimum,
+  activityReservedWidth,
+  activityWidthFromKey,
+  activityWidthFromPointer,
+  isNarrowWindow,
+  sideColumnWidth,
+} from '../layout/activity-width.ts';
 import { Divider } from '../layout/Divider.tsx';
+import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width.ts';
+import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
 import { isWorking } from '../list/entries.ts';
 import { ChatBar } from './ChatBar.tsx';
 import { PreviousSessions } from './PreviousSessions.tsx';
 
+/** The Activity parts of the bar: whether the column is shown, the marker, the ☰. */
+interface ActivityBar {
+  shown: boolean;
+  newActivity: number;
+  onShow: () => void;
+  button: { current: HTMLButtonElement | null };
+}
+
 export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge }) {
   const state = useAppState();
-  const layout = useListLayout();
+  const activity = useActivityLayout();
+  const windowWidth = activity.windowWidth;
+  const overlay = isNarrowWindow(windowWidth);
+  // In a wide window the column takes its width from the list's window
+  // first (activity-width.ts); the list's own rules apply to the rest.
+  const layout = useListLayout((listShown) =>
+    activityReservedWidth(activity.preference, activity.shown, windowWidth, listShown),
+  );
+  const columnWidth = sideColumnWidth(activity.preference, windowWidth, layout.shown);
+
+  // One marker and one set of pending requests per pairing: the workspace
+  // is replaced on sign-out. The marker follows every render (each Store
+  // change and each change of the column's shown state); `observe` is
+  // idempotent, so observing during rendering is safe.
+  const marker = useRef(new NewActivity());
+  marker.current.observe(state, activity.shown);
+  const newActivity = marker.current.count;
+  const [requests] = useState(() => new ActivityRequests());
+
+  // Keyboard focus follows the ☰ that was pressed: showing the column from
+  // the bar moves focus to the column's ☰, hiding it from there back to the
+  // bar's (which reappears). The list's Activity entry keeps its focus.
+  const barActivityButton = useRef<HTMLButtonElement>(null);
+  const columnActivityButton = useRef<HTMLButtonElement>(null);
+  const focusAfterToggle = useRef<'bar' | 'column' | ''>('');
+  // A layout effect: focus moves in the same frame the buttons change, so
+  // the reader's next key press already reaches the new button.
+  useLayoutEffect(() => {
+    if (focusAfterToggle.current === 'column' && activity.shown) {
+      columnActivityButton.current?.focus();
+    }
+    if (focusAfterToggle.current === 'bar' && !activity.shown) {
+      barActivityButton.current?.focus();
+    }
+    focusAfterToggle.current = '';
+  }, [activity.shown]);
+
+  function showFromBar() {
+    focusAfterToggle.current = 'column';
+    activity.setShown(true);
+  }
+
+  function hideFromColumn() {
+    focusAfterToggle.current = 'bar';
+    activity.setShown(false);
+  }
 
   let selected: AgentSession | undefined;
   if (state.selected) {
     selected = state.sessions.get(state.selected);
+  }
+
+  // Over the chat, the column starts right of the list and its divider.
+  let overlayLeft = 0;
+  if (layout.shown) {
+    overlayLeft = layout.width + 1;
+  }
+
+  let activityValueText = `${columnWidth} pixels`;
+  if (columnWidth === activityMinimum) {
+    activityValueText = `${columnWidth} pixels, the narrowest`;
   }
 
   return (
@@ -46,11 +133,20 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
             appearance={layout.appearance}
             width={layout.width}
             bridge={props.bridge}
+            activityShown={activity.shown}
+            newActivity={newActivity}
+            onToggleActivity={activity.toggleShown}
           />
           <Divider
             width={layout.width}
+            narrowest={stripWidth}
             widest={layout.widest}
+            label="Conversation list width"
+            title="Drag to change the width of the conversation list"
+            valueText={listValueText(layout.width)}
             controls={conversationListId}
+            fromPointer={(clientX, container) => widthFromPointer(clientX - container.left)}
+            fromKey={widthFromKey}
             onWidth={layout.setWidth}
             onRemember={layout.remember}
           />
@@ -66,10 +162,51 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
           bridge={props.bridge}
           listShown={layout.shown}
           onToggleList={layout.toggleShown}
+          activity={{
+            shown: activity.shown,
+            newActivity,
+            onShow: showFromBar,
+            button: barActivityButton,
+          }}
         />
       </main>
+      {activity.shown && !overlay && (
+        <Divider
+          width={columnWidth}
+          narrowest={activityMinimum}
+          widest={sideColumnWidth(activityMaximum, windowWidth, layout.shown)}
+          label="Activity width"
+          title="Drag to change the width of Activity"
+          valueText={activityValueText}
+          className="activity-divider"
+          controls={activityColumnId}
+          fromPointer={(clientX, container) => activityWidthFromPointer(container.right - clientX)}
+          fromKey={activityWidthFromKey}
+          onWidth={activity.setWidth}
+          onRemember={activity.remember}
+        />
+      )}
+      {activity.shown && (
+        <ActivityColumn
+          overlay={overlay}
+          width={columnWidth}
+          left={overlayLeft}
+          bridge={props.bridge}
+          requests={requests}
+          onHide={hideFromColumn}
+          hideButton={columnActivityButton}
+        />
+      )}
     </div>
   );
+}
+
+/** The list divider's value in words. */
+function listValueText(width: number): string {
+  if (width === stripWidth) {
+    return 'Strip';
+  }
+  return `Full list, ${width} pixels`;
 }
 
 /** The bar and what is selected below it. */
@@ -80,6 +217,7 @@ function MainArea(props: {
   bridge: GatewayChatBridge;
   listShown: boolean;
   onToggleList: () => void;
+  activity: ActivityBar;
 }) {
   const { selected } = props;
 
@@ -95,6 +233,10 @@ function MainArea(props: {
           state={stateText}
           listShown={props.listShown}
           onToggleList={props.onToggleList}
+          activityShown={props.activity.shown}
+          newActivity={props.activity.newActivity}
+          onShowActivity={props.activity.onShow}
+          activityButton={props.activity.button}
         />
         <div class="chat-column">
           {/* A new chat view for each conversation lifetime: the same ID
@@ -114,6 +256,10 @@ function MainArea(props: {
           state=""
           listShown={props.listShown}
           onToggleList={props.onToggleList}
+          activityShown={props.activity.shown}
+          newActivity={props.activity.newActivity}
+          onShowActivity={props.activity.onShow}
+          activityButton={props.activity.button}
         >
           <SignOut />
         </ChatBar>
@@ -132,6 +278,10 @@ function MainArea(props: {
         state=""
         listShown={props.listShown}
         onToggleList={props.onToggleList}
+        activityShown={props.activity.shown}
+        newActivity={props.activity.newActivity}
+        onShowActivity={props.activity.onShow}
+        activityButton={props.activity.button}
       >
         <SignOut />
       </ChatBar>

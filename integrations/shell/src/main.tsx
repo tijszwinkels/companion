@@ -60,8 +60,9 @@ const transcriptView: TranscriptView = {
   },
 };
 
-// No Activity view yet, so Activity history is never requested.
-const store = new Store({ activity: false });
+// The Store reads this listener run's Activity history for the Activity
+// column (the phone panel's default).
+const store = new Store();
 const bridge = new GatewayChatBridge(store, transcriptView);
 const chat = new ChatStore();
 chat.attach(bridge);

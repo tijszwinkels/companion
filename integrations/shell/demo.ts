@@ -9,6 +9,12 @@
  *   - the real remote gateway on loopback, serving the built browser shell
  *     (integrations/shell/dist) through its `appDirectory` option.
  *
+ * The listener run has a few registered intents and synthetic Activity
+ * entries of different kinds (typed into an application, ignored, a started
+ * conversation, audio only, not saved); listening starts paused for media,
+ * and a new synthetic entry is heard every 40 seconds (six in all), so the
+ * new-activity marker can be seen while the Activity column is hidden.
+ *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
  * screen or microphone, or binds a non-loopback address. Ctrl+C stops
@@ -28,10 +34,11 @@ import { parseArgs } from 'node:util';
 import { parseChoices } from '../../src/agents/choices.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { chatMessage, type AgentBackend, type AgentMessage } from '../../src/agents/types.ts';
-import type { UserSensorFrame } from '../../src/core/frame.ts';
+import type { UserSensorFrame, UserSensorProcessor } from '../../src/core/frame.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
+import { UserSensorRouter } from '../../src/core/router.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
-import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
+import { CaptureStoragePolicy, notAdmitted } from '../../src/capture-storage/policy.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 
@@ -87,7 +94,7 @@ try {
    * A spoken request with a synthetic screenshot. The shell does not show
    * screenshots yet, so its message is labelled "screenshot unavailable".
    */
-  function frame(utterance: string): UserSensorFrame {
+  function frame(utterance: string, application = 'org.example.Editor'): UserSensorFrame {
     const frameId = nextFrameId;
     nextFrameId++;
     return {
@@ -99,7 +106,7 @@ try {
         width: 1,
         height: 1,
         capturedAt: Date.now(),
-        window: { address: '0xdemo', app: 'org.example.Editor', title: 'Synthetic window' },
+        window: { address: '0xdemo', app: application, title: 'Synthetic window' },
       },
     };
   }
@@ -250,6 +257,140 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   );
   await runtime.start();
   runtimeStarted = true;
+
+  // ---- Intents and Activity ------------------------------------------------------
+
+  /** A registered intent that does nothing (the demo never routes speech). */
+  function demoProcessor(name: string, label: string, prefixes: string[], instruction?: string) {
+    const processor: UserSensorProcessor = {
+      id: name,
+      label,
+      dependencies: {},
+      name,
+      instruction,
+      prefixes,
+      async process() {},
+      subscribe(router) {
+        router.register(this);
+      },
+    };
+    return processor;
+  }
+
+  const router = new UserSensorRouter(
+    {
+      detector: {
+        id: 'demo-detector',
+        label: 'No detector (demo)',
+        dependencies: {},
+        async detect() {
+          throw Error('The demo does not classify speech');
+        },
+      },
+    },
+    () => {},
+    runtime.activity,
+  );
+  const processors = [
+    demoProcessor('IGNORE', 'Ignore', [], 'Not addressed to Companion'),
+    demoProcessor('SEND_TEXT_TO_APPLICATION', 'Type text', ['insert'], 'Dictation'),
+    demoProcessor('START_CODING_AGENT_SESSION', 'Coding session', ['new session'], 'Coding task'),
+    demoProcessor('QUICK_QUESTION', 'Quick question', ['quick question'], 'Short question'),
+  ];
+  for (const processor of processors) {
+    processor.subscribe(router);
+  }
+  await runtime.connectRouter(router);
+
+  const activity = runtime.activity;
+
+  /**
+   * One finished synthetic utterance in this run's Activity. Its screenshot
+   * is saved (capture storage is on, in memory only), so it can be labelled
+   * and a coding session can start from it.
+   */
+  async function heard(
+    utterance: string,
+    intent: string,
+    outcome: 'sent' | 'ignored' | 'started',
+    application: string,
+  ): Promise<void> {
+    const observed = frame(utterance, application);
+    activity.transcribed?.({ ...observed, storage: activity.admitCapture?.() });
+    await activity.screenshotCaptured?.(observed.id, observed.screenshot);
+    activity.intentRecognized?.(observed.id, intent);
+    activity.outcome?.(observed.id, outcome);
+    activity.finished?.(observed.id);
+  }
+
+  await heard(
+    'Please send the draft to Sam by Friday.',
+    'SEND_TEXT_TO_APPLICATION',
+    'sent',
+    'org.gnome.Evolution',
+  );
+  await heard('Hmm, where did I put that file', 'IGNORE', 'ignored', 'org.gnome.Nautilus');
+  await heard(
+    'New session fix the failing list test',
+    'START_CODING_AGENT_SESSION',
+    'started',
+    'code',
+  );
+
+  // Audio only: no speech was recognised, so there is no text to act on.
+  const silent = frame('', 'org.example.Editor');
+  activity.transcribed?.({
+    ...silent,
+    source: 'audio-only',
+    storage: activity.admitCapture?.(),
+  });
+  activity.outcome?.(silent.id, 'error');
+  activity.finished?.(silent.id);
+
+  // Not saved: heard while capture storage was off, so it cannot be labelled.
+  const unsaved = frame('Quick question what is the capital of Norway', 'org.mozilla.firefox');
+  activity.transcribed?.({ ...unsaved, storage: notAdmitted });
+  activity.intentRecognized?.(unsaved.id, 'QUICK_QUESTION');
+  activity.outcome?.(unsaved.id, 'started');
+  activity.finished?.(unsaved.id);
+
+  // Paused for media, as when music plays on the computer; Resume overrides it.
+  pause.setMediaPlaying(true);
+
+  // Every 40 seconds something new is heard, six times.
+  const laterUtterances = [
+    'Insert see you at the stand-up tomorrow',
+    'Quick question how long do eggs boil',
+    'That was not for you',
+    'New session add a test for the empty case',
+    'Insert thanks, looks good to me',
+    'Never mind',
+  ];
+  const laterIntents = [
+    'SEND_TEXT_TO_APPLICATION',
+    'QUICK_QUESTION',
+    'IGNORE',
+    'START_CODING_AGENT_SESSION',
+    'SEND_TEXT_TO_APPLICATION',
+    'IGNORE',
+  ];
+  let later = 0;
+  const laterTimer = setInterval(() => {
+    if (later >= laterUtterances.length) {
+      clearInterval(laterTimer);
+      return;
+    }
+    const intent = laterIntents[later];
+    let outcome: 'sent' | 'ignored' | 'started' = 'started';
+    if (intent === 'SEND_TEXT_TO_APPLICATION') {
+      outcome = 'sent';
+    } else if (intent === 'IGNORE') {
+      outcome = 'ignored';
+    }
+    void heard(laterUtterances[later], intent, outcome, 'org.example.Editor');
+    later++;
+  }, 40_000);
+  controller.signal.addEventListener('abort', () => clearInterval(laterTimer));
 
   // Several conversations for the list: coding questions, a quick question
   // and one whose turn keeps running (see scriptedRun). Their answers

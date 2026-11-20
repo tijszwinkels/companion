@@ -4,10 +4,16 @@
  * state as text (`working…` while its agent works on a turn, else `ready`).
  * Pages other than a conversation (Previous sessions, nothing selected) put
  * their own controls at its right end instead of a state.
+ *
+ * At its right end, while the Activity column is hidden, a second ☰ shows
+ * the column; it carries the green dot while new Activity entries are
+ * marked (../activity/new-activity.ts). While the column is shown, its own
+ * header has the ☰ that hides it, in the same place.
  */
 
-import type { ComponentChildren } from 'preact';
+import type { ComponentChildren, Ref } from 'preact';
 
+import { activityColumnId } from '../activity/ActivityColumn.tsx';
 import { conversationListId } from '../list/ConversationList.tsx';
 
 export function ChatBar(props: {
@@ -16,6 +22,13 @@ export function ChatBar(props: {
   state: string;
   listShown: boolean;
   onToggleList: () => void;
+  /** Whether the Activity column is shown (then this bar has no Activity ☰). */
+  activityShown: boolean;
+  /** How many Activity entries are new (the green dot while not zero). */
+  newActivity: number;
+  onShowActivity: () => void;
+  /** The ☰ that shows the Activity column, for moving keyboard focus to it. */
+  activityButton: Ref<HTMLButtonElement>;
   children?: ComponentChildren;
 }) {
   let toggleLabel = 'Show the conversation list';
@@ -40,6 +53,41 @@ export function ChatBar(props: {
       </h1>
       {props.state && <span class="chat-bar-state">{props.state}</span>}
       {props.children}
+      {!props.activityShown && (
+        <ActivityButton
+          newActivity={props.newActivity}
+          onShow={props.onShowActivity}
+          button={props.activityButton}
+        />
+      )}
     </header>
+  );
+}
+
+/** The ☰ at the bar's right end that shows the Activity column. */
+function ActivityButton(props: {
+  newActivity: number;
+  onShow: () => void;
+  button: Ref<HTMLButtonElement>;
+}) {
+  let label = 'Show Activity';
+  if (props.newActivity === 1) {
+    label = 'Show Activity, 1 new entry';
+  } else if (props.newActivity > 1) {
+    label = `Show Activity, ${props.newActivity} new entries`;
+  }
+
+  return (
+    <button
+      ref={props.button}
+      class="bar-button activity-toggle"
+      aria-label={label}
+      aria-expanded={false}
+      aria-controls={activityColumnId}
+      title={label}
+      onClick={props.onShow}
+    >
+      ☰{props.newActivity > 0 && <span class="activity-new" aria-hidden="true" />}
+    </button>
   );
 }

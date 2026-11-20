@@ -19,6 +19,11 @@
  *   reports the new order;
  * - Previous sessions: the entry at the bottom (`Store.showPrevious`).
  *
+ * Above the conversations, with a separator, the Activity entry shows and
+ * hides the Activity column (the same column as the ☰ at the bar's right
+ * end; it is not a page and the selection stays). It carries the listening
+ * state and the new-activity marker (../activity/).
+ *
  * Closing and reordering are offered only while requests are admitted
  * (connected, after this connection's snapshot; `bridge.admitted`), the
  * same rule as the chat page's own Close.
@@ -26,12 +31,15 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
+import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import {
   insertionTarget,
   scrollEdgeUnits,
   scrollStepUnits,
 } from '../../../session-apps/RailOrder.mjs';
+import { activityColumnId } from '../activity/ActivityColumn.tsx';
+import { listeningView, type ListeningView } from '../activity/listening.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
 import type { ListAppearance } from '../layout/list-width.ts';
 import { entryLabel, listEntries, type ListEntry } from './entries.ts';
@@ -54,6 +62,12 @@ export function ConversationList(props: {
   /** Shown width in CSS pixels. */
   width: number;
   bridge: GatewayChatBridge;
+  /** Whether the Activity column is shown. */
+  activityShown: boolean;
+  /** How many Activity entries are new (the green dot while not zero). */
+  newActivity: number;
+  /** Show the Activity column if hidden, else hide it. */
+  onToggleActivity: () => void;
 }) {
   const store = useStore();
   const state = useAppState();
@@ -348,6 +362,13 @@ export function ConversationList(props: {
       style={{ width: `${props.width}px` }}
       aria-label="Conversations"
     >
+      <ActivityListEntry
+        listening={listeningView(state)}
+        shown={props.activityShown}
+        newActivity={props.newActivity}
+        onToggle={props.onToggleActivity}
+      />
+      <div class="list-separator" aria-hidden="true" />
       <nav
         class="conversation-scroll"
         ref={scroller}
@@ -466,7 +487,73 @@ function PreviousEntry(props: { count: number; shown: boolean; onShow: () => voi
       </span>
       <span class="entry-text">
         <span class="entry-title">Previous sessions</span>
-        <span class="entry-last-line">{summary}</span>
+        {/* The listening state is the entry's description (also in the
+            strip, where it is not drawn). */}
+        <span class="entry-last-line" id="activity-list-summary">
+          {summary}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The Activity entry at the top of the list: shows and hides the Activity
+ * column. The microphone is struck through while listening is paused or
+ * Companion is not running; the full list adds the listening state and how
+ * many entries are new.
+ */
+function ActivityListEntry(props: {
+  listening: ListeningView;
+  shown: boolean;
+  newActivity: number;
+  onToggle: () => void;
+}) {
+  const { listening } = props;
+  let summary = listening.title;
+  if (props.newActivity > 0) {
+    summary = `${summary} · ${props.newActivity} new`;
+  }
+
+  let label = 'Show Activity';
+  if (props.shown) {
+    label = 'Hide Activity';
+  }
+
+  const classes = ['activity-list-entry'];
+  if (props.shown) {
+    classes.push('selected');
+  }
+  if (props.newActivity > 0) {
+    classes.push('unread');
+  }
+
+  let icon = <MicIcon size={16} />;
+  if (listening.paused || !listening.running) {
+    icon = <MicOffIcon size={16} />;
+  }
+
+  return (
+    <button
+      class={classes.join(' ')}
+      aria-label={label}
+      aria-describedby="activity-list-summary"
+      aria-expanded={props.shown}
+      aria-controls={activityColumnId}
+      title={label}
+      onClick={props.onToggle}
+    >
+      <span class="entry-badge" aria-hidden="true">
+        <span class="entry-glyph">{icon}</span>
+        {props.newActivity > 0 && <span class="entry-unread" />}
+      </span>
+      <span class="entry-text" aria-hidden="true">
+        <span class="entry-title">Activity</span>
+        {/* The listening state is the entry's description (also in the
+            strip, where it is not drawn). */}
+        <span class="entry-last-line" id="activity-list-summary">
+          {summary}
+        </span>
       </span>
     </button>
   );

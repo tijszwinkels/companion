@@ -92,8 +92,8 @@ const draftKey = 'companion.remote.drafts';
 export interface StoreOptions {
   /**
    * Read Activity history pages (`activity-history`) for the current run.
-   * On by default (the phone panel shows Activity); the browser shell, which
-   * has no Activity view yet, turns it off so it never requests them.
+   * On by default (the phone panel and the browser shell show Activity).
+   * Off, the Store never requests them.
    */
   activity?: boolean;
 }
@@ -309,11 +309,19 @@ export class Store {
     this.update({});
   }
 
-  /** One admitted send per draft, even when its component unmounts/remounts. */
-  async sendDraft(id: string, profile: 'coding' | 'quickQuestion' = 'coding'): Promise<void> {
+  /**
+   * One admitted send per draft, even when its component unmounts/remounts.
+   * For the new-conversation draft (`new`) it resolves to the started
+   * conversation's ID when the listener names one (the browser shell selects
+   * it), otherwise to undefined.
+   */
+  async sendDraft(
+    id: string,
+    profile: 'coding' | 'quickQuestion' = 'coding',
+  ): Promise<string | undefined> {
     const text = this.draft(id);
     if (!text.trim() || this.state.sends.get(id)?.pending) {
-      return;
+      return undefined;
     }
     const revision = this.draftRevisions.get(id) ?? 0;
     const pageRevision = this.pageRevision;
@@ -326,7 +334,7 @@ export class Store {
           ? await this.request('start-agent', { text, profile }, { quiet: true })
           : await this.request('send-agent', { id, text }, { quiet: true });
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
-        return;
+        return undefined;
       }
       const unchangedDraft = (this.draftRevisions.get(id) ?? 0) === revision;
       if (unchangedDraft) {
@@ -346,9 +354,13 @@ export class Store {
       ) {
         this.open((result as { id: string }).id);
       }
+      if (id !== 'new') {
+        return undefined;
+      }
+      return startedId(result);
     } catch (error) {
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
-        return;
+        return undefined;
       }
       const explanation = error instanceof Error ? error.message : String(error);
       const message =
@@ -356,6 +368,7 @@ export class Store {
           ? `${explanation} The draft remains here; check the conversation before sending it again.`
           : `${explanation} The draft remains here.`;
       this.update({ sends: new Map(this.state.sends).set(id, { pending: false, error: message }) });
+      return undefined;
     }
   }
 
@@ -751,6 +764,18 @@ export class Store {
   private setActivity(change: Partial<ActivityState>): void {
     this.update({ activity: { ...this.state.activity, ...change } });
   }
+}
+
+/** The conversation ID a `start-agent` answer names (a preview answer names none). */
+function startedId(result: unknown): string | undefined {
+  if (typeof result !== 'object' || result === null) {
+    return undefined;
+  }
+  const id = (result as { id?: unknown }).id;
+  if (typeof id === 'string' && id) {
+    return id;
+  }
+  return undefined;
 }
 
 /**

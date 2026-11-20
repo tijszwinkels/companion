@@ -99,6 +99,7 @@ body {
   --selection: #292e42;
   --unread: #91dbb5;
   --tint: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --danger: #ef5350;
   --mono: monospace;
   --prose: sans-serif;
 }
@@ -106,6 +107,7 @@ body {
 /* ---- Workspace: list | divider | main ----------------------------------------- */
 
 .workspace {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -690,6 +692,423 @@ body {
 
 .error {
   color: #f7768e;
+}
+
+/* ---- Activity: the list's entry, the bar's ☰ and the column ------------------- */
+
+/* The line between the Activity entry and the conversations (the agreed
+   design's separator, in the bar's border color). */
+.list-separator {
+  flex: none;
+  height: 1px;
+  margin: 0 10px;
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+
+/* The Activity entry: Previous sessions' entry at the top of the list. */
+.activity-list-entry {
+  position: relative;
+  display: flex;
+  flex: none;
+  margin: 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity-list-entry:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.activity-list-entry.selected {
+  background: var(--selection);
+}
+
+.activity-list-entry.unread {
+  border-color: color-mix(in srgb, var(--unread) 25%, transparent);
+  background: color-mix(in srgb, var(--unread) 12%, transparent);
+}
+
+.activity-list-entry.selected .entry-glyph,
+.activity-list-entry.selected .entry-title {
+  color: var(--accent);
+}
+
+.activity-list-entry.unread .entry-title {
+  color: var(--unread);
+}
+
+.activity-list-entry .entry-glyph {
+  display: flex;
+}
+
+.activity-list-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.conversations.strip .activity-list-entry {
+  flex-direction: column;
+  align-items: center;
+  min-height: 62px;
+  padding: 3px;
+}
+
+.conversations.full .activity-list-entry {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px;
+}
+
+/* The ☰ for Activity (the list's ☰ size) and its green dot (the rail's
+   unread dot). */
+.bar-button.activity-toggle {
+  position: relative;
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.activity-new {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--unread);
+}
+
+/* The column beside the chat; in a narrow window over it (`.overlay`). */
+.activity-column {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.activity-column.overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
+/* The header has the bar's height and border, so the two line up. */
+.activity-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 20%, transparent);
+  font-family: var(--mono);
+}
+
+.activity-header h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.activity-header .activity-toggle {
+  margin-left: auto;
+}
+
+/* A small label (the agreed design's pill, in the current colors). */
+.activity-pill {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 10px;
+  background: var(--selection);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.activity-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 16px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.activity-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.activity-scroll::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: var(--muted);
+}
+
+.activity-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.activity-scroll h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.activity-count {
+  color: var(--muted);
+}
+
+/* Muted notes and red errors (chat/styles.css `.note`, `.note.error`). */
+.activity-hint {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.activity-error {
+  margin: 0;
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Listening: the microphone button and the state beside it. */
+.activity-listening {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.activity-mic {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--selection);
+  color: var(--accent);
+}
+
+.activity-listening.paused .activity-mic {
+  color: var(--muted);
+}
+
+.activity-mic:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.activity-mic:disabled {
+  opacity: 0.45;
+}
+
+.activity-listening.speaking .activity-mic {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.activity-listening-text {
+  min-width: 0;
+}
+
+.activity-listening-title {
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+/* Start a conversation: the chat composer's text box. */
+.activity-start {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activity-start h3 {
+  margin: 0;
+}
+
+.activity-start textarea {
+  width: 100%;
+  height: 76px;
+  resize: none;
+  padding: 8px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: var(--tint);
+  color: var(--foreground);
+  font-family: var(--prose);
+  font-size: 16px;
+}
+
+.activity-start textarea::placeholder {
+  color: var(--muted);
+}
+
+.activity-start textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.activity-choice-group {
+  display: flex;
+  gap: 4px;
+}
+
+.activity-start-button {
+  margin-left: auto;
+}
+
+/* A chosen option and a pressed label: the accent, as the hovered close button. */
+.bar-button[aria-pressed='true'] {
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.bar-button.danger {
+  color: var(--danger);
+}
+
+.activity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.activity-feedback {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* History: entries as the chat's message panels (chat/styles.css `.panel`). */
+.activity-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--tint);
+  overflow-wrap: anywhere;
+}
+
+/* "When · decision · outcome" and the application, as a message heading. */
+.activity-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+/* The heading's text wraps; × stays at its right end. */
+.activity-heading-text {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  min-height: 24px;
+}
+
+.activity-utterance {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--prose);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+/* Labelled entries: the desktop history card's correct and incorrect tones. */
+.activity-label {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.activity-entry.correct .activity-label {
+  color: #65d6a1;
+}
+
+.activity-entry.incorrect .activity-label {
+  color: #f17f90;
+}
+
+/* Delete: the desktop history card's ×, at the heading's right end. */
+.activity-delete {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.activity-delete:hover:not(:disabled) {
+  background: var(--selection);
+  color: #f17f90;
+}
+
+.activity-delete:disabled {
+  opacity: 0.4;
+}
+
+.activity-choice,
+.activity-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activity-confirm p {
+  margin: 0;
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 /* ---- Toasts -------------------------------------------------------------------- */

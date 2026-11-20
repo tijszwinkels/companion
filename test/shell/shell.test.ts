@@ -107,8 +107,9 @@ test(
     assert.match(policy, /style-src 'self'/);
     assert.doesNotMatch(policy, /unsafe-inline|unsafe-eval/);
 
-    // A finished Activity entry: the shell has no Activity view and must not
-    // request Activity history (the phone panel does).
+    // A finished Activity entry: the shell reads this run's Activity
+    // history (for the Activity column), and nothing else for it while the
+    // column is hidden.
     const activity = fixture.desktop.runtime.activity;
     const observed = { ...frame, id: 41, utterance: 'Synthetic Activity entry' };
     activity.transcribed?.({ ...observed, storage: activity.admitCapture?.() });
@@ -156,9 +157,15 @@ test(
 
     assertOwnOrigin(fixture, page, sockets);
     await assertNoViolations(page);
-    // Only the actions this slice uses left the page.
-    for (const action of requestActions(sockets)) {
-      assert.ok(['panel-state'].includes(action), `unexpected request ${action}`);
+    // Only the actions this slice uses left the page: the selection report
+    // and the reading of Activity history.
+    const actions = requestActions(sockets);
+    assert.ok(actions.includes('activity-history'), 'Activity history is read');
+    for (const action of actions) {
+      assert.ok(
+        ['panel-state', 'activity-history'].includes(action),
+        `unexpected request ${action}`,
+      );
     }
   },
 );
