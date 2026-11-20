@@ -923,11 +923,13 @@ test('an application send revoked before it began keeps the previous duration, e
   assert.equal(fixture.view(id).lastTurnDurationMs, 100);
 
   const sends = replaceApplicationSends(fixture.sessions);
+  const events = recordEvents(fixture.sessions);
   const saves = holdSaves(fixture.sessions);
   saves.hold();
   fixture.sessions.followUp(id, 'From the application', signal(), applicationOrigin);
   try {
     await waitFor(() => saves.waiting() === 1);
+    assert.equal(typeof lastPublished(events, id).turnStartedAt, 'number');
     clock.advance(500);
     // The application service withdraws the send, as when its permission is
     // revoked. Reaches into the private callback on purpose.
@@ -937,6 +939,11 @@ test('an application send revoked before it began keeps the previous duration, e
       }
     ).withdrawApplicationChat.bind(fixture.sessions);
     withdraw(id, [{ receiptId: applicationOrigin.receiptId }]);
+
+    // The running time disappears at once, in events and snapshots, while
+    // the turn's startup (the held save) has not settled yet.
+    assert.equal(lastPublished(events, id).turnStartedAt, undefined);
+    assert.equal(fixture.view(id).turnStartedAt, undefined);
   } finally {
     saves.release(Error('Synthetic save failure'));
   }

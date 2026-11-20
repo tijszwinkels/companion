@@ -157,6 +157,8 @@ interface RunningSession {
    * never ran and keeps the previous turn's duration. Reset for every turn.
    */
   currentSendWithdrawn?: boolean;
+  /** The current turn's application send was admitted to the model. */
+  currentSendBegan?: boolean;
   /** The status and error that the latest `flush` published to clients. */
   publishedOutcome?: Pick<AgentSession, 'status' | 'error'>;
   /**
@@ -383,9 +385,17 @@ export class AgentSessions implements InspectableModule {
     for (const message of session.view.messages.filter(withdrawn)) {
       this.message(session, { ...message, state: 'error' });
     }
+    // Only never-started sends are withdrawn. When that is the current
+    // turn's own send, the model will never see it: stop showing a running
+    // time now, although the turn stays busy until its startup settles.
     const current = session.currentOrigin;
-    if (current?.kind === 'application-message' && ids.has(current.receiptId)) {
+    if (
+      current?.kind === 'application-message' &&
+      ids.has(current.receiptId) &&
+      !session.currentSendBegan
+    ) {
       session.currentSendWithdrawn = true;
+      delete session.view.turnStartedAt;
     }
     // A current pre-model wait is deliberately not aborted: its late gate will
     // skip it, then continue unrelated human input already in the FIFO.
@@ -1575,6 +1585,7 @@ export class AgentSessions implements InspectableModule {
     session.depth = message.origin?.depth ?? 0;
     session.currentOrigin = message.origin;
     session.currentSendWithdrawn = false;
+    session.currentSendBegan = false;
     session.controller = new AbortController();
     session.busy = true;
     // Every admitted message starts its own turn and its own measurement,
@@ -1808,6 +1819,7 @@ export class AgentSessions implements InspectableModule {
           return;
         }
         appSendBegan = true;
+        session.currentSendBegan = true;
       }
       if (wake) {
         this.wakes.transitionAttempt(wake, 'started');
@@ -2416,9 +2428,10 @@ export class AgentSessions implements InspectableModule {
       const chronological = [...wakes].sort((first, second) => first.createdAt - second.createdAt);
 
       // A notice missing from the transcript takes the time its timer was
-      // created (when it would have appeared while the tab was open), and the
-      // warning the time it was first raised. Reopening does not save, so a
-      // time taken from the clock here would change on every reopen.
+      // created (when it would have appeared while the tab was open), and a
+      // missing warning row the time of the current warning occurrence; an
+      // existing row keeps its own time. Reopening does not save, so a time
+      // taken from the clock here would change on every reopen.
       const notices: { notice: AgentMessage; createdAt: number | undefined }[] = [];
       for (const wake of chronological) {
         notices.push({ notice: this.wakeNotice(wake), createdAt: wake.createdAt });

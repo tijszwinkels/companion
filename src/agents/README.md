@@ -288,8 +288,9 @@ the harness:
 - A placeholder turn that runs nothing (application edits already delivered, or
   an application send withdrawn before it started, including by Stop or close
   while it was still starting) removes `turnStartedAt` and keeps the previous
-  turn's duration. An application send that fails while starting did start a
-  turn and is measured.
+  turn's duration. A send withdrawn by the application service removes
+  `turnStartedAt` at once, even while the turn is still starting. An
+  application send that fails while starting did start a turn and is measured.
 - Conversations are independent: each conversation's fields change only with its
   own turns.
 
@@ -316,8 +317,9 @@ every reopen: a missing timer notice takes its timer's creation time, the timer
 service warning the time this listener last raised one, and a missing widget
 row (committed earlier at an unrecorded time) none. Timer notices and the
 warning get those same times when they first appear in an open tab, so a
-timer notice has the same time live and after any restart, and a warning row
-never predates the warning it shows. The store drops a damaged saved time or duration (anything but a
+timer notice has the same time live and after any restart. A new warning row
+takes the time of the warning occurrence it first shows; later warnings update
+its text and keep that time. The store drops a damaged saved time or duration (anything but a
 non-negative safe integer) instead of refusing the conversation. Old archives
 are never rewritten for this; new fields are simply added on the next save.
 The session application chat-read projection (`session-apps/chat.ts`) does not
