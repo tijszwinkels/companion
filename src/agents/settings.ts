@@ -151,8 +151,14 @@ export async function loadAgentConfiguration(
  * `link`, unlike `rename`, fails when the name exists, so of several
  * simultaneous creators exactly one wins and the others keep its file.
  *
- * Cleanup: the temporary name is always removed. After a successful `link` the
- * published name still refers to the same contents.
+ * Cleanup: the temporary name is removed after success and after a failure; a
+ * crash in between can leave a hidden `.companion-agent.json.*.tmp` file that
+ * nothing reads. After a successful `link` the published name still refers to
+ * the same contents.
+ *
+ * Requirement: the agent directory's filesystem must support hard links, as
+ * for the coding-defaults writer. Without them the first load fails with the
+ * error from `link`; creating the file by hand still works.
  */
 async function createConfigurationFileIfMissing(directory: string, path: string): Promise<void> {
   // Every question loads the configuration, so skip the temporary file when
@@ -172,8 +178,10 @@ async function createConfigurationFileIfMissing(directory: string, path: string)
   // another file, and the hidden name keeps it out of the user's way.
   const temporary = join(directory, `.companion-agent.json.${randomUUID()}.tmp`);
 
+  // Opened outside the cleanup below: if this fails, the name is not ours.
+  const file = await open(temporary, 'wx', 0o600);
+
   try {
-    const file = await open(temporary, 'wx', 0o600);
     try {
       await file.writeFile(contents, 'utf8');
 
@@ -191,9 +199,15 @@ async function createConfigurationFileIfMissing(directory: string, path: string)
         throw error;
       }
     }
-  } finally {
+  } catch (error) {
+    // Report the original failure; a leftover hidden file is harmless next to it.
     await unlink(temporary).catch(() => {});
+    throw error;
   }
+
+  // The configuration is in place. An unexpected failure to remove the
+  // temporary name is reported rather than leaving files behind silently.
+  await unlink(temporary);
 }
 
 /**
