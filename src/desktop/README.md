@@ -1565,17 +1565,22 @@ at least one connection shows it on a visible page:
 Composer or keyboard focus is never required. A desktop report without
 `visible` (older adapters) counts as hidden. A connection that reported as a
 desktop panel can no longer declare the remote role. When a remote client leaves
-while its requests still drain, the gateway reports `visible: false` for its
-connection at once (see [the gateway](../remote/README.md#requests-receipts-and-reconnection)).
+while its requests still drain, the gateway sends `withdraw-visibility` for its
+connection at once (see [remote panels](#remote-panels)).
 Only open conversations count: closing a conversation drops every report of it
 (a remote connection's selection is cleared too, also for its controls), so
 after it is reopened a connection has to report it again to show or control it.
 
 **Setting.** When a turn completes successfully, exactly when the listener emits
 `agent-turn-completed` (after the turn's successful save), and no connection
-shows the conversation at that moment, the listener sets `unread: true`. The
-mark arrives in the same `agent-session` update as the completed status and is
-saved right after.
+shows the conversation at that moment, the listener sets `unread: true`. A
+connection that hides or shows the conversation while that save runs therefore
+counts as it is when the save has finished. The mark arrives in the same
+`agent-session` update as the completed status and is saved right after.
+
+Saving a changed mark rewrites only the `unread` field of the saved
+conversation, never the rest of the live conversation, so it cannot store a
+turn's status before that turn's own save has settled it.
 
 **Clearing.** The listener sets `unread: false` and saves it when a connection
 shows the conversation on a visible page: at the moment it selects it while
@@ -1632,6 +1637,12 @@ For a remote connection:
   `agent-draft-result` are refused: they act on the desktop's focused window,
   keyboard, media or composer drafts. So are `coding-defaults` and
   `set-coding-defaults`, which only the desktop Activity page shows.
+- `{"action":"withdraw-visibility"}` (remote connections only; desktop
+  connections are refused) makes the connection show no conversation for the
+  [unread mark](#unread-mark) and keeps its selection. The gateway sends it when
+  its client has left while that client's requests still drain. It names no
+  conversation and is idempotent, so it cannot be refused for a remote
+  connection; the result is `visibility-withdrawn`.
 - `send-agent` text keeps 1–4000 characters, matching the phone protocol.
 - `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
   starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
@@ -1648,9 +1659,11 @@ characters when the request carried one, for correlation of concurrent replies.
 The listener serves at most 16 socket clients at once, remote and desktop
 together; a 17th connection is closed before it receives anything. Each
 connection may have 16 control requests in flight; more are refused with
-"Previous request is still running". `panel-state` is always admitted: its
-handler never waits, so it cannot queue up, and a gateway withdrawing a departed
-client's visibility must not wait for that client's slow requests. The gateway
+"Previous request is still running". `panel-state` and `withdraw-visibility` are
+always admitted and take no slot: their handlers never wait, so each finishes
+right after the read that delivered it, in arrival order. A batch of reports
+therefore never makes a following request look busy, and a gateway withdrawing
+a departed client's visibility never waits for that client's slow requests. The gateway
 uses at most 8 of them (see [its limits](../remote/README.md#security-model)),
 which leaves 8 for desktop panels, observers and tools.
 The Unix socket remains the only listener transport; network access, pairing and

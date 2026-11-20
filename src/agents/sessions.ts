@@ -420,13 +420,16 @@ export class AgentSessions implements InspectableModule {
   }
 
   /**
-   * Save a conversation after its unread mark changed. Store writes are
-   * serialized per conversation in call order, so this never overwrites a
-   * newer save. A failed write is logged: the live mark stays as published,
-   * and the conversation's next save (every later turn saves) stores it.
+   * Save a conversation's unread mark after it changed. Only that field of
+   * the archive changes (SessionStore.saveUnread), so a save made while a
+   * turn runs or settles never stores that turn's provisional status. Store
+   * writes are serialized per conversation in call order. A failed write is
+   * logged: the live mark stays as published, and the conversation's next
+   * full save (every turn and every close saves) stores it.
    */
   private async saveUnread(session: RunningSession): Promise<void> {
-    const write = this.store.save(session.view).catch((error: unknown) => {
+    const unread = session.view.unread === true;
+    const write = this.store.saveUnread(session.view.id, unread).catch((error: unknown) => {
       this.log('agent-history', `Could not save the unread mark: ${String(error)}`);
     });
     this.unreadWrites.add(write);

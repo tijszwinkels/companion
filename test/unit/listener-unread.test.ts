@@ -753,6 +753,14 @@ test('unread: visible must be a boolean, at the gateway and at the listener', as
     });
   }
 
+  // Only the gateway withdraws visibility; a phone cannot send it.
+  assert.deepEqual(
+    parseRemoteRequest({ type: 'request', requestId: 'direct', action: 'withdraw-visibility' }),
+    { ok: false, requestId: 'direct', message: 'This action is not available remotely' },
+  );
+  phone.send({ action: 'withdraw-visibility', requestId: 'phone-withdraw' });
+  assert.equal((await phone.reply('phone-withdraw')).type, 'error');
+
   // A remote-role connection that bypasses the gateway is refused too.
   const connection = await rawConnection(listener);
   const role = await connection.request({
@@ -993,6 +1001,159 @@ test('unread: the desktop selection counts while its own panel is visible, whoev
   assert.equal(unreadOf(sessions, shown.id), false);
 });
 
+test('unread: the withdrawal clears whatever the departed phone showed', async (context) => {
+  const { directory, token } = await setupCase();
+  const runs: Run[] = [];
+  let releaseModels!: () => void;
+  const modelsHeld = new Promise<void>((resolve) => {
+    releaseModels = resolve;
+  });
+  const listener = await startListener(directory, runs, async () => {
+    await modelsHeld;
+    return { models: ['local/qwen-synthetic'], thinkingLevels: {} };
+  });
+  context.after(async () => {
+    releaseModels();
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
+  const first = await startTurn(sessions, runs, 'Shown first, then closed');
+  await endTurn(sessions, first.run, first.id, 'success');
+  const second = await startTurn(sessions, runs, 'Shown last');
+
+  const phone = await connectPhone(listener.url, token, listener.origin, true);
+  await phone.engine('state');
+  phone.send({ action: 'panel-state', requestId: 'first', id: first.id, visible: true });
+  assert.equal((await phone.reply('first')).type, 'result');
+  await sessions.remove(first.id);
+
+  // The listener has applied the last report when the phone leaves with a
+  // request still held; the withdrawal must clear it whatever the gateway
+  // knew (it names no conversation).
+  phone.send({ action: 'agent-models', requestId: 'held' });
+  phone.send({ action: 'panel-state', requestId: 'second', id: second.id, visible: true });
+  await waitFor(() => remoteVisibleSelections(listener)[0] === second.id);
+  phone.socket.terminate();
+  await phone.closed;
+  await waitFor(() => remoteVisibleSelections(listener).length === 1);
+  await waitFor(() => remoteVisibleSelections(listener)[0] === '');
+
+  await endTurn(sessions, second.run, second.id, 'success');
+  assert.equal(unreadOf(sessions, second.id), true);
+});
+
+test('unread: saving the mark never stores a turn status its own save has not settled', async (context) => {
+  const { directory, token } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  context.after(async () => {
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
+  const { id, run } = await startTurn(sessions, runs, 'Unread, then a failing save');
+  await endTurn(sessions, run, id, 'success');
+  assert.equal(unreadOf(sessions, id), true);
+  const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+  await phone.report('', true);
+
+  const runsBefore = runs.length;
+  sessions.followUp(id, 'Its save will fail', signal());
+  await waitFor(() => runs.length > runsBefore);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const archive = join(directory, '.companion-sessions', `${id}.json`);
+  const writes = holdArchiveWrites(sessions);
+
+  // The turn's final save waits; meanwhile the phone reads the earlier
+  // answer, which queues a save of the mark behind it.
+  runs.at(-1)!.finish();
+  await waitFor(() => writes.gates.length === 1);
+  await phone.report(id, true);
+  assert.equal(unreadOf(sessions, id), false);
+  const before = JSON.parse(await readFile(archive, 'utf8'));
+
+  // The final save fails: the turn is an error. The mark's save then
+  // changes the mark and nothing else.
+  writes.gates[0].fail();
+  await waitFor(() => writes.gates.length === 2);
+  writes.gates[1].release();
+  writes.restore();
+  await turnEnded(sessions, id);
+  assert.equal(sessions.snapshot().find((session) => session.id === id)?.status, 'error');
+
+  // The mark's save runs in the background; wait until it has landed.
+  let after = JSON.parse(await readFile(archive, 'utf8'));
+  const until = Date.now() + 3000;
+  while (after.unread !== false && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    after = JSON.parse(await readFile(archive, 'utf8'));
+  }
+  assert.equal(after.unread, false);
+  assert.deepEqual({ ...after, unread: before.unread }, before);
+});
+
+for (const change of ['hidden', 'shown'] as const) {
+  test(`unread: who shows it is decided after the turn's save (a viewer ${change} while it saves)`, async (context) => {
+    const { directory, token } = await setupCase();
+    const runs: Run[] = [];
+    const listener = await startListener(directory, runs);
+    context.after(async () => {
+      await listener.close();
+      await rm(directory, { recursive: true, force: true });
+    });
+    const sessions = listener.sessions;
+    const { id, run } = await startTurn(sessions, runs, 'Visibility changes during the save');
+    const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+    const visibleBefore = change === 'hidden';
+    await phone.report(id, visibleBefore);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const writes = holdArchiveWrites(sessions);
+
+    run.finish();
+    await waitFor(() => writes.gates.length === 1);
+    await phone.report(id, !visibleBefore);
+    writes.gates[0].release();
+    writes.restore();
+    await turnEnded(sessions, id);
+
+    // Shown at the moment of completion (after the save): read; else unread.
+    const expected = change === 'hidden';
+    assert.equal(unreadOf(sessions, id), expected);
+    await waitFor(() => firstOutcomeUpdate(phone.messages(), id, 'success') !== undefined);
+    assert.equal(firstOutcomeUpdate(phone.messages(), id, 'success')!.unread, expected);
+  });
+}
+
+test('unread: panel reports never take request slots from what follows them', async (context) => {
+  const { directory } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  context.after(async () => {
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const connection = await rawConnection(listener);
+
+  // Twenty reports and a control request arrive in one read.
+  const batch: string[] = [];
+  for (let index = 0; index < 20; index++) {
+    batch.push(
+      JSON.stringify({
+        action: 'panel-state',
+        requestId: `report-${index}`,
+        id: '',
+        composerFocused: false,
+        visible: true,
+      }),
+    );
+  }
+  batch.push(JSON.stringify({ action: 'toggle-sounds', requestId: 'after' }));
+  const reply = await connection.write(batch.join('\n') + '\n', 'after');
+  assert.equal(reply.type, 'result', JSON.stringify(reply));
+  connection.close();
+});
+
 /** A raw listener connection that sends requests and waits for their replies. */
 async function rawConnection(listener: Listener) {
   const socket = createConnection(listener.desktop.socketPath);
@@ -1010,11 +1171,20 @@ async function rawConnection(listener: Listener) {
   socket.on('error', () => {});
   await once(socket, 'connect');
 
+  const replyTo = async (requestId: unknown): Promise<Message> => {
+    await waitFor(() => lines.some((line) => line.requestId === requestId));
+    return lines.find((line) => line.requestId === requestId)!;
+  };
+
   return {
     async request(request: Record<string, unknown>): Promise<Message> {
       socket.write(JSON.stringify(request) + '\n');
-      await waitFor(() => lines.some((line) => line.requestId === request.requestId));
-      return lines.find((line) => line.requestId === request.requestId)!;
+      return replyTo(request.requestId);
+    },
+    /** Write raw lines at once and wait for the reply to `requestId`. */
+    async write(text: string, requestId: string): Promise<Message> {
+      socket.write(text);
+      return replyTo(requestId);
     },
     close() {
       socket.destroy();
@@ -1054,5 +1224,13 @@ test('unread: a connection that reported as a desktop panel cannot become remote
   });
   assert.equal(role.type, 'error');
   assert.match(role.message, /Declare the remote role before/);
+
+  // The gateway's withdrawal is for remote connections only.
+  const withdrawal = await connection.request({
+    action: 'withdraw-visibility',
+    requestId: 'not-remote',
+  });
+  assert.equal(withdrawal.type, 'error');
+  assert.match(withdrawal.message, /Only remote panels/);
   connection.close();
 });

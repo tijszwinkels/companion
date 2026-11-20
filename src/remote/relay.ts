@@ -51,7 +51,7 @@ const requestMilliseconds = 15_000;
 const maximumPendingRequests = 32;
 
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
-const withdrawalRequestId = 'withdraw-visibility';
+const withdrawalRequestId = 'withdraw';
 
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
@@ -103,16 +103,9 @@ export class Relay {
   private terminated = false;
   private phoneOpen = true;
   /**
-   * The conversation of the latest `panel-state` the listener accepted from
-   * this phone, and whether this phone ever sent one. Used only to withdraw
-   * the page's visibility when the phone leaves (withdrawVisibility).
-   */
-  private acceptedSelection = '';
-  private reportedSelection = false;
-  /**
-   * `wanted`: the phone left while it may still count as showing a
-   * conversation and the withdrawal waits for role confirmation; `sent`:
-   * written upstream. See withdrawVisibility.
+   * `wanted`: the phone left while requests still drain and the withdrawal
+   * of its page's visibility waits for role confirmation; `sent`: written
+   * upstream. See withdrawVisibility.
    */
   private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
   private drainTimer?: ReturnType<typeof setTimeout>;
@@ -270,10 +263,6 @@ export class Relay {
       return;
     }
 
-    if (request.action === 'panel-state') {
-      this.reportedSelection = true;
-    }
-
     const upstreamId = `r${++this.nextUpstreamId}`;
     // Do not merely expire a receipt: the underlying operation may still run.
     // Closing upstream settles every outstanding mutation as uncertain instead.
@@ -292,10 +281,10 @@ export class Relay {
 
   private sendRequest(upstreamId: string, request: RemoteRequest): void {
     const { type: _type, requestId: _requestId, ...fields } = request;
-    // A report that waited for role confirmation while the phone left
-    // describes a page nobody sees any more: keep its selection and order,
-    // but never let it count as visible.
-    if (request.action === 'panel-state' && !this.phoneOpen) {
+    // A report that waited for role confirmation while the phone left (or
+    // started closing) describes a page nobody sees any more: keep its
+    // selection and order, but never let it count as visible.
+    if (request.action === 'panel-state' && !this.phoneIsOpen()) {
       this.writeUpstream({ ...fields, visible: false, requestId: upstreamId });
       return;
     }
@@ -307,8 +296,13 @@ export class Relay {
     return this.options.takeToken();
   }
 
+  /** False from the moment the phone's socket starts closing. */
+  private phoneIsOpen(): boolean {
+    return this.phoneOpen && this.phone.readyState === this.phone.OPEN;
+  }
+
   private sendPhone(message: GatewayMessage, replaceable = false): void {
-    if (!this.phoneOpen || this.phone.readyState !== this.phone.OPEN) {
+    if (!this.phoneIsOpen()) {
       return;
     }
 
@@ -333,20 +327,19 @@ export class Relay {
 
     // The upstream stays open while it drains, but nobody sees the page any
     // more: it must not keep reading conversations (the unread mark).
-    if (this.reportedSelection) {
-      this.withdrawal = 'wanted';
-      this.withdrawVisibility();
-    }
+    this.withdrawal = 'wanted';
+    this.withdrawVisibility();
   }
 
   /**
-   * Tell the listener that this phone's page is no longer visible, keeping
-   * its selection so draining requests that act on it still answer. Sent
-   * only after the role is confirmed and after every queued request, as an
-   * ordinary remote `panel-state` with `visible: false`. The listener admits
-   * a panel report even while this connection's other requests fill its
-   * slots (src/desktop/server.ts), so the withdrawal takes effect at once.
-   * Its reply is not relayed to anyone.
+   * Tell the listener that this phone's page is no longer visible, with the
+   * remote-only `withdraw-visibility` action: the connection stops showing
+   * any conversation for the unread mark, while its selection stays so
+   * draining requests that act on it still answer. It names no conversation
+   * and is idempotent, so it can neither fail nor select anything. Sent
+   * only after the role is confirmed and after every queued request. The
+   * listener admits it even while this connection's other requests fill
+   * its slots (src/desktop/server.ts). Its reply is not relayed to anyone.
    */
   private withdrawVisibility(): void {
     if (this.withdrawal !== 'wanted' || !this.ready || this.upstream.destroyed) {
@@ -354,12 +347,7 @@ export class Relay {
     }
 
     this.withdrawal = 'sent';
-    this.writeUpstream({
-      action: 'panel-state',
-      id: this.acceptedSelection,
-      visible: false,
-      requestId: withdrawalRequestId,
-    });
+    this.writeUpstream({ action: 'withdraw-visibility', requestId: withdrawalRequestId });
   }
 
   // ---- Listener side ------------------------------------------------------
@@ -409,14 +397,7 @@ export class Relay {
     }
 
     if (isReply && message.requestId === withdrawalRequestId) {
-      // Refused when the selection was closed meanwhile (then it is not
-      // shown anyway). Repeat at once with an empty selection, which is
-      // always valid, so nothing stale is left visible.
-      if (message.type === 'error' && this.acceptedSelection !== '') {
-        this.acceptedSelection = '';
-        this.withdrawal = 'wanted';
-        this.withdrawVisibility();
-      }
+      // Nobody waits for this reply: the phone has left.
       return;
     }
 
@@ -427,9 +408,6 @@ export class Relay {
       }
       this.pending.delete(message.requestId);
       clearTimeout(pending.timer);
-      if (pending.request.action === 'panel-state' && message.type === 'result') {
-        this.acceptedSelection = pending.request.id;
-      }
       pending.finish(this.replyFor(pending.request, message));
       this.drainedIfDone();
       return;

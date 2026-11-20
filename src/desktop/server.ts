@@ -442,11 +442,14 @@ export class DesktopServer {
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
-        // A panel report is the exception: its handler never waits, so it
-        // cannot queue up, and it is admitted even while other requests fill
-        // the slots. The gateway relies on this to withdraw a departed
-        // phone's visibility while that phone's requests still drain.
-        const neverWaits = action === 'panel-state';
+        // Panel reports and visibility withdrawals are the exception: their
+        // handlers never wait, so each finishes in the microtask right after
+        // this read (in arrival order, like every request), and they neither
+        // need nor take a slot. A report therefore never makes a following
+        // request in the same read look busy, and the gateway can withdraw a
+        // departed phone's visibility while that phone's requests fill the
+        // slots.
+        const neverWaits = action === 'panel-state' || action === 'withdraw-visibility';
         if (!neverWaits && ((control && controlsInFlight >= 16) || (!control && handling))) {
           this.send(connection, {
             type: 'error',
@@ -457,9 +460,11 @@ export class DesktopServer {
           continue;
         }
 
-        if (control) {
+        // Take a slot unless the request never waits; `finally` returns it.
+        if (!neverWaits && control) {
           controlsInFlight++;
-        } else {
+        }
+        if (!neverWaits && !control) {
           handling = true;
         }
 
@@ -472,9 +477,10 @@ export class DesktopServer {
             this.send(connection, { type: 'error', action, requestId, message: String(error) });
           })
           .finally(() => {
-            if (control) {
+            if (!neverWaits && control) {
               controlsInFlight--;
-            } else {
+            }
+            if (!neverWaits && !control) {
               handling = false;
             }
 

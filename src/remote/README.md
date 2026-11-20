@@ -273,13 +273,12 @@ a conversation read. Every conversation carries the listener's shared
 [unread mark](../desktop/README.md#unread-mark), `unread`, which the gateway
 relays unchanged; a visible selection clears it for every device. When the
 client leaves while its requests still drain, the gateway sends the listener
-`{"action":"panel-state","id":<last accepted id>,"visible":false}` on its behalf,
-so a page nobody sees any more does not keep reading conversations. The listener
-admits it even while the client's requests fill every slot. Its selection stays
-for the draining requests; if the listener refuses it (that conversation was
-closed), it is repeated at once with an empty `id`. Reports still waiting for
-role confirmation when the client leaves are forwarded in order with `visible`
-set to `false`, and the withdrawal follows them. Only the
+`{"action":"withdraw-visibility"}` on its behalf, so a page nobody sees any more
+does not keep reading conversations. It names no conversation, keeps the
+selection for the draining requests and is admitted even while the client's
+requests fill every slot. Phones cannot send it. Reports still waiting for role
+confirmation when the client leaves, or starts closing, are forwarded in order
+with `visible` set to `false`, and the withdrawal follows them. Only the
 declared remote event set is forwarded, and initial snapshots stay at the gateway
 until the listener confirms the remote role. Reopen and Activity-based starts
 open in the background on the desktop, just like typed phone starts. Activity-based

@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { EventEmitter } from 'node:events';
+import type { WebSocket } from 'ws';
+
 import { DeviceStore } from '../../src/remote/devices.ts';
+import { ReceiptBook } from '../../src/remote/receipts.ts';
+import { Relay } from '../../src/remote/relay.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { connectPhone, delay, freePort, waitFor } from '../remote-fixture.ts';
 
@@ -267,66 +272,82 @@ test('a phone that leaves while the role is pending never reports a visible page
     visible: false,
     requestId: received[1].requestId,
   });
-  // Its report was never answered, so no selection is known: withdraw with
-  // an empty one, after the queued report.
-  assert.deepEqual(received[2], {
-    action: 'panel-state',
-    id: '',
-    visible: false,
-    requestId: 'withdraw-visibility',
-  });
+  // Then the withdrawal, which names no conversation.
+  assert.deepEqual(received[2], { action: 'withdraw-visibility', requestId: 'withdraw' });
 });
 
-test('a refused visibility withdrawal is repeated at once with an empty selection', async (context) => {
-  const conversation = '00000000-0000-4000-8000-000000000002';
+/**
+ * A stand-in for the gateway's WebSocket to a phone, so a test can hold it
+ * in the CLOSING state (closing handshake started, no `close` event yet).
+ */
+class FakePhone extends EventEmitter {
+  readonly OPEN = 1;
+  readonly CLOSING = 2;
+  readyState = 1;
+  readonly sent: string[] = [];
+
+  send(text: string, callback?: (error?: Error) => void): void {
+    this.sent.push(text);
+    callback?.();
+  }
+
+  close(): void {
+    this.readyState = this.CLOSING;
+  }
+}
+
+test('a report forwarded while the phone is closing is never visible', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'remote-relay-closing-'));
+  const controlSocket = join(directory, 'control.sock');
   const received: Record<string, unknown>[] = [];
   let listener: Socket | undefined;
-  const setup = await fixture(context, (socket, request) => {
+  const server = createServer((socket) => {
     listener = socket;
-    received.push(request);
-    if (request.action === 'client-role') {
-      roleAccepted(socket);
-    }
-    if (request.action === 'panel-state' && request.requestId !== 'withdraw-visibility') {
-      socket.write(
-        JSON.stringify({ type: 'result', requestId: request.requestId, result: 'panel-recorded' }) +
-          '\n',
-      );
-    }
+    socket.setEncoding('utf8');
+    let buffered = '';
+    socket.on('data', (chunk) => {
+      buffered += chunk;
+      let newline: number;
+      while ((newline = buffered.indexOf('\n')) >= 0) {
+        received.push(JSON.parse(buffered.slice(0, newline)));
+        buffered = buffered.slice(newline + 1);
+      }
+    });
   });
-  const phone = await setup.phone();
-  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
-  phone.send({ action: 'panel-state', requestId: 'shown', id: conversation, visible: true });
-  await phone.reply('shown');
+  await new Promise<void>((resolve) => server.listen(controlSocket, resolve));
+  const phone = new FakePhone();
+  const relay = new Relay(phone as unknown as WebSocket, {
+    controlSocket,
+    sessionsDirectory: directory,
+    deviceId: 'device',
+    receipts: new ReceiptBook(),
+    takeToken: () => true,
+    allowScreenshot: () => {},
+    onClosed: () => {},
+    log: () => {},
+  });
+  context.after(async () => {
+    relay.terminate(4001, 'Test over');
+    listener?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  });
+  await waitFor(() => received.length === 1);
 
-  // A request the listener holds keeps the relay draining after the phone leaves.
-  phone.send({ action: 'toggle-pause', requestId: 'held' });
-  await waitFor(() => received.some((request) => request.action === 'toggle-pause'));
-  phone.socket.terminate();
-  await phone.closed;
-
-  await waitFor(() => received.some((request) => request.requestId === 'withdraw-visibility'));
-  const first = received.find((request) => request.requestId === 'withdraw-visibility');
-  // The accepted selection keeps draining requests valid; only visibility goes.
-  assert.deepEqual(first, {
+  // A visible report waits for the role; then the closing handshake starts.
+  const report = {
+    type: 'request',
+    requestId: 'shown',
     action: 'panel-state',
-    id: conversation,
-    visible: false,
-    requestId: 'withdraw-visibility',
-  });
+    id: '00000000-0000-4000-8000-000000000003',
+    visible: true,
+  };
+  phone.emit('message', Buffer.from(JSON.stringify(report)), false);
+  phone.readyState = phone.CLOSING;
 
-  // Refused (its selection was closed meanwhile): repeated at once with an
-  // empty selection, which is always valid, while the held request drains.
-  listener!.write(
-    JSON.stringify({ type: 'error', requestId: 'withdraw-visibility', message: 'Closed' }) + '\n',
-  );
-  await waitFor(
-    () => received.filter((request) => request.requestId === 'withdraw-visibility').length === 2,
-  );
-  assert.deepEqual(received.filter((request) => request.requestId === 'withdraw-visibility')[1], {
-    action: 'panel-state',
-    id: '',
-    visible: false,
-    requestId: 'withdraw-visibility',
-  });
+  // The role is confirmed during the handshake, before any `close` event.
+  roleAccepted(listener!);
+  await waitFor(() => received.length === 2);
+  assert.equal(received[1].action, 'panel-state');
+  assert.equal(received[1].visible, false);
 });

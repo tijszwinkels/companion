@@ -2076,6 +2076,18 @@ export class DesktopRuntime {
       return 'role-recorded';
     }
 
+    if (request.action === 'withdraw-visibility') {
+      // Sent by the gateway when its client has left while requests still
+      // drain (src/remote/relay.ts): the page is gone, so the connection
+      // stops showing anything for the unread mark. The selection stays for
+      // the draining requests. Idempotent and never refused for a remote.
+      if (!remote) {
+        throw Error('Only remote panels can withdraw their visibility');
+      }
+      remote.visibleSelection = '';
+      return 'visibility-withdrawn';
+    }
+
     if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
       throw Error('This action is only available on the desktop');
     }
