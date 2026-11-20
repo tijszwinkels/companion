@@ -103,12 +103,23 @@ function isLoopback(host: string): boolean {
   return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
-/** A DNS name, IPv4 address or bracketed IPv6 address: nothing a CSP source would expand. */
-function concreteHost(hostname: string): boolean {
-  if (/^\[[0-9a-f:.]+\]$/i.test(hostname)) {
-    return true;
-  }
+/** An IPv6 literal (`[::1]`): CSP host sources cannot express it (Chromium refuses it). */
+function ipv6Literal(hostname: string): boolean {
+  return /^\[[0-9a-f:.]+\]$/i.test(hostname);
+}
+
+/** A DNS name or IPv4 address: nothing a CSP source would expand or refuse. */
+function cspHost(hostname: string): boolean {
   return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i.test(hostname);
+}
+
+/**
+ * The gateway origins that may embed frames: those a CSP `frame-ancestors`
+ * source can name. IPv6-literal origins (such as the loopback default
+ * `http://[::1]:PORT`) keep working for the phone app but cannot embed.
+ */
+export function embeddingOrigins(gatewayOrigins: readonly string[]): string[] {
+  return gatewayOrigins.filter((origin) => !ipv6Literal(new URL(origin).hostname));
 }
 
 /** Validate the frame options against the gateway's; throws a usage error. */
@@ -137,11 +148,18 @@ export function checkFrameOptions(options: FrameOriginOptions): void {
     }
   }
   // These origins are written into Content-Security-Policy sources, where
-  // `*` and other characters have a meaning; only concrete hosts are allowed.
-  for (const origin of [options.origin, ...options.gatewayOrigins]) {
-    if (!concreteHost(new URL(origin).hostname)) {
-      throw Error(`Frames need concrete host names in every origin: ${origin}`);
+  // `*` and other characters have a meaning and IPv6 literals are invalid.
+  if (!cspHost(parsed.hostname)) {
+    throw Error(`The frame origin needs a host name or IPv4 address: ${options.origin}`);
+  }
+  for (const origin of options.gatewayOrigins) {
+    const host = new URL(origin).hostname;
+    if (!cspHost(host) && !ipv6Literal(host)) {
+      throw Error(`Frames need concrete host names in every gateway origin: ${origin}`);
     }
+  }
+  if (embeddingOrigins(options.gatewayOrigins).length === 0) {
+    throw Error('Frames need a gateway origin with a host name or IPv4 address (--origin)');
   }
 
   const listen = options.listen;
@@ -186,18 +204,24 @@ export function checkFrameOptions(options: FrameOriginOptions): void {
 export class FrameOrigin {
   readonly handles: FrameHandles;
   private server?: Server;
-  /** Aborted by close(): ends forwarded requests still waiting upstream. */
-  private readonly shutdown = new AbortController();
+  /**
+   * Aborted by close(): ends forwarded requests still waiting upstream. A
+   * new one per start(), so a gateway restarted in the same process works.
+   */
+  private shutdown = new AbortController();
   /** Every accepted socket, including TLS sockets still in their handshake. */
   private readonly sockets = new Set<Socket>();
   private socketClaim?: UnixSocketClaim;
   private readonly frameHost: string;
+  /** Gateway origins named in frame-ancestors (see embeddingOrigins). */
+  private readonly embedders: string[];
   private forwarded = 0;
   private readonly forwardedByDevice = new Map<string, number>();
 
   constructor(private readonly options: FrameOriginOptions) {
     checkFrameOptions(options);
     this.frameHost = new URL(options.origin).host;
+    this.embedders = embeddingOrigins(options.gatewayOrigins);
     this.handles = new FrameHandles(
       options.origin,
       Date.now,
@@ -232,6 +256,7 @@ export class FrameOrigin {
   }
 
   async start(): Promise<void> {
+    this.shutdown = new AbortController();
     const handler = (
       request: IncomingMessage,
       response: ServerResponse,
@@ -288,7 +313,12 @@ export class FrameOrigin {
     // get the usual refusal headers and body where the socket can still
     // take an answer.
     server.on('clientError', (error: NodeJS.ErrnoException, socket: Duplex) => {
-      if (error.code === 'ECONNRESET' || !socket.writable) {
+      // Only HTTP parser failures get an HTTP answer. Anything else (a reset,
+      // a TLS handshake failure or timeout) ends the socket at once: a TLS
+      // socket in its handshake could hold a pending write past the deadline.
+      const parserFailure =
+        error.code?.startsWith('HPE_') === true || error.code === 'ERR_HTTP_REQUEST_TIMEOUT';
+      if (!parserFailure || !socket.writable) {
         socket.destroy();
         return;
       }
@@ -390,10 +420,23 @@ export class FrameOrigin {
     // the connection went away.
     const deadline = setTimeout(() => response.destroy(), exchangeMilliseconds);
     let responseClosed = false;
-    response.once('close', () => {
+    // Set once a forwarding slot is taken (below); releases it when allowed.
+    let releaseSlot = () => {};
+    // The client is gone when its answer completed or its connection closed.
+    // The socket counts too: a pipelined answer still queued behind another
+    // one never emits 'close' of its own when the connection drops (Node 22).
+    const socket = request.socket;
+    const clientGone = () => {
+      if (responseClosed) {
+        return;
+      }
       responseClosed = true;
       clearTimeout(deadline);
-    });
+      socket.off('close', clientGone);
+      releaseSlot();
+    };
+    socket.once('close', clientGone);
+    response.once('close', clientGone);
 
     // Before anything reads request.headers: a possibly truncated header
     // list, or a repeated Host/Origin/…, is refused rather than interpreted.
@@ -456,7 +499,7 @@ export class FrameOrigin {
     this.forwardedByDevice.set(target.deviceId, deviceForwarded + 1);
     let upstreamSettled = true;
     let released = false;
-    const release = () => {
+    releaseSlot = () => {
       if (released || !responseClosed || !upstreamSettled) {
         return;
       }
@@ -469,7 +512,6 @@ export class FrameOrigin {
         this.forwardedByDevice.delete(target.deviceId);
       }
     };
-    response.once('close', release);
 
     let body: Buffer | undefined;
     if (admission.definition.method === 'POST') {
@@ -504,7 +546,13 @@ export class FrameOrigin {
       this.shutdown.signal,
     );
     upstreamSettled = true;
-    release();
+    releaseSlot();
+
+    // A 404 means the view is gone for everyone; record that even if this
+    // client has already left.
+    if (answer.kind === 'answer' && answer.status === 404) {
+      this.handles.viewEnded(target.capability);
+    }
     if (responseClosed) {
       return;
     }
@@ -525,8 +573,7 @@ export class FrameOrigin {
     const status = answer.status;
     if (status === 404) {
       // The widget service no longer knows this view: the conversation closed
-      // or the application was removed. End it for every device.
-      this.handles.viewEnded(target.capability);
+      // or the application was removed. Ended above for every device.
       this.refuse(response, notFound.status, notFound.error);
       return;
     }
@@ -544,7 +591,7 @@ export class FrameOrigin {
     }
 
     response.writeHead(status, {
-      ...frameResponseHeaders(this.options.gatewayOrigins, upstreamPolicies(answer.headers)),
+      ...frameResponseHeaders(this.embedders, upstreamPolicies(answer.headers)),
       'Content-Type': contentType,
       'Content-Length': answer.body.length,
     });
@@ -641,7 +688,7 @@ export class FrameOrigin {
   private rawRefusal(status: number, reason: string, error: string): string {
     const body = JSON.stringify({ error });
     const lines = [`HTTP/1.1 ${status} ${reason}`];
-    for (const [name, value] of Object.entries(frameResponseHeaders(this.options.gatewayOrigins))) {
+    for (const [name, value] of Object.entries(frameResponseHeaders(this.embedders))) {
       for (const entry of Array.isArray(value) ? value : [value]) {
         lines.push(`${name}: ${String(entry)}`);
       }
@@ -655,7 +702,7 @@ export class FrameOrigin {
   private refuse(response: ServerResponse, status: number, error: string): void {
     const body = JSON.stringify({ error });
     response.writeHead(status, {
-      ...frameResponseHeaders(this.options.gatewayOrigins),
+      ...frameResponseHeaders(this.embedders),
       'Content-Type': 'application/json; charset=utf-8',
       'Content-Length': Buffer.byteLength(body),
     });

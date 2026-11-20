@@ -6,10 +6,20 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createConnection } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
-import { checkFrameOptions, type FrameOriginOptions } from '../../src/remote/frames/server.ts';
+import {
+  FrameOrigin,
+  checkFrameOptions,
+  embeddingOrigins,
+  type FrameOriginOptions,
+} from '../../src/remote/frames/server.ts';
+import { loopbackOrigins } from '../../src/remote/gateway.ts';
 
 const tls = { cert: 'synthetic', key: 'synthetic' };
 
@@ -122,8 +132,23 @@ const cases: Array<{ name: string; options: Partial<FrameOriginOptions>; accepte
     accepted: false,
   },
   {
-    name: 'an IPv6 loopback gateway origin',
-    options: { gatewayOrigins: ['http://[::1]:8787'], origin: 'http://[::1]:8788' },
+    name: 'IPv6 gateway origins next to an IPv4 one (they cannot embed)',
+    options: { gatewayOrigins: ['http://127.0.0.1:8787', 'http://[::1]:8787'] },
+    accepted: true,
+  },
+  {
+    name: 'only IPv6 gateway origins (no CSP can name an embedder)',
+    options: { gatewayOrigins: ['http://[::1]:8787'], origin: 'http://localhost:8788' },
+    accepted: false,
+  },
+  {
+    name: 'an IPv6 frame origin (CSP frame-src cannot name it)',
+    options: { listen: { host: '::1', port: 8788 }, origin: 'http://[::1]:8788' },
+    accepted: false,
+  },
+  {
+    name: 'an IPv6 bind address with a host-name origin',
+    options: { listen: { host: '::1', port: 8788 }, origin: 'http://localhost:8788' },
     accepted: true,
   },
 ];
@@ -167,3 +192,59 @@ for (const [name, args, message] of [
     assert.match(result.stderr, message);
   });
 }
+
+test('frame-ancestors names the loopback defaults a browser can use', () => {
+  assert.deepEqual(embeddingOrigins(loopbackOrigins(8787)), [
+    'http://127.0.0.1:8787',
+    'http://localhost:8787',
+  ]);
+});
+
+test('a TLS client that never finishes its handshake is closed after about 10 seconds', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-frame-tls-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  // A throwaway self-signed certificate for a synthetic name.
+  execFileSync(
+    'openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '1',
+      '-subj',
+      '/CN=frames.example',
+      '-keyout',
+      join(directory, 'key.pem'),
+      '-out',
+      join(directory, 'cert.pem'),
+    ],
+    { stdio: 'ignore' },
+  );
+  const tlsMaterial = {
+    cert: await readFile(join(directory, 'cert.pem'), 'utf8'),
+    key: await readFile(join(directory, 'key.pem'), 'utf8'),
+  };
+  const frames = new FrameOrigin({
+    listen: { host: '127.0.0.1', port: 0 },
+    origin: 'https://frames.example:8444',
+    gatewayOrigins: ['https://desk.example:8443'],
+    widgetSocket: join(directory, 'widgets.sock'),
+    tls: tlsMaterial,
+    log: () => {},
+  });
+  await frames.start();
+  context.after(() => frames.close());
+
+  const socket = createConnection(frames.port, '127.0.0.1');
+  socket.on('error', () => {});
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  const started = Date.now();
+  // Half a TLS record header and then nothing.
+  socket.write(Buffer.from([0x16, 0x03]));
+  await new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 9_000 && elapsed <= 12_500, `closed after ${elapsed} ms`);
+});

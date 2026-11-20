@@ -460,18 +460,88 @@ test('a forwarded action keeps its slot until the listener finishes it, even if 
   await busy.arrayBuffer();
 
   // The listener finishes every accepted action; then the slots come back.
+  // (A single free slot already admits a state request, so wait for all.)
   release();
   const later = Date.now() + 5000;
-  let status = 0;
-  while (status !== 200) {
-    assert.ok(Date.now() < later, `status ${status}`);
-    const response = await fixture.frameRequest(frameUrl + 'state');
-    status = response.status;
-    const value = (await response.json()) as Json;
-    if (status === 200) {
-      assert.equal(value.props.count, 8);
-    }
+  let count = 0;
+  while (count !== 8 || (fixture.gateway.frames as any).forwarded !== 0) {
+    assert.ok(Date.now() < later, `count ${count}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
+    const response = await fixture.frameRequest(frameUrl + 'state');
+    const value = (await response.json()) as Json;
+    if (response.status === 200) {
+      count = value.props.count;
+    }
   }
   assert.equal((fixture.gateway.frames as any).forwarded, 0);
+});
+
+test('pipelined answers whose connection closes still give their slots back', async (context) => {
+  const upstream = await fakeUpstream();
+  context.after(() => upstream.close());
+  const fixture = await frameFixture({ widgetSocket: upstream.socketPath });
+  context.after(() => fixture.close());
+  const frameUrl = await widgetFrame(fixture);
+  const handle = frameUrl.split('/')[4];
+
+  const held: ServerResponse[] = [];
+  upstream.respond((_request, response) => {
+    held.push(response);
+  });
+  // Two pipelined requests on one connection: the second answer would queue
+  // behind the first. The connection then drops.
+  const socket = createConnection(fixture.framePort, '127.0.0.1');
+  socket.on('error', () => {});
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  const line = `GET /f/${handle}/state HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\n\r\n`;
+  socket.write(line + line);
+  const until = Date.now() + 3000;
+  while ((fixture.gateway.frames as any).forwarded < 1) {
+    assert.ok(Date.now() < until);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  socket.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  for (const response of held.splice(0)) {
+    json(response, 200);
+  }
+  upstream.respond((_request, response) => json(response, 200));
+  while ((fixture.gateway.frames as any).forwarded !== 0) {
+    assert.ok(Date.now() < until + 3000, 'a slot was never given back');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    for (const response of held.splice(0)) {
+      json(response, 200);
+    }
+  }
+});
+
+test('an upstream 404 ends the handle even when the client has already left', async (context) => {
+  const upstream = await fakeUpstream();
+  context.after(() => upstream.close());
+  const fixture = await frameFixture({ widgetSocket: upstream.socketPath });
+  context.after(() => fixture.close());
+  const frameUrl = await widgetFrame(fixture);
+  const handles = fixture.gateway.frames!.handles;
+  const before = handles.size;
+
+  let answer!: () => void;
+  upstream.respond((_request, response) => {
+    answer = () => json(response, 404);
+  });
+  const client = new AbortController();
+  const pending = fetch(frameUrl + 'state', { signal: client.signal }).catch(() => undefined);
+  const until = Date.now() + 3000;
+  while (answer === undefined) {
+    assert.ok(Date.now() < until);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  client.abort();
+  await pending;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  answer();
+  while (handles.size !== before - 1) {
+    assert.ok(Date.now() < until + 2000, 'the handle stayed');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 });

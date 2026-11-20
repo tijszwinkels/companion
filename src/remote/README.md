@@ -250,11 +250,16 @@ listener side is [`src/widgets/socket.ts`](../widgets/socket.ts) and
   the gateway's socket.
 - `--frame-origin` is exactly `scheme://host[:port]`, https or loopback http,
   and must differ from every `--origin`. Its host name must differ from every
-  `--app-origin`'s (cookies ignore ports). With frames on, every gateway
-  origin and the frame origin must name a concrete host (no `*` or other
-  characters a Content-Security-Policy source would expand), and the frame
-  listener must bind a specific address (every spelling of "all interfaces",
-  such as `0:0:0:0:0:0:0:0` or `::ffff:0.0.0.0`, is refused).
+  `--app-origin`'s (cookies ignore ports). Origins end up in
+  Content-Security-Policy sources, so with frames on the frame origin must
+  name a host name or IPv4 address, and every gateway origin a host name, an
+  IPv4 address or an IPv6 literal (no `*` or other characters a source would
+  expand). IPv6-literal gateway origins, such as the loopback default
+  `http://[::1]:PORT`, keep working for the phone app but cannot embed frames
+  (browsers refuse them as `frame-ancestors` sources); at least one gateway
+  origin must be able to. The frame listener must bind a specific address
+  (every spelling of "all interfaces", such as `0:0:0:0:0:0:0:0` or
+  `::ffff:0.0.0.0`, is refused).
 - The gateway reaches the widget service at `widgets.sock` next to the control
   socket (`$XDG_RUNTIME_DIR/companion/widgets.sock`).
 - Funnel requests are refused, and `--require-tailscale-login` is required, on
@@ -375,7 +380,8 @@ answered like an unknown handle. An unreachable listener: 503; no answer
 within 15 seconds: 504; other statuses pass through with their JSON body.
 
 Resources: at most 64 sockets on the frame listener, 10 seconds for a TLS
-handshake and for request headers (enforced within a second), 30 seconds for
+handshake and for request headers (enforced within a second; a failed or
+unfinished handshake closes the socket at once), 30 seconds for
 a whole exchange including the client reading the answer. A forwarded
 request keeps its slot until the client has the answer (or has gone) and the
 listener has answered. A client that leaves does not cancel the request: the
@@ -393,7 +399,8 @@ gateway.
 ### Rules: headers
 
 - Every frame-origin response, forwarded or refused, carries
-  `Content-Security-Policy: frame-ancestors <gateway origins>; webrtc 'block'`,
+  `Content-Security-Policy: frame-ancestors <gateway origins>; webrtc 'block'`
+  (IPv6-literal gateway origins omitted, see Options),
   `Origin-Agent-Cluster: ?1`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store`,
   `X-Content-Type-Options: nosniff` and `Permissions-Policy: camera=(),

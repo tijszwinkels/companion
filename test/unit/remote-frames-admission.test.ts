@@ -674,6 +674,15 @@ const cases: AdmissionCase[] = [
       ),
     status: 417,
   },
+  {
+    name: 'an unsupported expectation on HTTP/1.0',
+    request: (fixture, views) =>
+      raw(
+        fixture.framePort,
+        `GET /f/${views.widgetHandle}/state HTTP/1.0\r\nHost: 127.0.0.1:${fixture.framePort}\r\nExpect: something-else\r\n\r\n`,
+      ),
+    status: 417,
+  },
 ];
 
 test('frame request admission table', async (context) => {

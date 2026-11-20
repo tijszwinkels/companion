@@ -63,6 +63,11 @@ export function admitFrameRequest(
   if (headers.upgrade !== undefined) {
     return refuse(400, 'Upgrades are not accepted here');
   }
+  // Node reports expectations only for HTTP/1.1; check every version here.
+  const expectation = headers.expect;
+  if (expectation !== undefined && expectation.trim().toLowerCase() !== '100-continue') {
+    return refuse(417, 'Expectation not supported');
+  }
   if (typeof target !== 'string' || target.includes('?')) {
     return refuse(400, 'Query strings are not accepted here');
   }

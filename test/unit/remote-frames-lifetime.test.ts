@@ -368,6 +368,12 @@ const cases: LifetimeCase[] = [
       assert.equal(await status(fixture, frames.widget), 404);
       assert.equal(await status(fixture, frames.application), 404);
 
+      // The restarted gateway issues new handles, and they work.
+      const fresh = await framesFrom(await fixture.phone(token), id, widgetId);
+      assert.notEqual(fresh.widget, frames.widget);
+      assert.equal(await status(fixture, fresh.widget), 200);
+      assert.equal(await status(fixture, fresh.application), 200);
+
       // Nothing about the handle was written anywhere in the state directory.
       const stateDirectory = join(fixture.directory, 'remote-state');
       for (const name of await readdir(stateDirectory)) {
