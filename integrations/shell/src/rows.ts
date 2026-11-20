@@ -10,14 +10,16 @@
  * gateway rewrites it to its authenticated `api/screenshots/<conversation>`
  * route, and this slice has no screenshot viewer, so a row with a screenshot
  * is labelled "screenshot unavailable" instead of offering a View button that
- * could not work. (The gateway also removes widget view URLs; the page shows
- * only the widget's name either way.)
+ * could not work. The gateway removes widget view URLs; with a frame origin
+ * configured it sends a frame address instead, which `pageRow` passes on as
+ * `widget.frameUrl` for the shell's inline widget (widgets/InlineWidget.tsx).
  */
 
 import type { AgentMessage } from '../../../src/agents/types.ts';
 import { chatRow } from '../../session-apps/ChatState.mjs';
 import type { HistoryRow } from '../../panel/HistoryRows.mjs';
 import type { ChatRow } from '../../session-apps/chat/protocol.ts';
+import { frameAddress } from './widgets/frame-address.ts';
 
 const uuidPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const applicationNamePattern = /^[a-z][a-z0-9-]{0,47}$/;
@@ -139,12 +141,23 @@ export function rowData(row: HistoryRow): Record<string, unknown> {
 /**
  * The page's row for one resident row: `ChatState.chatRow(rowData(row))`,
  * plus the time the message was written (`ChatRow.time`) when `time` is not
- * empty. Without a time the row is exactly the Qt host's.
+ * empty, and for a widget row, when `inlineWidgets` is set (the bridge has
+ * the shell's inline widget component), its frame address
+ * (`widget.frameUrl`): the one the gateway sent when it is valid, else ''
+ * (the "not set up" card). Without a time or inline widgets the row is
+ * exactly the Qt host's.
  */
-export function pageRow(row: HistoryRow, time = ''): ChatRow {
+export function pageRow(row: HistoryRow, time = '', inlineWidgets = false): ChatRow {
   const page: ChatRow = chatRow(rowData(row));
   if (time) {
     page.time = time;
+  }
+
+  if (page.widget && inlineWidgets) {
+    // `frameUrl` is not part of the listener's declared attachment type:
+    // the gateway adds it for remote clients (src/remote/README.md).
+    const attachment = row.message.widget as { frameUrl?: unknown } | undefined;
+    page.widget.frameUrl = frameAddress(attachment?.frameUrl);
   }
   return page;
 }

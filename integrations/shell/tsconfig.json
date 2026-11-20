@@ -16,6 +16,7 @@
     "src",
     "../mobile/src/vendor.d.ts",
     "../../test/shell/bridge.test.ts",
+    "../../test/shell/inline-widget-rules.test.ts",
     "../../test/shell/layout.test.ts",
     "../../test/shell/listening-switches.test.ts",
     "../../test/shell/reorder-gesture.test.ts",

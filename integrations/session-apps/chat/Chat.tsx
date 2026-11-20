@@ -710,6 +710,19 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
     );
   }
 
+  // A row with `widget.frameUrl` (also '') comes from a host that draws
+  // widgets itself (the browser shell; protocol.ts `inlineWidget`), which
+  // gets the whole row. Without the field, as from the Qt host, the card
+  // below is drawn exactly as before.
+  const InlineWidget = bridge.inlineWidget;
+  if (row.widget && row.widget.frameUrl !== undefined && InlineWidget) {
+    return (
+      <div class="message assistant inline-widget-message">
+        <InlineWidget row={row} sessionId={sessionId} />
+      </div>
+    );
+  }
+
   if (row.widget) {
     return (
       <div class="message assistant">

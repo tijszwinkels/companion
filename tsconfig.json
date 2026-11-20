@@ -20,6 +20,7 @@
     "integrations/mobile/src",
     "integrations/shell/src",
     "test/shell/bridge.test.ts",
+    "test/shell/inline-widget-rules.test.ts",
     "test/shell/times.test.ts",
     "integrations/session-apps/chat",
     "integrations/session-apps/rail",

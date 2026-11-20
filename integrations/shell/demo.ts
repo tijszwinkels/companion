@@ -22,17 +22,24 @@
  * took. (The listener's clock is set to noon of the previous calendar day,
  * in this computer's time zone, for that first turn only; see `demoClock`.)
  *
+ * Inline widgets: the gateway also runs a frame origin on a second loopback
+ * port, and the city-trip answer is followed by a synthetic packing-list
+ * widget the reader can tick off in the chat. Its library is written into
+ * the temporary directory, and its actions run in this process
+ * (test/widget-node-renderer.ts), not in the isolated widget renderer;
+ * the browser draws it from the same bundle.
+ *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
  * screen or microphone, or binds a non-loopback address. Ctrl+C stops
  * everything and removes the temporary directory.
  *
- * Options: --port N (default 8788).
+ * Options: --port N (default 8788), --frame-port N (default the port + 1).
  */
 
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +48,7 @@ import { parseArgs } from 'node:util';
 
 import { parseChoices } from '../../src/agents/choices.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
+import { widgetTools } from '../../src/agents/widget-tools.ts';
 import { chatMessage, type AgentBackend, type AgentMessage } from '../../src/agents/types.ts';
 import type { UserSensorFrame, UserSensorProcessor } from '../../src/core/frame.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
@@ -49,10 +57,12 @@ import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { CaptureStoragePolicy, notAdmitted } from '../../src/capture-storage/policy.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
+import { useNodeRenderer } from '../../test/widget-node-renderer.ts';
 
 const { values } = parseArgs({
   options: {
     port: { type: 'string', default: '8788' },
+    'frame-port': { type: 'string' },
   },
 });
 
@@ -159,6 +169,101 @@ try {
     };
   }
 
+  // ---- Widget library ---------------------------------------------------------
+
+  // One synthetic widget: a packing list whose items are ticked off in the
+  // chat. Its action runs in this process (useNodeRenderer, below).
+  const widgetLibrary = join(directory, 'widget-library');
+  const packingList = join(widgetLibrary, 'packing-list');
+  await mkdir(packingList, { recursive: true });
+  await writeFile(
+    join(packingList, 'widget.json'),
+    JSON.stringify({
+      name: 'packing-list',
+      version: 1,
+      description: 'A synthetic packing list for the demo trip.',
+      parameters: {
+        type: 'object',
+        properties: {
+          items: {
+            type: 'array',
+            maxItems: 20,
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', minLength: 1, maxLength: 80 },
+                packed: { type: 'boolean' },
+              },
+              required: ['text', 'packed'],
+              additionalProperties: false,
+            },
+            default: [],
+          },
+        },
+        required: ['items'],
+        additionalProperties: false,
+      },
+      actions: {
+        toggle: {
+          description: 'Pack or unpack one item.',
+          parameters: {
+            type: 'object',
+            properties: { index: { type: 'integer', minimum: 0, maximum: 19 } },
+            required: ['index'],
+            additionalProperties: false,
+          },
+          returns: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      },
+      example: { items: [{ text: 'Rain jacket', packed: false }] },
+    }),
+  );
+  await writeFile(
+    join(packingList, 'widget.js'),
+    `export function describe(props) {
+  const packed = props.items.filter((item) => item.packed).length;
+  return 'Packing list: ' + packed + ' of ' + props.items.length + ' packed';
+}
+export const actions = {
+  toggle(props, args) {
+    const item = props.items[args.index];
+    if (item) {
+      item.packed = !item.packed;
+    }
+    return { props, result: {} };
+  },
+};
+export function mount(root, api) {
+  const list = document.createElement('ul');
+  const summary = document.createElement('p');
+  root.append(list, summary);
+  return {
+    update(props) {
+      list.replaceChildren();
+      props.items.forEach((item, index) => {
+        const entry = document.createElement('li');
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = item.packed;
+        box.onchange = () => { void api.call('toggle', { index }).catch(() => {}); };
+        label.append(box, ' ' + item.text);
+        entry.append(label);
+        list.append(entry);
+      });
+      summary.textContent = describe(props);
+    },
+    dispose() {},
+  };
+}
+`,
+  );
+  await writeFile(
+    join(packingList, 'style.css'),
+    'ul { list-style: none; margin: 0; padding: 0; } li { padding: 4px 0; } p { margin: 8px 0 0; color: var(--muted); font-size: 0.85rem; } input { accent-color: var(--accent); }\n',
+  );
+  continueStartup();
+
   // ---- Scripted agent backend -------------------------------------------------
 
   const answers: Record<string, string> = {
@@ -254,6 +359,24 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     }
     emit({ ...chatMessage(id, 'assistant', text), state: 'done' });
 
+    // The trip plan comes with an inline widget (a packing list).
+    if (/trip|travel|city/i.test(question) && request.widgets) {
+      const publish = widgetTools(request.widgets.endpoint, request.widgets.token).find(
+        (tool) => tool.name === 'companion_widget',
+      );
+      await publish?.execute('demo-packing-list', {
+        widget: 'packing-list',
+        props: {
+          items: [
+            { text: 'Rain jacket', packed: true },
+            { text: 'Museum tickets', packed: false },
+            { text: 'Train tickets home (17:10)', packed: false },
+            { text: 'Walking shoes', packed: true },
+          ],
+        },
+      });
+    }
+
     if (publishChoices) {
       publishChoices(
         parseChoices(['[Yes] - Go ahead', '[More detail] - Explain further', '[No] - Stop here']),
@@ -293,12 +416,15 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     },
     () => {},
     directory,
-    undefined,
+    widgetLibrary,
     undefined,
     // The default (as before this clock was added): nothing saved.
     new CaptureStoragePolicy(),
     demoClock,
   );
+  // The widget's actions and descriptions run in this process; the
+  // isolated widget renderer is not used by the demo.
+  useNodeRenderer((sessions as unknown as { widgets: { renderer: object } }).widgets.renderer);
 
   // ---- Listener runtime ------------------------------------------------------------
 
@@ -500,6 +626,9 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   const port = Number(values.port);
   const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
   const stateDirectory = join(directory, 'remote');
+  // Widget pages are served on their own origin: a second loopback port.
+  const framePort = values['frame-port'] ? Number(values['frame-port']) : port + 1;
+  const frameOrigin = `http://127.0.0.1:${framePort}`;
 
   gateway = new Gateway({
     host: '127.0.0.1',
@@ -510,6 +639,10 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     sessionsDirectory: join(directory, '.companion-sessions'),
     appDirectory,
     log: (message) => console.error(`[remote] ${message}`),
+    frames: {
+      listen: { host: '127.0.0.1', port: framePort },
+      origin: frameOrigin,
+    },
   });
   await gateway.start();
   continueStartup();
@@ -521,6 +654,7 @@ Companion browser shell demo (synthetic data only)
 
   Open:          http://127.0.0.1:${port}/
   Pairing code:  ${code.slice(0, 5)}-${code.slice(5)}   (10 minutes, one browser)
+  Widget frames: ${frameOrigin}/ (the city trip shows an inline widget)
 
 New pairing code:
   bin/companion-remote pair --state-directory ${stateDirectory}

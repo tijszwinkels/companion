@@ -1,8 +1,8 @@
 # Companion browser shell
 
-Status: fourth slice (2026-11). The desktop chat page in an ordinary browser,
-against the existing remote gateway, with the conversation list on its left
-and the Activity column on its right.
+Status: fifth slice, inline widgets (2026-11). The desktop chat page in an
+ordinary browser, against the existing remote gateway, with the conversation
+list on its left and the Activity column on its right.
 The goal of the larger project is the whole sidebar in a browser, so the
 interface can run on another computer (macOS, Windows) than the listener.
 
@@ -29,10 +29,12 @@ A paired browser can:
 8. show how long each running turn has been going, how long the last one
    took and when each message was written, and switch those displays and
    the listener's sound, intent and shortcut switches on a **settings
-   screen** (see [Settings, turn timers and message times](#settings-turn-timers-and-message-times)).
+   screen** (see [Settings, turn timers and message times](#settings-turn-timers-and-message-times));
+9. show an agent's **inline widgets** in the chat and use them, when the
+   gateway has a frame origin (see [Inline widgets](#inline-widgets)).
 
 Not yet in the browser: Activity history of earlier listener runs, inserting
-text into desktop applications, and widgets.
+text into desktop applications, pinned widgets and session applications.
 
 ## Conversation list and layout
 
@@ -825,6 +827,223 @@ Rule (`src/times/message-time.ts`):
 | Message timestamps off                                          | any                  | nothing (no field) |
 | A streaming answer updated ten times                            | any                  | its first time     |
 
+## Inline widgets
+
+Agents can show **widgets**: small interactive pages under a message. The
+gateway serves each widget's page to a paired browser on its own origin, the
+**frame origin**, and sends the browser that page's address as
+`widget.frameUrl` (`<frame origin>/f/<handle>/`) when it is configured with
+one ([gateway README](../../src/remote/README.md#widget-and-application-frames));
+without it the browser receives no address. Pinned widgets, session
+applications, permission controls and a Settings → Widgets page are not part
+of this step. The phone panel (`integrations/mobile`) keeps its placeholder
+card.
+
+A message with a widget is drawn by the shell's own component
+(`src/widgets/InlineWidget.tsx`): the bridge gives every widget row a
+`frameUrl` (the gateway's address when it is valid, else '') and offers the
+component, and the chat page uses it for such rows (see
+[changes to the shared chat page](#changes-to-the-shared-chat-page)):
+
+- **With a frame address**: directly under the agent's message, a rounded
+  panel as wide as an agent message (the chat's whole width less the
+  gutter opposite the sender, like the other messages) with a small header,
+  🧩 and the widget's name, above the widget's page in an iframe:
+  `sandbox="allow-scripts allow-same-origin allow-forms"` (no popups, no top
+  navigation, no modals), an `allow` attribute that names every feature with
+  `'none'`, `referrerpolicy="no-referrer"` and `loading="lazy"`. The frame is
+  on another origin than the shell, so `allow-same-origin` gives it only its
+  own origin's storage, never the shell's. The address is used exactly as
+  the gateway sent it.
+- **Without one** (no frame origin configured): a small card with the
+  widget's name and one line, "Widgets are not set up for this browser, so
+  only the widget's name is shown." No frame, no request.
+
+**Height.** The frame is as tall as the widget's content within the
+desktop sidebar's bounds for an inline widget (`WidgetSurface.qml`:
+`minimumFitHeight` 100 and `maximumFitHeight` 420 theme units), here
+100–420 px (the shell's theme unit and text scale are 1). Taller content
+scrolls inside the frame. Until the first height arrives the frame is 100 px
+tall, or as tall as the same address was last shown in this page.
+
+### Rule: frame states
+
+Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
+
+1. A widget message without a valid frame address (absent, or not exactly
+   `http(s)://host[:port]/f/<43 base64url characters>/` without user,
+   query or fragment) shows the **not set up** card.
+2. A widget message with one shows the panel with its frame **loading**: the
+   frame shows "Loading the <name> widget…" over it.
+3. It is **shown** at the frame's first `geometry` message. host.js sends the
+   first one only after the widget drew its first state.
+4. It has **failed** when the frame sends `error` before it was shown (the
+   widget's first state could not be drawn), or when no `geometry` arrived
+   within 10 seconds during which the frame was visible (see the visibility
+   rule; a frame out of sight may not be drawn by the browser at all, so the
+   10 seconds start again each time it becomes visible). A view whose
+   handle ended (the gateway answers 404 for its page) never reports and
+   fails this way. The panel then shows "The <name> widget could not load.",
+   the reason (the frame's error text, or "Its page did not answer within
+   10 seconds."), "The conversation and the widget's saved data are
+   unchanged." and **Try again**. The frame is removed, so it makes no
+   requests. Try again creates a new frame for the same address (loading).
+5. An `error` after the widget was shown changes nothing here; host.js shows
+   it inside the frame, as on the desktop.
+6. **Disconnected**: while the shell's requests are not admitted (offline,
+   reconnecting, or reconnected before the new snapshot), the frame is
+   greyed with "Disconnected · reconnecting…" over it, takes no input and
+   is told it is not visible (so it stops polling). Its state is kept and
+   its deadline paused.
+7. Back with the **same address** (the device's handles lived on): the frame
+   continues where it was, without loading again. Back with a **new
+   address** (the handles ended, for example the gateway restarted): the row
+   changes, the old frame is removed and the new address loads.
+8. A **conversation switched and back**: the frame goes with the chat and
+   loads again when the conversation is shown again, at the height it last
+   had in this page (heights of the last 100 addresses are kept in memory).
+9. The **widget removed from the message**: the panel and its frame are
+   removed; the message is drawn as text.
+10. **Two widgets in one conversation**: each has its own panel, frame, state
+    and messages; nothing one frame sends reaches the other's panel.
+
+| Case                                                   | Shown                                                              |
+| ------------------------------------------------------ | ------------------------------------------------------------------ |
+| No `frameUrl`, or one of another shape                 | Not set up card, no frame                                          |
+| `frameUrl`, nothing reported yet                       | Panel, frame loading under "Loading the <name> widget…"            |
+| First `geometry` 180                                   | Shown, 180 px                                                      |
+| `error` "boom" before any `geometry`                   | Failed: "The <name> widget could not load. boom", Try again        |
+| No `geometry` within 10 s visible (also: upstream 404) | Failed: "… Its page did not answer within 10 seconds.", Try again  |
+| 10 s pass while out of view, then 9 s in view          | Still loading                                                      |
+| Try again                                              | A new frame, loading; shown at its first `geometry`                |
+| `error` after shown                                    | Still shown                                                        |
+| Connection lost                                        | Greyed, "Disconnected · reconnecting…", no input, `visible: false` |
+| Back with the same address                             | The same frame, shown, `visible: true`; not loaded again           |
+| Back with a new address                                | New frame for the new address: loading, then shown                 |
+| Conversation switched and back                         | Loads again, at its last height until its first `geometry`         |
+| Widget removed from the message                        | Message as text, frame removed                                     |
+| Two widgets, one reports 300                           | Only that panel is 300 px tall                                     |
+
+### Rule: messages between the shell and a frame
+
+Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
+`integrations/widgets/host.js`):
+
+1. Frame → shell, exactly these fields: `{"type":"geometry","height":N}` (the
+   widget's content height in CSS pixels) and `{"type":"error","text":"…"}`
+   (its first state could not be drawn).
+2. Shell → frame, exactly these fields:
+   `{"type":"theme","theme":{"foreground":"#rrggbb","background":"#rrggbb","accent":"#rrggbb","muted":"#rrggbb","scale":1}}`
+   and `{"type":"visible","visible":true|false}`. Nothing else is ever
+   posted to a frame: no device token, conversation ID or other value.
+3. The shell acts on a message only when its `source` is that panel's own
+   iframe window and its `origin` is exactly the origin of the panel's frame
+   address, and when it has exactly one of the two shapes. Anything else is
+   ignored: another window (the shell itself, the widget's inner frame,
+   another panel's frame), another origin, extra or missing fields, another
+   type, a height that is not a finite number, a text that is not a string.
+4. A `geometry` height is rounded and clamped to 100–420 px (negative to
+   100, huge to 420). The panel applies at most one height per 100 ms: the
+   first at once, then the last one received in each interval; equal
+   heights are not applied again. An `error` text is cut to 200 characters.
+5. The shell posts to a frame only after its `load` event, with the frame
+   origin as the target origin: `theme` (the chat's own colours, scale 1)
+   and `visible` at each load, then `visible` when it changes.
+6. host.js talks to its parent only when its page came from the socket route
+   (`bootstrap.api` is the marker `location`) and is framed: the browser
+   shell. It accepts messages only from `window.parent`, only `theme` (four
+   `#rrggbb` colours and a scale within 0.4–6) and `visible` (a boolean),
+   with exactly those fields; everything else is ignored. It posts with the
+   target origin `*` (it cannot know the shell's origin: the shell frames it
+   without a referrer), which reveals nothing: `frame-ancestors` lets only
+   the gateway's pages frame it, and the messages carry only a height and
+   an error text. On the loopback route (the desktop panel and the pop-out)
+   it installs no listener for its parent and posts nothing to it.
+7. A message from a frame that is not loaded yet is checked like any other
+   (its window is the panel's frame); a message that arrives after its frame
+   was removed (or replaced by Try again or a new address) is ignored: its
+   panel's listener is gone or its window is no longer the panel's frame.
+
+| Case                                                 | Result                                           |
+| ---------------------------------------------------- | ------------------------------------------------ |
+| `geometry` 180 from the frame, frame origin          | Applied: 180 px                                  |
+| `error` "boom" from the frame before shown           | Failed with "boom"                               |
+| `error` with a text of 1,000 characters              | Its first 200 characters shown                   |
+| `geometry` from the shell's own window               | Ignored                                          |
+| `geometry` from the widget's inner frame (`top`)     | Ignored                                          |
+| `geometry` from another panel's frame                | Ignored by this panel                            |
+| `geometry` from the frame's window, another origin   | Ignored                                          |
+| `geometry` with an extra field, or `height` a string | Ignored                                          |
+| `geometry` `NaN` or `Infinity`                       | Ignored                                          |
+| `geometry` −50 / 0 / 99.6 / 5000                     | 100 / 100 / 100 / 420 px                         |
+| 1,000 `geometry` messages in one burst, last 250     | At most 2 heights applied in the burst, then 250 |
+| A message before the frame's `load` event            | Checked like any other                           |
+| A message after the frame was removed                | Ignored                                          |
+| host.js: `visible` false from the parent             | Polling stops                                    |
+| host.js: `theme` with `"red"` or a scale of 50       | Ignored                                          |
+| host.js: any message from another window             | Ignored                                          |
+| host.js on the loopback route, framed or not         | No listener for its parent, nothing posted to it |
+
+### Rule: visibility
+
+Rule (`src/widgets/frame-visibility.ts`): a frame is **visible** when its
+panel is in view (it intersects the window after the transcript's
+scrolling clipped it), the browser tab is not hidden, the chat is not
+covered by this page's own screens (the settings screen, or the Activity
+column lying over the chat in a narrow window; `src/widgets/chat-cover.ts`)
+and the shell's requests are admitted. The shell tells the frame when this
+changes. The widget page polls its state every 400 ms only while it is
+visible (host.js; a hidden tab stopped it before as well), so a frame the
+reader cannot see makes no requests. A conversation that is not shown has
+no frames at all.
+
+| Case                                   | Visible | Polls                           |
+| -------------------------------------- | ------- | ------------------------------- |
+| In view                                | yes     | yes                             |
+| Scrolled out of view                   | no      | no, until scrolled back         |
+| Hidden tab                             | no      | no, until the tab is shown      |
+| Behind the settings screen             | no      | no, until the settings are left |
+| Behind the narrow Activity overlay     | no      | no, until the column is hidden  |
+| Activity beside the chat (wide window) | yes     | yes                             |
+| A different conversation shown         | —       | no (the frame is removed)       |
+| Disconnected                           | no      | no, until admitted again        |
+
+### Security
+
+- **Policy.** The shell's Content-Security-Policy is the gateway's: with a
+  frame origin configured it gains exactly `frame-src <frame origin>` from
+  the gateway ([headers rule](../../src/remote/README.md#rules-headers)).
+  This step changes neither the gateway nor its policy; the shell's frames
+  load only from that origin.
+- **Nothing given to a frame.** The shell puts nothing into a frame's
+  address (it is used exactly as the gateway sent it) and posts only
+  `theme` and `visible` (rule above). The frame's origin differs from the
+  shell's, so it cannot read the shell's `localStorage` (the device token),
+  its DOM or its socket.
+- **Layout.** A frame changes only its own height, within 100–420 px and at
+  most ten times a second; a hostile `geometry` (negative, huge, not a
+  number, at a high rate) is clamped or ignored. It cannot move, resize or
+  cover anything else, open popups or navigate the shell.
+- **WebRTC.** Widget code (the innermost sandboxed frame) could open an
+  `RTCPeerConnection` and send STUN/ICE packets anywhere, because Chromium
+  does not enforce CSP `webrtc 'block'`. host.js now makes
+  `RTCPeerConnection`, `webkitRTCPeerConnection`, `mozRTCPeerConnection` and
+  `WebTransport` undefined (and not redefinable) in the inner document with
+  a script that runs before frame.js loads the widget's code, on both routes
+  (pop-out and browser alike); the desktop's native widget view already
+  does the same in every frame (`NativeWidgetView.qml`, same list). It is a
+  `data:` script: the inner document inherits host.js's own policy as well,
+  which allows no inline scripts. The inner document's policy
+  (`frame-src 'none'`) and the sandbox (no popups) leave widget code no
+  fresh window to take the constructors from (checked in Chromium: a child
+  frame it creates is not reachable, `window.open` returns null). No
+  bundled widget uses WebRTC. `src/remote/README.md` still describes the
+  gap as open; this step does not change files under `src/`.
+- **Residual risk** (unchanged from the frame origin's design): a frame on
+  another port of the same host name is the same site, so a renderer
+  exploit in a widget could reach the shell's process; see the gateway
+  README.
+
 ## How it works
 
 ```text
@@ -986,7 +1205,7 @@ page after one it has not shown yet.
 
 ### Changes to the shared chat page
 
-`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Three changes
+`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Four changes
 were made for the browser:
 
 1. Its transcript does not count the end of a **detached** history snapshot
@@ -1018,6 +1237,21 @@ were made for the browser:
    changes there (`test/shell/chat-heading.test.ts` compares the page's
    HTML with a reference drawn before the change). The shell's stylesheet
    aligns it right; `ChatState.mjs` and QML are unchanged.
+4. A host may draw widget messages itself: a row's `widget` has an optional
+   `frameUrl` and `NativeBridge` an optional `inlineWidget` component
+   (`protocol.ts`). Only when a widget row carries `frameUrl` (an address,
+   or '' for "not set up") and the bridge has the component does the page
+   draw that row as `<div class="message assistant inline-widget-message">`
+   around the component (one `.message` per row, as before) instead of its
+   "shown in the classic view" card; the browser shell's bridge sends the
+   field for every widget row ([inline widgets](#inline-widgets)). The Qt
+   host sends neither, so its page is exactly as before:
+   `test/shell/chat-heading.test.ts` draws every kind of row, a widget row
+   included, without the field (with a host that has no `inlineWidget`,
+   one whose every member is a function, and one with a component) and
+   with it but without a component, and compares each with the reference
+   drawn by the base revision; with the field and a component only the
+   widget row differs. `ChatState.mjs` and QML are unchanged.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -1105,16 +1339,17 @@ chat of a conversation with more than about a thousand rows,
 Shown as unavailable through the existing `status` fields, not by changing
 the chat page:
 
-| Desktop feature                                | In the browser                                                                                         |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Recording into the text box                    | `recording.available: false` (no Record button)                                                        |
-| Listener-owned and agent-proposed drafts       | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty       |
-| Classic view, tool details, widgets            | The page's Classic view and tool-group buttons show "not available in the browser yet" in `inputError` |
-| Session applications                           | `application: null`                                                                                    |
-| Screenshots                                    | Labelled "screenshot unavailable"; no viewer yet                                                       |
-| Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                     |
-| Model picker                                   | Not in this slice                                                                                      |
-| Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                          |
+| Desktop feature                                | In the browser                                                                                                             |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Recording into the text box                    | `recording.available: false` (no Record button)                                                                            |
+| Listener-owned and agent-proposed drafts       | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty                           |
+| Classic view, tool details                     | The page's Classic view and tool-group buttons show "not available in the browser yet" in `inputError`                     |
+| Widgets                                        | Inline widgets in the chat when the gateway has a frame origin ([inline widgets](#inline-widgets)); pinned widgets not yet |
+| Session applications                           | `application: null`                                                                                                        |
+| Screenshots                                    | Labelled "screenshot unavailable"; no viewer yet                                                                           |
+| Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                                         |
+| Model picker                                   | Not in this slice                                                                                                          |
+| Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                                              |
 
 Known limit: two tabs of the same browser under the same pairing each keep
 the phone Store's draft map and save it whole, so a draft typed in one tab can
@@ -1134,7 +1369,7 @@ reader's own, the page itself never requests anything from another origin.
 ```sh
 npm ci
 npm run shell:build      # → integrations/shell/dist (index.html, app.js, app.css)
-npm run shell:demo       # synthetic listener + gateway on http://127.0.0.1:8788
+npm run shell:demo       # synthetic listener + gateway on http://127.0.0.1:8788 (frames on 8789)
 npm run test:shell       # builds, then runs the unit and headless Chromium suites
 ```
 
@@ -1143,6 +1378,10 @@ A scripted backend streams Markdown, tool calls and choices; Activity has
 synthetic entries of different kinds (typed, ignored, a started
 conversation, audio only, not saved), listening starts paused for media, and
 a new entry is heard every 40 seconds (six in all) to show the marker.
+The gateway also runs a frame origin on the next port (`--frame-port N` picks
+another), and the city-trip answer is followed by an inline packing-list
+widget whose items can be ticked off; its actions run in the demo process
+(`test/widget-node-renderer.ts`), not in the isolated widget renderer.
 For the times, the invoice conversation was asked "yesterday" and continued
 today (the listener's clock is set back by a day for its first turn only),
 the flaky-test conversation's turn keeps running (its timer counts), and the
@@ -1173,7 +1412,66 @@ Stop's notice ending with its turn, and the page's `newer` request never
 repeated while pending or after a failure.
 
 `demo.test.ts` interrupts `shell:demo` with Ctrl+C while it starts and after
-it started, and checks that no temporary directory is left.
+it started, and checks that no temporary directory is left; and that the
+demo's snapshot has exactly one widget, under the city trip, with a frame
+address on its frame origin that serves the widget's page.
+
+The [inline widget](#inline-widgets) rules have one table each:
+
+- `inline-widget-rules.test.ts` (Node) plays the rows that need no browser:
+  frame addresses of every shape, the page rows with and without the
+  shell's component, the frame states (loading, shown, error before and
+  after shown, deadline, Try again, nothing from a failed frame, the
+  remembered height), every message case of the shell's side (source
+  window, origin, fields, types, clamping, the 100 ms throttle with a
+  controlled clock including a 1,000-message burst and removal while a
+  height waits, the theme and visible messages) and the visibility table.
+- `inline-widgets.test.ts` runs the built shell in headless Chromium against
+  the frame fixture (`test/frame-fixture.ts`: a real gateway with a frame
+  origin on a second loopback port, a real listener and widget service,
+  synthetic widgets in `widget-page.ts` whose reducers run in Node): a
+  widget inline at the width of the agent's message, its iframe's
+  attributes, an action in it changing its state, the frame unable to read
+  the shell's `localStorage`, the gateway's policy exactly its base plus
+  `frame-src <frame origin>`, 420 and 1600 px without overflow; shown at
+  the content height (and 420 at most), failed with the widget's own error
+  and Try again loading a new frame, the probe widget seeing no
+  `RTCPeerConnection` and no reachable child window; not set up without a
+  frame origin (no frame, no request to another origin); an ended view
+  (upstream 404) failing after 10 seconds in view; disconnected (greyed,
+  inert, not visible), back with the same address without loading again
+  and polling again, and a new address after a gateway restart, loaded;
+  hostile and malformed messages (out of bounds, not a number, extra
+  fields, another type, from the shell's own window, from the widget's
+  inner frame, from another panel's frame, an error after shown) and a
+  1,000-message burst; a conversation switched (no frames, no polling) and
+  back (loaded again at the remembered height); a widget removed from its
+  message; and visibility: out of view at the live end, shown and polling
+  when scrolled into view with the wheel, not visible and not polling when
+  scrolled out, polling again when back, not visible behind the settings
+  screen and behind the Activity column over the chat at 420 px. Each test
+  checks that no request left the gateway's origin and the frame origin
+  and that no policy violation occurred. With
+  `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves every state (loading,
+  shown, failed, disconnected, not set up) at 420 and 1280 px.
+- `widget-host.test.ts` takes widget documents from the real loopback and
+  socket routes and frames them from a test page, with every window's
+  `message` listeners counted from before any script runs: on the loopback
+  route (at the top level, as the pop-out, and framed) host.js installs only
+  its own frame's listener and posts nothing to its parent; from the socket
+  route, framed, it adds the listener for the shell, posts only `geometry`
+  with exactly its fields, stops polling on `visible: false` (counted at the
+  test server) and resumes on `true`, ignores malformed `visible` and
+  `theme` messages and messages from its own inner frame, applies a valid
+  theme, and on both routes widget code sees none of `RTCPeerConnection`,
+  `webkitRTCPeerConnection`, `mozRTCPeerConnection` and `WebTransport` in
+  its own world, and cannot define them again.
+
+`chat-heading.test.ts` also draws every kind of row without `frameUrl` with
+three kinds of host and compares each with the reference, and with
+`frameUrl` (an address and '') shows that only the widget row changes, and
+only with a host component (see
+[changes to the shared chat page](#changes-to-the-shared-chat-page)).
 
 `layout.test.ts` and `reorder-gesture.test.ts` check the list's pure rules in
 Node, each with the cases of its README table above: the remembered width and
@@ -1364,7 +1662,15 @@ and touch on real touch hardware (a synthetic touch swipe is covered); the × fo
 characters from an input method); and edge scrolling of a long list during a
 drag.
 
+Not covered in the browser for inline widgets: a hidden tab (the
+visibility table's row is in `inline-widget-rules.test.ts`; host.js already
+stopped polling in a hidden tab before), and a frame whose own page
+navigates elsewhere (its messages then have another origin and are
+ignored, a Node table row).
+
 Not tested: Safari, Firefox and Windows browsers, a real network or Tailscale,
+a widget drawn by the isolated widget renderer (the fixture's renderer runs
+reducers in Node; the browser draws the widget from its bundle either way),
 and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 
 ## Structure
@@ -1409,5 +1715,12 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
 | `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
 | `src/styles.css`                     | The frame around the chat; the chat keeps its desktop stylesheet              |
+| `src/widgets/InlineWidget.tsx`       | Inline widget panels: header, frame, states, messages, visibility             |
+| `src/widgets/frame-address.ts`       | Which frame addresses are used (exactly `<origin>/f/<handle>/`)               |
+| `src/widgets/frame-state.ts`         | The frame states rule, without DOM access                                     |
+| `src/widgets/frame-messages.ts`      | Messages to and from a frame: checks, height bounds, theme                    |
+| `src/widgets/height-throttle.ts`     | At most one applied frame height per 100 ms                                   |
+| `src/widgets/frame-visibility.ts`    | The visibility rule                                                           |
+| `src/widgets/chat-cover.ts`          | Whether the settings screen or the Activity overlay covers the chat           |
 | `build.ts`                           | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
 | `demo.ts`                            | Synthetic end-to-end demo                                                     |

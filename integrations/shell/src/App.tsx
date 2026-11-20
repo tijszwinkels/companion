@@ -19,6 +19,7 @@ import type { AppState } from '../../mobile/src/store.ts';
 import type { GatewayChatBridge } from './bridge.ts';
 import type { SettingsView } from './settings/settings-view.ts';
 import type { PageTimes } from './times/page-times.ts';
+import type { ChatCover } from './widgets/chat-cover.ts';
 import { Workspace } from './workspace/Workspace.tsx';
 
 export function App(props: {
@@ -26,6 +27,7 @@ export function App(props: {
   bridge: GatewayChatBridge;
   times: PageTimes;
   settingsView: SettingsView;
+  chatCover: ChatCover;
 }) {
   const state = useAppState();
 
@@ -47,6 +49,7 @@ export function App(props: {
         bridge={props.bridge}
         times={props.times}
         settingsView={props.settingsView}
+        chatCover={props.chatCover}
       />
       <Toasts />
     </div>

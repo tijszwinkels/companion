@@ -700,6 +700,110 @@ body {
   background: var(--accent);
 }
 
+/* ---- Inline widgets (widgets/InlineWidget.tsx) --------------------------------- */
+
+/* A widget message is a panel as wide as an agent message (the chat page's
+   .panel: the gutter opposite the sender), with a small header naming the
+   widget above its frame. The frame's height is set by the page within
+   100-420 px; the header and the frame have no padding of their own. */
+.panel.inline-widget {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.inline-widget-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 4px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.inline-widget-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inline-widget-body {
+  position: relative;
+}
+
+.inline-widget-body iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+
+/* Loading and disconnected: a label over the frame, which stays in the
+   page (and in view) so it can load and report its height meanwhile. */
+.inline-widget-cover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--background) 82%, transparent);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* Disconnected: the frame greyed, with the label on a small plate. */
+.inline-widget-cover.offline {
+  background: transparent;
+}
+
+.inline-widget-cover.offline span {
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--selection);
+  color: var(--foreground);
+}
+
+.inline-widget.disconnected iframe {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+.inline-widget-failed,
+.inline-widget-note {
+  margin: 0;
+  padding: 12px;
+  font-family: var(--prose);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--foreground);
+}
+
+.inline-widget-failed p {
+  margin: 0;
+}
+
+.inline-widget-failed strong {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.inline-widget-failed .inline-widget-note {
+  padding: 6px 0 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.inline-widget-note {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
 /* ---- Previous sessions --------------------------------------------------------- */
 
 .previous-sessions {

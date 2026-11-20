@@ -27,6 +27,8 @@ import './styles.css';
 import { ListenerClock } from './times/listener-clock.ts';
 import type { PageTimes } from './times/page-times.ts';
 import { TurnTicker } from './times/turn-ticker.ts';
+import { ChatCover } from './widgets/chat-cover.ts';
+import { createInlineWidget } from './widgets/InlineWidget.tsx';
 
 /**
  * Where the chat page's rows are on screen. Chat.tsx draws one `.message`
@@ -110,6 +112,17 @@ const bridge = new GatewayChatBridge(store, transcriptView, {
   settings: times.settings,
   clock,
 });
+// Inline widgets (widgets/InlineWidget.tsx): the chat page draws widget
+// messages with this component. Frames are greyed and paused while requests
+// are not admitted, and paused while this page's own screens cover the chat
+// (the workspace keeps `chatCover` up to date).
+const chatCover = new ChatCover();
+bridge.inlineWidget = createInlineWidget({
+  connected: () => bridge.admitted,
+  subscribe: (listener) => store.subscribe(listener),
+  cover: chatCover,
+});
+
 const chat = new ChatStore();
 chat.attach(bridge);
 
@@ -153,7 +166,13 @@ window.addEventListener('storage', (event) => {
 
 render(
   <StoreContext.Provider value={store}>
-    <App chat={chat} bridge={bridge} times={times} settingsView={settingsView} />
+    <App
+      chat={chat}
+      bridge={bridge}
+      times={times}
+      settingsView={settingsView}
+      chatCover={chatCover}
+    />
   </StoreContext.Provider>,
   document.getElementById('app')!,
 );

@@ -47,7 +47,15 @@
  * changed (the offset moves by milliseconds with every state message), so
  * the page is not drawn again for nothing. With the switch off, or without
  * `times`, rows are exactly the Qt host's.
+ *
+ * Widget frames: a widget row carries the frame address the gateway sent
+ * (`widget.frameUrl`, rows.ts), and the page draws widget rows with
+ * `inlineWidget` (../widgets/InlineWidget.tsx). A new address (the old
+ * handle ended, for example after the gateway restarted) changes the row,
+ * so the usual diff sends it again and the page loads the new frame.
  */
+
+import type { ComponentType } from 'preact';
 
 import type { AgentSession } from '../../../src/agents/types.ts';
 import type { HistoryPage } from '../../../src/agents/history-pages.ts';
@@ -57,6 +65,7 @@ import type {
   ChatChoice,
   ChatStatus,
   HostMessage,
+  InlineWidgetProps,
   NativeBridge,
 } from '../../session-apps/chat/protocol.ts';
 import { ResidentHistory, type PageRequest } from './history.ts';
@@ -122,6 +131,12 @@ type Answer = Record<string, unknown>;
 
 export class GatewayChatBridge implements NativeBridge {
   readonly message: { connect(callback: (json: string) => void): void };
+
+  /**
+   * The chat page draws widget messages with this component (set by
+   * main.tsx; widgets/InlineWidget.tsx). Unset, the page draws its own card.
+   */
+  inlineWidget?: ComponentType<InlineWidgetProps>;
 
   private readonly listeners: ((json: string) => void)[] = [];
   // Ordered deliveries to the page (messages and replies), drained in a
@@ -475,7 +490,9 @@ export class GatewayChatBridge implements NativeBridge {
     this.timesDate = this.readerDate();
     const rows = this.resident
       .rows()
-      .map((row) => pageRow(row, this.messageTime(row.message.createdAt)));
+      .map((row) =>
+        pageRow(row, this.messageTime(row.message.createdAt), this.inlineWidget !== undefined),
+      );
     const diff = diffRows(this.sentRows, rows, this.fullRows);
     const onlyTimes = this.onlyTimesChanged;
     this.onlyTimesChanged = false;
