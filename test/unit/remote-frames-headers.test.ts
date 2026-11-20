@@ -162,12 +162,54 @@ test('without frame options the gateway and relay output equal the base revision
   ) as Json;
   const current = await recordGateway();
   assert.deepEqual(current.http, recorded.http);
-  assert.deepEqual(current.relay, recorded.relay);
+
+  // One intended difference since the recording: remote clients now receive
+  // each application's chat permissions (src/remote/README.md, "Application
+  // chat access"). The recorded `notes` application asks for nothing and has
+  // no grant. Everything else must be identical.
+  const withoutChatAccess = structuredClone(current.relay) as Json;
+  const removed = removeChatAccess(withoutChatAccess);
+  assert.ok(removed.length > 0, 'The relay sends chat permissions');
+  for (const chatAccess of removed) {
+    assert.deepEqual(chatAccess, {
+      requested: [],
+      read: false,
+      revision: '<uuid>',
+      send: { allowed: false, remaining: 0, busy: false },
+    });
+  }
+  assert.deepEqual(withoutChatAccess, recorded.relay);
   // The recording really contains the views whose addresses are removed.
   assert.equal(recorded.relay.snapshot.application.name, 'notes');
   assert.ok(!JSON.stringify(recorded).includes('frameUrl'));
   assert.ok(!JSON.stringify(recorded).includes('/view/'));
 });
+
+/** Remove every application's `chatAccess` in place and return what was removed. */
+function removeChatAccess(value: unknown): unknown[] {
+  const removed: unknown[] = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      removed.push(...removeChatAccess(entry));
+    }
+    return removed;
+  }
+  if (!value || typeof value !== 'object') {
+    return removed;
+  }
+
+  const object = value as Json;
+  if (object.application && typeof object.application === 'object') {
+    if ('chatAccess' in object.application) {
+      removed.push(object.application.chatAccess);
+      delete object.application.chatAccess;
+    }
+  }
+  for (const entry of Object.values(object)) {
+    removed.push(...removeChatAccess(entry));
+  }
+  return removed;
+}
 
 test('without frame options no second listener runs and no frame address is sent', async (context) => {
   const fixture = await frameFixture({ frames: false });
