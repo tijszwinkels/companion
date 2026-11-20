@@ -9,10 +9,10 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentMessage } from '../../../../src/agents/types.ts';
 import type { ToolPage } from '../../../../src/remote/protocol.ts';
-import { gatewayUrl } from '../connection.ts';
 import { copyText } from '../format.ts';
 import { useStore } from '../hooks.ts';
 import { renderMarkdown } from '../markdown.ts';
+import { fetchScreenshot } from '../screenshots.ts';
 import { ChevronIcon, CloseIcon, ToolIcon } from '../../../chat-ui/icons.tsx';
 import { Modal } from './Modal.tsx';
 
@@ -150,17 +150,7 @@ function Screenshot(props: { url?: string }) {
     let created = '';
     const controller = new AbortController();
 
-    fetch(gatewayUrl(props.url, store.connection.server), {
-      headers: { Authorization: `Bearer ${store.connection.token}` },
-      credentials: 'omit',
-      signal: controller.signal,
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw Error(String(response.status));
-        }
-        return response.blob();
-      })
+    fetchScreenshot(props.url, store.connection, controller.signal)
       .then((blob) => {
         if (!revoked) {
           created = URL.createObjectURL(blob);
