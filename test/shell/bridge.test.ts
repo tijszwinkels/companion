@@ -996,6 +996,18 @@ const pullBackCases: {
     pulledBack: false,
   },
   {
+    name: 'pulled back half a pixel, the whole-pixel range unchanged',
+    previous: { top: 800, maximumTop: 800 },
+    current: { top: 799.5, maximumTop: 800 },
+    pulledBack: true,
+  },
+  {
+    name: 'the reader scrolls up 1 px from the end, the range unchanged',
+    previous: { top: 800, maximumTop: 800 },
+    current: { top: 799, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
     name: 'pulled back to a fractional end just under the whole-pixel one',
     previous: { top: 900, maximumTop: 900 },
     current: { top: 799.6, maximumTop: 800 },
@@ -1042,12 +1054,17 @@ test('a failed page request leaves queued rows to their 30 ms coalescing', async
   bridge.history(sessionA, 'older');
   await settle();
 
-  // A row streams in, then the page request fails before 30 ms passed.
-  const streamed = {
-    ...shown,
-    messages: [...shown.messages, chatMessage('new', 'assistant', 'New')],
-  };
-  store.update({ sessions: new Map(store.state.sessions).set(sessionA, streamed) });
+  // The newest row's text grows (as an answer streams), then the page
+  // request fails before 30 ms passed.
+  const grown = shown.messages.map((message) => {
+    if (message.id === 'row-599') {
+      return { ...message, text: 'Row 599, streamed further' };
+    }
+    return message;
+  });
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, { ...shown, messages: grown }),
+  });
   const from = messages.length;
   store.pending.splice(0)[0].reject(Error('Synthetic page failure'));
   await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1057,8 +1074,26 @@ test('a failed page request leaves queued rows to their 30 ms coalescing', async
     'no rows sent at once',
   );
   await settle();
-  assert.ok(messages.slice(from).some((message) => message.type === 'rows'));
+  // The streamed text goes out with the 30 ms timer.
+  const sent = messages.slice(from).filter((message) => message.type === 'rows');
+  assert.equal(sent.length, 1);
+  const delivered = sent[0];
+  assert.ok(delivered.type === 'rows');
+  assert.deepEqual(
+    delivered.changed.map((row) => row.text),
+    ['Row 599, streamed further'],
+  );
   assert.equal(lastStatus(messages).history?.error, 'Synthetic page failure');
+
+  // A scroll that goes on before the page has shown the failure asks for
+  // the previous page again: nothing is sent. Only Retry repeats it.
+  bridge.history(sessionA, 'older');
+  await settle();
+  assert.equal(store.pending.length, 0, 'not repeated by scrolling');
+  bridge.history(sessionA, 'retry');
+  await settle();
+  assert.equal(store.pending.length, 1, 'repeated by Retry');
+  assert.equal(store.pending[0].action, 'agent-history-page');
 });
 
 test('a page refused because it would trim visible rows leaves queued rows to their coalescing', async () => {
@@ -1181,6 +1216,42 @@ const pageToAskCases: {
     maximumTop: 9000,
     towardEnd: false,
     hasOlder: false,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'exactly one viewport below the top',
+    top: 600,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'older',
+  },
+  {
+    name: 'just over one viewport below the top',
+    top: 601,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'exactly one viewport above the end',
+    top: 1400,
+    maximumTop: 2000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'just over one viewport above the end',
+    top: 1399,
+    maximumTop: 2000,
+    towardEnd: true,
+    hasOlder: true,
     detached: true,
     expected: null,
   },

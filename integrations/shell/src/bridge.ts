@@ -943,7 +943,8 @@ export class GatewayChatBridge implements NativeBridge {
     } else if (!this.online) {
       return;
     } else if (request === 'older') {
-      this.resident.loadOlder();
+      // Never after a failure, as for newer pages below.
+      this.resident.continueOlder();
     } else if (request === 'newer') {
       // The page asks as the reader nears the end of a detached snapshot.
       // Never while a page is pending, and never after a failure: only the

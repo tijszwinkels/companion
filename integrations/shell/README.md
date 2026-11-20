@@ -358,15 +358,18 @@ the browser and in the Qt host:
 > when the transcript grows.
 
 The page tells its own scrolls from the reader's by the scroll positions it
-set itself; the browser's pull-back is the one scroll after which the scroll
-range shrank below the previous position and the view sits at the new end
-(`pulledBack` in `Chat.tsx`). No input events are interpreted for paging, so
+set itself; the browser's pull-back is the one scroll toward the start after
+which the scroll range did not grow and the view sits at its new end, having
+either been beyond it or moved less than a pixel (`pulledBack` in
+`Chat.tsx`; positions can be fractional, sizes are whole pixels). "Within
+one viewport" includes exactly one viewport. No input events are interpreted for paging, so
 a touch pan (which the browser reports as pointerdown, pointercancel and then
 scroll events only) counts like any other scroll. The bridge answers `newer`
 with the next page below the snapshot, or joins the live rows when the
-snapshot already ends where they start; it sends nothing while a page is
-pending, after a failure, or at a boundary the listener answered with an
-empty page.
+snapshot already ends where they start, and `older` with the previous page;
+it sends nothing while a page is pending, after a failure (also when the
+page has not shown that failure yet and the reader's scroll goes on), or at
+a boundary the listener answered with an empty page.
 
 Because the rule is about scrolls, input that moves nothing asks for
 nothing: a downward wheel at the very end of a detached snapshot (where the
@@ -395,10 +398,11 @@ detaching at an ordinary size and then making the window very tall: a scroll
 toward the end asks for the newer page, one toward the start for the older.
 `bridge.test.ts` has the rule's decision (`pageToAsk`) as a table, a table
 for `pulledBack` (fractional positions, a reader's 1- and 3-pixel scroll at
-the very end, a reader landing 1 or 3 pixels before a new end, a pull-back
-to a fractional end), and checks that an arriving page reaches
-the page as rows before the status that ends loading, while a failed or
-refused page leaves queued rows to their 30 ms coalescing: the page never sees a
+the very end, a reader landing 1 or 3 pixels before a new end, pull-backs
+to a fractional end and by half a pixel), and checks that an arriving page
+reaches the page as rows before the status that ends loading, while a failed
+or refused page leaves a queued streamed edit to its 30 ms coalescing and
+then delivers it, and that after a failed page only Retry asks again: the page never sees a
 request settled while it still shows the previous rows, so a scroll that
 continues meanwhile (a key's smooth scrolling, a fling) cannot ask for the
 page after one it has not shown yet.
@@ -475,7 +479,11 @@ existing model show up more now that newer pages load there:
   scroll that continues in that window (a key's smooth scrolling, a fling)
   can then ask for one more page; it loads below, and the reader's row stays
   in place. The browser bridge sends an arrived page's rows first; the Qt
-  host's order is QML and not changed here.
+  host's order is QML and not changed here. For the same reason a scroll
+  that goes on right after a failed page, before the page shows the error,
+  can ask again there (`SessionView.loadOlder`/`loadNewer` clear the error);
+  this was already so for older pages before this change. The browser bridge
+  refuses both after a failure.
 
 To check in the Qt host (not run here; it needs the Qt build): in the HTML
 chat of a conversation with more than about a thousand rows,

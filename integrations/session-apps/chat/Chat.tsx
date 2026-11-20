@@ -109,8 +109,8 @@ export function pageToAsk(
   scroll: { top: number; maximumTop: number; viewportHeight: number; towardEnd: boolean },
   history: { hasOlder: boolean; detached: boolean },
 ): 'older' | 'newer' | null {
-  const olderNear = scroll.top < scroll.viewportHeight && history.hasOlder;
-  const newerNear = scroll.maximumTop - scroll.top < scroll.viewportHeight && history.detached;
+  const olderNear = scroll.top <= scroll.viewportHeight && history.hasOlder;
+  const newerNear = scroll.maximumTop - scroll.top <= scroll.viewportHeight && history.detached;
   if (olderNear && !(newerNear && scroll.towardEnd)) {
     return 'older';
   }
@@ -129,17 +129,21 @@ export interface ScrollPosition {
 /**
  * Whether a scroll event from `previous` to `current` is the browser pulling
  * the view back into a scroll range that shrank (the transcript grew taller
- * or its content shrank), not anyone scrolling: the range shrank below the
- * previous position and the view landed at the new end. Positions may be
- * fractional, and `maximumTop` is from whole-pixel sizes, so the end is
- * anywhere less than one pixel from it.
+ * or its content shrank), not anyone scrolling: the view moved toward the
+ * start, the range did not grow, and the view sits at the new end. Positions
+ * may be fractional while `maximumTop` comes from whole-pixel sizes, so the
+ * end is anywhere less than one pixel from it, and a range that shrank by a
+ * fraction of a pixel can look unchanged: then the move itself is under a
+ * pixel, which no reader's scroll is.
  */
 export function pulledBack(previous: ScrollPosition, current: ScrollPosition): boolean {
+  const atNewEnd = Math.abs(current.top - current.maximumTop) < 1;
+  const rangeShrankUnder = previous.top > current.maximumTop || previous.top - current.top < 1;
   return (
-    current.maximumTop < previous.maximumTop &&
-    previous.top > current.maximumTop &&
     current.top < previous.top &&
-    Math.abs(current.top - current.maximumTop) < 1
+    current.maximumTop <= previous.maximumTop &&
+    atNewEnd &&
+    rangeShrankUnder
   );
 }
 

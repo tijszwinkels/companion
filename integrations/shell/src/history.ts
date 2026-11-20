@@ -165,6 +165,19 @@ export class ResidentHistory {
     this.loadNewer();
   }
 
+  /**
+   * The page's request for the previous page. Not after a failure: the page
+   * may not have shown the error yet while the reader keeps scrolling, and
+   * only the reader's Retry repeats a failed request. (loadHistory itself
+   * refuses while a request is pending.)
+   */
+  continueOlder(): void {
+    if (this.error !== '') {
+      return;
+    }
+    this.loadOlder();
+  }
+
   /** The previous page, above the resident rows. */
   loadOlder(): void {
     const shown = this.shownHistory();
