@@ -76,8 +76,10 @@ let shellVisible = !shellEmbedded;
 // change.
 let shellShown = false;
 let shellHeight = null;
-// The text of the last polling failure shown in the status line, if any.
-let shellPollingError = '';
+// The status line's text node a polling failure wrote, or null. Any other
+// write of the status line (an action's error, even with the same text)
+// replaces that node, so it is no longer the one a later poll may clear.
+let shellPollingError = null;
 
 function command(message) {
   return ready.then(
@@ -717,10 +719,10 @@ if (api) {
         // Embedded, a polling failure the shell's connection loss caused
         // (the frame stays when the shell reconnects to the same address)
         // goes once polling works again; other messages stay as before.
-        if (shellEmbedded && shellPollingError && status.textContent === shellPollingError) {
+        if (shellEmbedded && shellPollingError && status.firstChild === shellPollingError) {
           status.textContent = '';
         }
-        shellPollingError = '';
+        shellPollingError = null;
         if (chatWatching && chatAllowed && !document.hidden) {
           readChat(null);
         }
@@ -730,7 +732,7 @@ if (api) {
           withdrawChat('Application connection is unavailable');
         }
         status.textContent = error.message;
-        shellPollingError = error.message;
+        shellPollingError = status.firstChild;
       });
   }, 400);
 }

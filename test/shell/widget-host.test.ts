@@ -58,6 +58,9 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   // While set, state polls get no answer until `release()`, as on a slow
   // connection.
   const holding = { loopback: false, socket: false };
+  // While set, widget actions fail (503) with the same text as the polls.
+  const actionFailing = { loopback: false, socket: false };
+  const actions = { loopback: 0, socket: 0 };
   const held: (() => void)[] = [];
   function release(): void {
     for (const answer of held.splice(0)) {
@@ -90,6 +93,18 @@ async function documentServer(documents: { loopback: string; socket: string }, s
       answer();
       return;
     }
+    if (path === '/loopback/action' || path === '/socket/action') {
+      actions[route]++;
+      request.resume();
+      if (actionFailing[route]) {
+        response.writeHead(503, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Synthetic outage' }));
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ count: 1 }));
+      return;
+    }
     if (path === '/frame-loopback.html' || path === '/frame-socket.html') {
       const source = path === '/frame-loopback.html' ? '/loopback/' : '/socket/';
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -110,6 +125,8 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     failing,
     holding,
     held,
+    actionFailing,
+    actions,
     release,
     server,
   };
@@ -264,6 +281,40 @@ test(
     documents.holding.socket = false;
     documents.release();
     await waitInFrame(shell, socketFrame, `${statusLine} === ''`);
+
+    // A polling failure, then an action failing with the same text before
+    // any poll succeeded: the line is the action's now and stays when
+    // polling works again. (Writes of the line are counted in the frame.)
+    documents.failing.socket = true;
+    await waitInFrame(shell, socketFrame, `${statusLine} === 'Synthetic outage'`);
+    await evaluateInFrame(
+      shell,
+      socketFrame,
+      `(() => {
+        const line = document.querySelector('.error');
+        line.dataset.writes = '0';
+        new MutationObserver(() => {
+          line.dataset.writes = String(Number(line.dataset.writes) + 1);
+        }).observe(line, { childList: true });
+      })()`,
+    );
+    documents.failing.socket = false;
+    documents.holding.socket = true;
+    documents.actionFailing.socket = true;
+    await waitFor(() => documents!.held.length === 1, 5000);
+    await evaluateInFrame(shell, socketFrame, `document.getElementById('increment').click()`, true);
+    await waitFor(() => documents!.actions.socket === 1, 5000);
+    await waitInFrame(
+      shell,
+      socketFrame,
+      `Number(document.querySelector('.error').dataset.writes) >= 1`,
+    );
+    assert.equal(await evaluateInFrame(shell, socketFrame, statusLine), 'Synthetic outage');
+    documents.holding.socket = false;
+    documents.release();
+    await grows(socketPolls, 3);
+    assert.equal(await evaluateInFrame(shell, socketFrame, statusLine), 'Synthetic outage');
+    documents.actionFailing.socket = false;
     documents.failing.loopback = true;
     await waitInFrame(loopbackParent, loopbackFrame, `${statusLine} === 'Synthetic outage'`);
     documents.failing.loopback = false;

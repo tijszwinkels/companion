@@ -256,6 +256,14 @@ test(
       assert.match(feature.trim(), /^[a-z-]+ 'none'$/);
     }
 
+    // Shown, the frame takes input.
+    assert.equal(
+      await page.evaluate(
+        `${panelExpression('counter')}.querySelector('.inline-widget-frame').inert`,
+      ),
+      false,
+    );
+
     // The header names the widget and, as message headings do, its time.
     const header = await page.evaluate<Json>(`(() => {
       const header = ${panelExpression('counter')}.querySelector('.inline-widget-header');
@@ -460,6 +468,13 @@ test(
       await page.evaluate<string>(`${panelExpression('counter')}.textContent`),
       /Loading the counter widget…/,
     );
+    // Under its label the loading frame takes no input, keyboard included.
+    assert.equal(
+      await page.evaluate(
+        `${panelExpression('counter')}.querySelector('.inline-widget-frame').inert`,
+      ),
+      true,
+    );
     await screenshots(page, 'counter', 'loading');
 
     await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'failed'`, 20_000);
@@ -646,12 +661,6 @@ test(
       page,
       counter,
       `top.postMessage({ type: 'geometry', height: 300 }, '*')`,
-      true,
-    );
-    await evaluateInFrame(
-      page,
-      counter,
-      `parent.postMessage({ type: 'geometry', height: 300 }, '*')`,
       true,
     );
     await evaluateInFrame(

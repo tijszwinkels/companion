@@ -380,9 +380,10 @@ function WidgetFrame(props: {
     >
       <WidgetHeader name={name} time={time} />
       <div class="inline-widget-body">
-        {/* While disconnected the frame takes no input (it is paused). Only
-            the frame is inert: the labels below stay readable. */}
-        <div class="inline-widget-frame" inert={!connected}>
+        {/* While disconnected (paused) and while loading (under its label)
+            the frame takes no input, keyboard focus included. Only the frame
+            is inert: the labels below stay readable. */}
+        <div class="inline-widget-frame" inert={!connected || state.phase === 'loading'}>
           {/* The sandbox and the other attributes come before the address,
               and all are set before the frame is put into the page. */}
           {frameInPage ? (

@@ -212,36 +212,35 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
    tap selects. Touch reordering would need a gesture of its own (the phone
    panel has Move up and Move down) and is not part of this slice.
 
-| Case                                                                     | Move requests                                                     | Click selects |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------- | ------------- |
-| Press and release without moving                                         | 0                                                                 | yes           |
-| Movement under 6 px, release                                             | 0                                                                 | yes           |
-| Secondary button pressed and moved                                       | 0                                                                 | —             |
-| Press while not admitted (offline, before snapshot)                      | 0                                                                 | yes           |
-| Press on ×                                                               | 0                                                                 | × closes      |
-| Drag released inside at a new position                                   | 1, captured                                                       | no            |
-| Drag released inside where it already is                                 | 0                                                                 | no            |
-| Drag released outside the list                                           | 0                                                                 | no            |
-| Escape during the drag, then release                                     | 0                                                                 | no            |
-| Pointer cancelled during the drag                                        | 0                                                                 | no            |
-| Pointer capture lost during the drag, then release                       | 0                                                                 | no            |
-| Capture of another pointer lost during the drag                          | 1, captured                                                       | no            |
-| Window loses focus during the drag, then release                         | 0                                                                 | no            |
-| Window loses focus before the threshold, press back                      | 0                                                                 | yes           |
-| Press while the listener names no order revision                         | 0                                                                 | yes           |
-| Release missed, then a new press elsewhere dragged back over the list    | 0                                                                 | —             |
-| Drag released over the divider at the list's edge                        | 0                                                                 | no            |
-| Touch press and movement on an entry (the list scrolls)                  | 0                                                                 | yes (a tap)   |
-| Pen drag released inside at a new position                               | 1, captured                                                       | no            |
-| Order revision changed during the drag                                   | 0                                                                 | no            |
-| A conversation opened or closed during the drag                          | 0                                                                 | no            |
-| Connection lost during the drag                                          | 0                                                                 | no            |
-| Conversation opened while disconnected                                   | No frame in the page (nothing loads) until admitted, then loading |
-| Order changed after the press, before the threshold                      | 0                                                                 | yes           |
-| Order changed before the threshold, noticed only by the movement past it | 0                                                                 | yes           |
-| Movement without the button held (release missed)                        | 0                                                                 | —             |
-| New press after a cancelled drag; its click                              | per new press                                                     | yes           |
-| Move refused by the listener                                             | 1 (refused)                                                       | no; unchanged |
+| Case                                                                     | Move requests | Click selects |
+| ------------------------------------------------------------------------ | ------------- | ------------- |
+| Press and release without moving                                         | 0             | yes           |
+| Movement under 6 px, release                                             | 0             | yes           |
+| Secondary button pressed and moved                                       | 0             | —             |
+| Press while not admitted (offline, before snapshot)                      | 0             | yes           |
+| Press on ×                                                               | 0             | × closes      |
+| Drag released inside at a new position                                   | 1, captured   | no            |
+| Drag released inside where it already is                                 | 0             | no            |
+| Drag released outside the list                                           | 0             | no            |
+| Escape during the drag, then release                                     | 0             | no            |
+| Pointer cancelled during the drag                                        | 0             | no            |
+| Pointer capture lost during the drag, then release                       | 0             | no            |
+| Capture of another pointer lost during the drag                          | 1, captured   | no            |
+| Window loses focus during the drag, then release                         | 0             | no            |
+| Window loses focus before the threshold, press back                      | 0             | yes           |
+| Press while the listener names no order revision                         | 0             | yes           |
+| Release missed, then a new press elsewhere dragged back over the list    | 0             | —             |
+| Drag released over the divider at the list's edge                        | 0             | no            |
+| Touch press and movement on an entry (the list scrolls)                  | 0             | yes (a tap)   |
+| Pen drag released inside at a new position                               | 1, captured   | no            |
+| Order revision changed during the drag                                   | 0             | no            |
+| A conversation opened or closed during the drag                          | 0             | no            |
+| Connection lost during the drag                                          | 0             | no            |
+| Order changed after the press, before the threshold                      | 0             | yes           |
+| Order changed before the threshold, noticed only by the movement past it | 0             | yes           |
+| Movement without the button held (release missed)                        | 0             | —             |
+| New press after a cancelled drag; its click                              | per new press | yes           |
+| Move refused by the listener                                             | 1 (refused)   | no; unchanged |
 
 ### Markers
 
@@ -886,7 +885,8 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
    `http(s)://host[:port]/f/<43 base64url characters>/` without user,
    query or fragment) shows the **not set up** card.
 2. A widget message with one shows the panel with its frame **loading**: the
-   frame shows "Loading the <name> widget…" over it.
+   frame shows "Loading the <name> widget…" over it and takes no input
+   (keyboard focus included) until it is shown.
 3. It is **shown** at the frame's first `geometry` message. host.js sends the
    first one only after the widget drew its first state.
 4. It has **failed** when the frame sends `error` before it was shown (the
@@ -919,7 +919,9 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
    continues where it was, without loading again. A polling failure it
    showed in its own status line meanwhile (the network went before it was
    told it is not visible) goes once its polling works again (host.js,
-   embedded only; on the desktop the line stays as before). Back with a **new
+   embedded only; on the desktop the line stays as before), unless
+   something else wrote the line since (an action's error stays, even with
+   the same text). Back with a **new
    address** (the handles ended, for example the gateway restarted): the row
    changes, the old frame is removed and the new address loads.
 8. A **conversation switched and back**: the frame goes with the chat and
@@ -1433,7 +1435,9 @@ The gateway also limits a message to 4,000 characters (the desktop allows
 8,000), so `maximumMessageLength` is 4,000. Copy uses the browser clipboard.
 Links in answers (http and https only) open in a new tab without opener or
 referrer when the reader clicks them, as on the phone; that navigation is the
-reader's own, the page itself never requests anything from another origin.
+reader's own. The page itself requests nothing from another origin, except
+inline widget pages from the gateway's frame origin when one is configured
+(see [inline widgets](#inline-widgets)).
 
 ## Build, demo and tests
 
