@@ -202,8 +202,10 @@ page a secure context.
   a socket still closing after a refusal keeps it too. Only an admitted
   connection's bound is raised ([`message-limit.ts`](message-limit.ts)), so an
   unauthenticated socket never makes the gateway hold more than before. A
-  client therefore waits for `authenticated` before sending a message over
-  32 KiB (anything sent before it is dropped anyway).
+  client therefore waits for `authenticated` before sending any request: a
+  message over 32 KiB that arrives before admission closes the socket, and a
+  smaller one may be dropped or may still be carried out, so its outcome is
+  unknown.
   30-request bursts at 10/s per
   device, shared by all of that device's connections, so more tabs never raise
   a device's rate ([`request-rate.ts`](request-rate.ts)). Draft edits draw from
