@@ -22,14 +22,20 @@ export const requestsPerSecond = 10;
 
 interface Bucket {
   tokens: number;
-  /** Clock reading of the last refill, in milliseconds. */
+  /** Refill clock reading (`now`) at the last refill, in milliseconds. */
   updatedAt: number;
 }
 
 export class DeviceRequestRate {
   private readonly buckets = new Map<string, Bucket>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /**
+   * `now` is the refill clock in milliseconds. By default it is monotonic
+   * (`performance.now()`), so setting the wall clock back, or correcting it
+   * forward again, never changes how fast a bucket refills. Tests inject
+   * their own clock.
+   */
+  constructor(private readonly now: () => number = () => performance.now()) {}
 
   /** Take one token for `deviceId`; false when its bucket is empty. */
   take(deviceId: string): boolean {
@@ -40,8 +46,8 @@ export class DeviceRequestRate {
       this.buckets.set(deviceId, bucket);
     }
 
-    // A wall clock set back must not drain the bucket (negative refill) and
-    // stall every connection of the device: no time passed, no refill.
+    // Guard for an injected clock that goes back: it must not drain the
+    // bucket (negative refill) and stall the device. No time passed.
     const elapsedMilliseconds = Math.max(0, now - bucket.updatedAt);
     const refill = (elapsedMilliseconds / 1000) * requestsPerSecond;
     bucket.tokens = Math.min(requestBurst, bucket.tokens + refill);

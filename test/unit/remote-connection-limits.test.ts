@@ -433,3 +433,23 @@ test('limits: a clock set back never stalls a device', () => {
   now += 1000;
   assert.equal(rate.take('device'), true, 'refills again from the new time');
 });
+
+test('limits: setting the wall clock back and forward again never changes the refill', (context) => {
+  // The default refill clock is monotonic; the wall clock is what jumps.
+  let wall = Date.now();
+  context.mock.method(Date, 'now', () => wall);
+  const rate = new DeviceRequestRate();
+
+  for (let index = 0; index < requestBurst; index++) {
+    assert.equal(rate.take('device'), true);
+  }
+  assert.equal(rate.take('device'), false, 'burst used up');
+
+  // Back a minute (no stall), then corrected forward again (no free burst).
+  wall -= 60_000;
+  assert.equal(rate.take('device'), false, 'no refill from a backward step');
+  wall += 60_000;
+  assert.equal(rate.take('device'), false, 'no refill from the correction');
+  wall += 3_600_000;
+  assert.equal(rate.take('device'), false, 'no refill from any wall-clock jump');
+});
