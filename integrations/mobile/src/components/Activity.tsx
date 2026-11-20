@@ -381,7 +381,7 @@ function History(props: {
   );
 }
 
-const outcomeLabels: Record<string, string> = {
+export const outcomeLabels: Record<string, string> = {
   processing: 'Processing',
   delivering: 'Typing',
   sent: 'Typed',

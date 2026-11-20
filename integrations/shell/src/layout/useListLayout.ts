@@ -10,7 +10,8 @@
  * writes nothing. A change another tab of this browser writes is followed
  * here, entry by entry, so the last change of each wins. A storage that
  * cannot be written keeps this page's values. The window width follows
- * `resize`.
+ * `resize`; the width the Activity column takes beside it is subtracted
+ * first (see `reservedFor`).
  */
 
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -62,7 +63,14 @@ function windowWidth(): number {
   return document.documentElement.clientWidth;
 }
 
-export function useListLayout(): ListLayoutView {
+/**
+ * `reservedFor` gives the width something beside the list and the chat
+ * takes from the window (the Activity column in a wide window), for
+ * whether the list is shown; the list's width rules apply to what remains.
+ */
+export function useListLayout(
+  reservedFor: (listShown: boolean) => number = () => 0,
+): ListLayoutView {
   const [layout, setLayout] = useState<ListLayout>(() => {
     const storage = pageStorage();
     if (storage) {
@@ -140,13 +148,14 @@ export function useListLayout(): ListLayoutView {
     }
   }
 
-  const shownWidth = shownListWidth(layout.listWidth, width);
+  const roomWidth = width - reservedFor(layout.listShown);
+  const shownWidth = shownListWidth(layout.listWidth, roomWidth);
 
   return {
     shown: layout.listShown,
     width: shownWidth,
     appearance: appearanceOf(shownWidth),
-    widest: widestShownListWidth(width),
+    widest: widestShownListWidth(roomWidth),
     setWidth(listWidth, remember) {
       change({ listWidth }, remember);
     },

@@ -92,10 +92,22 @@ const draftKey = 'companion.remote.drafts';
 export interface StoreOptions {
   /**
    * Read Activity history pages (`activity-history`) for the current run.
-   * On by default (the phone panel shows Activity); the browser shell, which
-   * has no Activity view yet, turns it off so it never requests them.
+   * On by default (the phone panel and the browser shell show Activity).
+   * Off, the Store never requests them.
    */
   activity?: boolean;
+  /**
+   * After each reconnect, read the run's Activity history again from its
+   * start instead of only what completed since. Entries deleted or labelled
+   * elsewhere while this page was offline change only in those pages (their
+   * events were missed). The position reached is kept after every page, so
+   * a reading that fails part way (the gateway's rate limit on a long run)
+   * continues there on Retry instead of starting over; a reading on its
+   * way when a reconnect's snapshot arrives starts over. Off by default (the
+   * phone panel reads only what is new, and keeps its position at the end
+   * of a reading); the browser shell turns it on.
+   */
+  rereadActivityAfterReconnect?: boolean;
 }
 
 export class Store {
@@ -137,9 +149,18 @@ export class Store {
 
   /** Whether this store reads Activity history (see StoreOptions). */
   private readonly readsActivity: boolean;
+  /** Whether a reconnect reads the run's history again from its start (see StoreOptions). */
+  private readonly rereadsActivity: boolean;
+  /**
+   * Changes when a reconnect asks for the run's history to be read again
+   * from the start; a reading begun before that is abandoned (only with
+   * `rereadActivityAfterReconnect`).
+   */
+  private activityReadGeneration = 0;
 
   constructor(options: StoreOptions = {}) {
     this.readsActivity = options.activity !== false;
+    this.rereadsActivity = options.rereadActivityAfterReconnect === true;
     this.connection = new Connection(
       (event) => this.apply(event),
       (connection) => this.connectionChanged(connection),
@@ -309,11 +330,23 @@ export class Store {
     this.update({});
   }
 
-  /** One admitted send per draft, even when its component unmounts/remounts. */
-  async sendDraft(id: string, profile: 'coding' | 'quickQuestion' = 'coding'): Promise<void> {
+  /**
+   * One admitted send per draft, even when its component unmounts/remounts.
+   * For the new-conversation draft (`new`) it resolves to the started
+   * conversation's ID when the listener names one, otherwise to undefined.
+   *
+   * The phone shows a conversation started from its Activity page itself
+   * (`openStarted`, on by default). The browser shell turns that off and
+   * selects the result by its own rule.
+   */
+  async sendDraft(
+    id: string,
+    profile: 'coding' | 'quickQuestion' = 'coding',
+    options: { openStarted?: boolean } = {},
+  ): Promise<string | undefined> {
     const text = this.draft(id);
     if (!text.trim() || this.state.sends.get(id)?.pending) {
-      return;
+      return undefined;
     }
     const revision = this.draftRevisions.get(id) ?? 0;
     const pageRevision = this.pageRevision;
@@ -326,7 +359,7 @@ export class Store {
           ? await this.request('start-agent', { text, profile }, { quiet: true })
           : await this.request('send-agent', { id, text }, { quiet: true });
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
-        return;
+        return undefined;
       }
       const unchangedDraft = (this.draftRevisions.get(id) ?? 0) === revision;
       if (unchangedDraft) {
@@ -339,6 +372,7 @@ export class Store {
       // dismiss the keyboard while they compose a newer question.
       if (
         id === 'new' &&
+        options.openStarted !== false &&
         unchangedDraft &&
         pageRevision === this.pageRevision &&
         !this.state.selected &&
@@ -346,9 +380,13 @@ export class Store {
       ) {
         this.open((result as { id: string }).id);
       }
+      if (id !== 'new') {
+        return undefined;
+      }
+      return startedId(result);
     } catch (error) {
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
-        return;
+        return undefined;
       }
       const explanation = error instanceof Error ? error.message : String(error);
       const message =
@@ -356,6 +394,7 @@ export class Store {
           ? `${explanation} The draft remains here; check the conversation before sending it again.`
           : `${explanation} The draft remains here.`;
       this.update({ sends: new Map(this.state.sends).set(id, { pending: false, error: message }) });
+      return undefined;
     }
   }
 
@@ -525,6 +564,14 @@ export class Store {
     let activity = this.state.activity;
     if (activity.sessionId !== engine.activitySessionId) {
       activity = emptyActivity(engine.activitySessionId);
+    } else if (firstSnapshot && this.rereadsActivity) {
+      // This connection's first snapshot of the same run: read every page
+      // again, so deletions (removal markers) and newer revisions made while
+      // offline replace what is shown. Entries stay shown meanwhile. A
+      // reading still on its way (a Retry pressed before this snapshot) is
+      // abandoned and starts over (see syncActivity).
+      this.activityReadGeneration += 1;
+      activity = { ...activity, read: 0 };
     }
 
     this.update({
@@ -666,8 +713,23 @@ export class Store {
 
     const sessionId = activity.sessionId;
     const identity = this.identityRevision;
+    const generation = this.activityReadGeneration;
     const through = engine.activityHistoryCount;
     this.setActivity({ syncing: true, error: '' });
+
+    /**
+     * A reconnect asked for the run to be read again while this reading was
+     * on its way: its pages and position may predate what changed offline,
+     * so it is dropped and a new reading starts from the reset position.
+     */
+    const restartIfReset = (): boolean => {
+      if (generation === this.activityReadGeneration) {
+        return false;
+      }
+      this.setActivity({ syncing: false });
+      void this.syncActivity();
+      return true;
+    };
 
     try {
       let after: number | null = activity.read;
@@ -681,12 +743,23 @@ export class Store {
         if (identity !== this.identityRevision || this.state.activity.sessionId !== sessionId) {
           return;
         }
+        if (restartIfReset()) {
+          return;
+        }
         this.applyActivityPage(page);
         after = page.next;
+        if (this.rereadsActivity && after !== null) {
+          // Keep the position reached, so a failure later in this reading
+          // continues from here (see StoreOptions).
+          this.setActivity({ read: after });
+        }
       }
       this.setActivity({ read: through, syncing: false });
     } catch (error) {
       if (identity !== this.identityRevision || this.state.activity.sessionId !== sessionId) {
+        return;
+      }
+      if (restartIfReset()) {
         return;
       }
       this.setActivity({
@@ -751,6 +824,18 @@ export class Store {
   private setActivity(change: Partial<ActivityState>): void {
     this.update({ activity: { ...this.state.activity, ...change } });
   }
+}
+
+/** The conversation ID a `start-agent` answer names (a preview answer names none). */
+function startedId(result: unknown): string | undefined {
+  if (typeof result !== 'object' || result === null) {
+    return undefined;
+  }
+  const id = (result as { id?: unknown }).id;
+  if (typeof id === 'string' && id) {
+    return id;
+  }
+  return undefined;
 }
 
 /**

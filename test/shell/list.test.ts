@@ -172,7 +172,15 @@ function moves(sockets: SocketLog, from = 0): Record<string, unknown>[] {
 }
 
 /** Requests the list may send, besides slice 1's. */
-const allowedActions = ['panel-state', 'move-agent', 'close-agent', 'reopen-agent', 'send-agent'];
+const allowedActions = [
+  'panel-state',
+  'move-agent',
+  'close-agent',
+  'reopen-agent',
+  'send-agent',
+  // The Store reads this run's Activity history for the Activity column.
+  'activity-history',
+];
 
 async function assertCleanPage(fixture: Fixture, page: TestPage, sockets: SocketLog) {
   assertOwnOrigin(fixture, page, sockets);
@@ -740,6 +748,11 @@ test(
     await page.waitFor(`document.querySelectorAll('.conversation-entry').length === 4`);
     await openConversation(page, 'Bravo');
     assert.deepEqual(await shownOrder(page), titles);
+    // Near the top of the conversations, below the Activity entry above them.
+    const topY =
+      (await page.evaluate<number>(
+        `document.querySelector('.conversation-scroll').getBoundingClientRect().top`,
+      )) + 22;
 
     // Completed: Alpha dragged below Charlie (before Delta). One move naming
     // the revision captured at the press; the list then follows the
@@ -811,7 +824,7 @@ test(
     const listRight = await page.evaluate<number>(
       `document.querySelector('.conversation-scroll').getBoundingClientRect().right`,
     );
-    const overDivider = { x: Math.min(listRight - 1, divider.left + divider.width - 1), y: 30 };
+    const overDivider = { x: Math.min(listRight - 1, divider.left + divider.width - 1), y: topY };
     assert.ok(overDivider.x > divider.left && overDivider.x < listRight, 'a point in both boxes');
     await dragTo(page, start_, overDivider);
     await mouse(page, 'mouseReleased', overDivider, false);
@@ -822,12 +835,12 @@ test(
     // without a move, and the list shows the listener's new order.
     before = sockets.sent.length;
     start_ = await entryPoint(page, 'Delta');
-    await dragTo(page, start_, { x: start_.x, y: 30 });
+    await dragTo(page, start_, { x: start_.x, y: topY });
     await page.waitFor(`document.querySelector('.drop-marker')`);
     const listenerOrder = fixture.sessions.order();
     fixture.sessions.move(listenerOrder.ids[1], listenerOrder.ids[0], listenerOrder.revision);
     await page.waitFor(`!document.querySelector('.drop-marker')`);
-    await mouse(page, 'mouseReleased', { x: start_.x, y: 30 }, false);
+    await mouse(page, 'mouseReleased', { x: start_.x, y: topY }, false);
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.deepEqual(moves(sockets, before), []);
     assert.deepEqual(await shownOrder(page), ['Charlie', 'Bravo', 'Alpha', 'Delta']);
@@ -840,8 +853,8 @@ test(
     };
     before = sockets.sent.length;
     start_ = await entryPoint(page, 'Delta');
-    await dragTo(page, start_, { x: start_.x, y: 30 });
-    await mouse(page, 'mouseReleased', { x: start_.x, y: 30 }, false);
+    await dragTo(page, start_, { x: start_.x, y: topY });
+    await mouse(page, 'mouseReleased', { x: start_.x, y: topY }, false);
     await page.waitFor(`document.querySelector('.toast.error')`, 5000);
     assert.equal(moves(sockets, before).length, 1);
     assert.deepEqual(await shownOrder(page), ['Charlie', 'Bravo', 'Alpha', 'Delta']);
@@ -850,13 +863,13 @@ test(
     // Going offline during a drag ends it without a move.
     before = sockets.sent.length;
     start_ = await entryPoint(page, 'Delta');
-    await dragTo(page, start_, { x: start_.x, y: 30 });
+    await dragTo(page, start_, { x: start_.x, y: topY });
     await page.waitFor(`document.querySelector('.drop-marker')`);
     // The gateway stops: the connection drops (the fixture closes the rest).
     void fixture.gateway.close();
     await page.waitFor(`document.querySelector('.connection-banner')`, 10_000);
     await page.waitFor(`!document.querySelector('.drop-marker')`);
-    await mouse(page, 'mouseReleased', { x: start_.x, y: 30 }, false);
+    await mouse(page, 'mouseReleased', { x: start_.x, y: topY }, false);
     assert.deepEqual(moves(sockets, before), []);
 
     await assertCleanPage(fixture, page, sockets);
