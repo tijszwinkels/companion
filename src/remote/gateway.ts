@@ -59,9 +59,10 @@ import {
   maximumClientMessageBytes,
   maximumConnectionsPerDevice,
   maximumRemoteConnections,
-  maximumUnauthenticatedBytes,
+  maximumUnauthenticatedMessageBytes,
   type OverloadedReason,
 } from './protocol.ts';
+import { raiseMessageLimit } from './message-limit.ts';
 import { ReceiptBook } from './receipts.ts';
 import { closeCodes, Relay } from './relay.ts';
 import { DeviceRequestRate, draftEditRateLimit } from './request-rate.ts';
@@ -281,7 +282,10 @@ export class Gateway {
   private stateClaim?: FileHandle;
   private readonly sockets = new WebSocketServer({
     noServer: true,
-    maxPayload: maximumClientMessageBytes,
+    // Every socket starts with the 32 KiB bound it always had; startRelay
+    // raises it to `maximumClientMessageBytes` once the connection is
+    // authenticated and admitted (message-limit.ts).
+    maxPayload: maximumUnauthenticatedMessageBytes,
     // Compression of attacker-influenced text next to secrets invites
     // CRIME-style attacks, and phones gain little from it here.
     perMessageDeflate: false,
@@ -934,15 +938,11 @@ export class Gateway {
       return;
     }
 
-    this.sockets.handleUpgrade(request, socket, head, (phone) => this.authenticate(phone, socket));
+    this.sockets.handleUpgrade(request, socket, head, (phone) => this.authenticate(phone));
   }
 
-  /**
-   * Wait for the first message: it must carry a valid device token.
-   * `socket` is the connection under the WebSocket, used only to count what
-   * the client sends before it has authenticated.
-   */
-  private authenticate(phone: WebSocket, socket: Duplex): void {
+  /** Wait for the first message: it must carry a valid device token. */
+  private authenticate(phone: WebSocket): void {
     // Protocol errors (oversized payload, invalid UTF-8, bad frame) are emitted
     // on the WebSocket even before authentication. Contain them to this client.
     phone.on('error', () => phone.terminate());
@@ -951,22 +951,6 @@ export class Gateway {
     phone.once('close', () => this.alive.delete(phone));
     this.unauthenticated++;
     let settled = false;
-
-    // `maxPayload` admits 128 KiB messages, for drafts. Until its relay
-    // starts, a socket may send no more than one 32 KiB message in all
-    // (`maximumUnauthenticatedBytes`, counted on the wire), so the larger
-    // bound never lets an unauthenticated socket make the gateway hold more
-    // than before. That includes a socket still closing after it was refused
-    // (not paired, timed out, over a connection limit). Counted first
-    // (prepended), before the WebSocket parser buffers the bytes.
-    let unauthenticatedBytes = 0;
-    const countUnauthenticated = (chunk: Buffer | string) => {
-      unauthenticatedBytes += Buffer.byteLength(chunk);
-      if (unauthenticatedBytes > maximumUnauthenticatedBytes) {
-        phone.terminate();
-      }
-    };
-    socket.prependListener('data', countUnauthenticated);
 
     const finish = () => {
       if (!settled) {
@@ -1022,8 +1006,11 @@ export class Gateway {
         return;
       }
 
-      // Authenticated and admitted: from here on `maxPayload` bounds each message.
-      socket.off('data', countUnauthenticated);
+      // Authenticated and admitted: from here on messages may be as large as
+      // a draft needs. Every other socket keeps the 32 KiB bound.
+      if (!raiseMessageLimit(phone, maximumClientMessageBytes)) {
+        this.options.log('Could not raise the message size limit; drafts over 32 KiB will fail');
+      }
       this.startRelay(phone, device, { incrementalSessions, drafts });
     });
   }

@@ -195,12 +195,13 @@ page a secure context.
   unauthenticated sockets (the upgrade is refused with 503 beyond that or beyond
   16 sockets in all). Client messages of at most 128 KiB
   (`maximumClientMessageBytes`), enough for a 16,000-unit draft written as
-  escaped JSON; a larger message closes that connection. Before its relay
-  starts, a socket may send at most 32 KiB + 8 bytes in all, counted on the
-  wire with frame headers (`maximumUnauthenticatedBytes`: one 32 KiB message
-  in one frame, the bound every message had before drafts), so an
-  unauthenticated socket, or one still closing after it was refused, never
-  makes the gateway hold more than before; past it the socket is cut at once.
+  escaped JSON; a larger message closes that connection. Until it is
+  authenticated and admitted, a socket's messages stay bounded at 32 KiB
+  (`maximumUnauthenticatedMessageBytes`, the bound every message had before
+  drafts), enforced by the WebSocket parser from the frame header, as before;
+  a socket still closing after a refusal keeps it too. Only an admitted
+  connection's bound is raised ([`message-limit.ts`](message-limit.ts)), so an
+  unauthenticated socket never makes the gateway hold more than before.
   30-request bursts at 10/s per
   device, shared by all of that device's connections, so more tabs never raise
   a device's rate ([`request-rate.ts`](request-rate.ts)). Draft edits draw from
@@ -597,8 +598,12 @@ Rules:
    The listener accepts it for any conversation it knows, open or saved; the
    last edit it receives wins, from any connection, as on the desktop. The
    result is `{"accepted":true,"sequence":13}` or
-   `{"accepted":false,"reason":"…"}`. A refused or unanswered edit changes
-   nothing; the client keeps the text and shows it as not saved. Draft edits
+   `{"accepted":false,"reason":"…"}`. A refused edit changes nothing; the
+   client keeps the text and shows it as not saved. An edit left unanswered
+   when the connection dropped has an unknown outcome: the listener may have
+   applied it (and sent it to other hosts) just before. After reconnecting the
+   client reads the new `draft-snapshot` and compares it with its text before
+   offering Save or Discard; it never writes the text again by itself. Draft edits
    have **no receipt**: they are never answered from a receipt and the
    client must never resend one by itself (an old edit replayed over newer
    text would be wrong). An edit sent before the connection's first
@@ -632,7 +637,10 @@ Rules:
    conversations being closed and reopened and remote connections coming and
    going: a reconnecting draft host gets a fresh `draft-snapshot`. A listener
    restart loses them; relays close with 4503 and a reconnect starts from an
-   empty snapshot.
+   empty snapshot. When a client leaves while its requests still drain, the
+   gateway's `withdraw-visibility` also ends its draft hosting and its pending
+   send (requests it sent before are handled first), so a page nobody sees
+   neither counts as a reviewer of agent proposals nor blocks them.
 
 Everything else remote connections cannot do stays refused, draft host or
 not: `paste`, `submit-utterance`, `media-playback`, `composer-focus`,

@@ -1756,7 +1756,7 @@ export class DesktopRuntime {
     if (!agents || typeof id !== 'string' || id === '') {
       return false;
     }
-    return agents.has(id) || agents.previousSnapshot().some((entry) => entry.id === id);
+    return agents.has(id) || agents.hasSaved(id);
   }
 
   /**
@@ -1940,8 +1940,8 @@ export class DesktopRuntime {
     const clientId = this.browserClient();
     if (clientId === undefined) {
       // A connected panel without a browser (Quickshell, an older UI) is not
-      // the same as no panel at all.
-      if (this.draftHosts.size > 0) {
+      // the same as no panel at all. Remote draft hosts are not desktop panels.
+      if (this.desktopDraftClient() !== undefined) {
         return Promise.resolve({
           outcome: 'unsupported',
           reason: 'The connected Companion panel has no built-in browser.',
@@ -2036,7 +2036,8 @@ export class DesktopRuntime {
     }
     const clientId = this.presentClient();
     if (clientId === undefined) {
-      if (this.draftHosts.size > 0) {
+      // Remote draft hosts are not desktop panels: without one it is offline.
+      if (this.desktopDraftClient() !== undefined) {
         return Promise.resolve({
           outcome: 'unsupported',
           reason: 'The connected Companion panel cannot open conversation windows.',
@@ -2158,6 +2159,12 @@ export class DesktopRuntime {
         throw Error('Only remote panels can withdraw their visibility');
       }
       remote.visibleSelection = '';
+      // Nobody sees its drafts any more either: it stops being a draft host,
+      // so agent proposals no longer count it as a reviewer, and its pending
+      // send no longer blocks them. Requests it sent before this one were
+      // handled first (in order), so an admitted send has already cleared.
+      this.draftHosts.delete(clientId);
+      this.pendingDraftSends.delete(clientId);
       return 'visibility-withdrawn';
     }
 

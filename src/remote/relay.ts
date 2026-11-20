@@ -63,6 +63,9 @@ const maximumPendingRequests = 32;
  */
 const maximumPendingDraftEdits = draftEditBurst;
 
+/** The answer to a draft edit refused by its rate or the pending bound. */
+const draftEditRefusal = 'Too many draft edits; this edit was not saved';
+
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
 const withdrawalRequestId = 'withdraw';
 
@@ -230,7 +233,7 @@ export class Relay {
           type: 'error',
           requestId: parsed.request.requestId,
           action: parsed.request.action,
-          message: 'Too many draft edits; this edit was not saved',
+          message: draftEditRefusal,
         });
         return;
       }
@@ -312,11 +315,15 @@ export class Relay {
       ? pendingDraftEdits >= maximumPendingDraftEdits
       : this.pending.size - pendingDraftEdits >= maximumPendingRequests;
     if (full) {
+      // A refused draft edit is reported like one refused by its rate, so
+      // the client shows it as not saved.
       finish({
         type: 'error',
         requestId: request.requestId,
         action: request.action,
-        message: 'Too many unfinished requests; wait for earlier ones',
+        message: isDraftEdit
+          ? draftEditRefusal
+          : 'Too many unfinished requests; wait for earlier ones',
       });
       return;
     }

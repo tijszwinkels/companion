@@ -1661,7 +1661,8 @@ For a remote connection:
   `draft-set` from a remote connection that is not a draft host.
 - `{"action":"withdraw-visibility"}` (remote connections only; desktop
   connections are refused) makes the connection show no conversation for the
-  [unread mark](#unread-mark) and keeps its selection. The gateway sends it when
+  [unread mark](#unread-mark) and keeps its selection. It also ends the
+  connection's draft hosting and pending send. The gateway sends it when
   its client has left while that client's requests still drain. It names no
   conversation and is idempotent, so it cannot be refused for a remote
   connection; the result is `visibility-withdrawn`.

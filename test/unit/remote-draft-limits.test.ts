@@ -8,7 +8,7 @@ import { maximumRequestLineCharacters } from '../../src/desktop/server.ts';
 import {
   draftTextLimit,
   maximumClientMessageBytes,
-  maximumUnauthenticatedBytes,
+  maximumUnauthenticatedMessageBytes,
   sendTextLimit,
 } from '../../src/remote/protocol.ts';
 import {
@@ -18,6 +18,9 @@ import {
   draftEditsPerSecond,
   requestBurst,
 } from '../../src/remote/request-rate.ts';
+import type { WebSocket } from 'ws';
+
+import { raiseMessageLimit } from '../../src/remote/message-limit.ts';
 import { frame, signal } from '../helpers.ts';
 import {
   connectPhone,
@@ -35,9 +38,9 @@ import {
  * - An authenticated client message may be 128 KiB; a larger one closes that
  *   connection. A 16,000-unit draft written as escaped JSON fits, through
  *   the gateway and the listener's 128 Ki-character request line.
- * - Before its relay starts, a socket may send 32 KiB + 8 bytes on the wire
- *   (one 32 KiB message in one frame), also while it is still closing after a
- *   refusal; past that it is cut at once.
+ * - Until it is authenticated and admitted, a socket's messages stay bounded
+ *   at 32 KiB, refused from the frame header, also while it is still closing
+ *   after a refusal; such a socket is cut at once.
  * - `draft-set` draws from its own per-device bucket: bursts of 120, then 40
  *   per second, shared by the device's connections. A refused edit is
  *   answered "not saved", the connection stays open, and the request bucket
@@ -49,7 +52,7 @@ import {
 
 // The rules above are the numbers this table is written for.
 assert.equal(maximumClientMessageBytes, 128 * 1024);
-assert.equal(maximumUnauthenticatedBytes, 32 * 1024 + 8);
+assert.equal(maximumUnauthenticatedMessageBytes, 32 * 1024);
 assert.equal(maximumRequestLineCharacters, 128 * 1024);
 assert.equal(draftTextLimit, 16_000);
 assert.equal(sendTextLimit, 8000);
@@ -187,7 +190,7 @@ for (const sizeCase of sizeCases) {
       );
     } else {
       const closed = await within(waiting.closed, 3000, 'the unauthenticated socket is cut');
-      assert.equal(closed.code, 1006, 'cut, not closed by handshake');
+      assert.ok([1006, 1009].includes(closed.code), `closed with ${closed.code}`);
       assert.deepEqual(waiting.messages, [], 'it received nothing');
     }
   });
@@ -259,8 +262,8 @@ test('limits: a refused socket that is still closing cannot send more than 32 Ki
   raw.write(maskedFrame(Buffer.from(JSON.stringify({ type: 'auth', token: 'wrong' }))));
   await waitFor(() => received.includes(Buffer.from([0x88])), 3000);
 
-  // While closing it would otherwise read a message up to 128 KiB. The
-  // unauthenticated budget is spent long before: the socket is cut at once.
+  // While closing, its messages are still bounded at 32 KiB, as before:
+  // the 100 KiB frame is refused from its header and the socket is cut.
   raw.write(maskedFrame(Buffer.alloc(100 * 1024, 0x20)));
   await within(ended, 3000, 'the gateway cuts the closing socket');
 });
@@ -603,4 +606,12 @@ test('limits: the listener itself allows a remote send of 8,000 characters, not 
   assert.equal((await answer('at')).result, 'submitted');
   send({ action: 'send-agent', id, text: 'v'.repeat(8001), requestId: 'over' });
   assert.match(String((await answer('over')).message), /A follow-up requires 1–8000 characters/);
+});
+
+test('limits: without the parser field the message bound is not raised (fails closed)', () => {
+  const socket = { _receiver: {} } as unknown as WebSocket;
+  assert.equal(raiseMessageLimit(socket, maximumClientMessageBytes), false);
+  const working = { _receiver: { _maxPayload: 32 * 1024 } };
+  assert.equal(raiseMessageLimit(working as unknown as WebSocket, 128 * 1024), true);
+  assert.equal(working._receiver._maxPayload, 128 * 1024);
 });

@@ -650,3 +650,67 @@ test('drafts: an edit before the first panel report is refused, then accepted', 
   client.send({ requestId: 'later', action: 'draft-set', id, text: 'now', editId: 'e2' });
   assert.equal(((await client.reply('later')) as Message).result.accepted, true);
 });
+
+test('drafts: a host that left while its requests drain stops hosting and blocking', async (context) => {
+  // `agent-models` is held open in the listener, so the relay drains.
+  let releaseModels: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseModels = resolve;
+  });
+  const fixture = await remoteFixture({
+    backend: async () => {},
+    models: async () => {
+      await held;
+      return { models: [], thinkingLevels: {} };
+    },
+  });
+  context.after(async () => {
+    releaseModels();
+    await fixture.close();
+  });
+  const a = fixture.sessions.start({ ...frame, utterance: 'Conversation A' }, signal());
+  await fixture.sessions.idle();
+  const { token } = await fixture.pair();
+  const client = await fixture.phone(token, fixture.origin, false, { drafts: true });
+  await waitFor(() => client.messages.some((message) => message.type === 'authenticated'), 3000);
+  client.send({ requestId: 'report', action: 'panel-state', id: '', pendingSend: a });
+  assert.equal(((await client.reply('report')) as Message).result, 'panel-recorded');
+
+  const propose = () =>
+    (fixture.sessions as any).draftFromAgent(
+      {
+        id: a,
+        text: 'agent idea',
+        ifDraftExists: 'reject',
+        focus: false,
+        origin: { kind: 'agent', sessionId: a, title: 'Planner', depth: 1 },
+      },
+      signal(),
+    );
+  assert.equal((await propose()).outcome, 'conflict', 'its pending send blocks proposals');
+
+  // The client leaves with a request still running: the relay drains and
+  // the gateway withdraws the page. Nobody hosts drafts any more.
+  client.send({ requestId: 'models', action: 'agent-models' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  client.socket.terminate();
+  await client.closed;
+  await waitFor(() => fixture.desktop.runtime['draftHosts'].size === 0, 3000);
+  assert.equal((await propose()).outcome, 'offline');
+});
+
+test('drafts: with only a remote draft host, desktop browser and window tools are offline', async (context) => {
+  const fixture = await remoteFixture({ backend: async () => {} });
+  context.after(() => fixture.close());
+  const { token } = await fixture.pair();
+  const client = await fixture.phone(token, fixture.origin, false, { drafts: true });
+  await waitFor(() => client.messages.some((message) => message.type === 'authenticated'), 3000);
+  client.send({ requestId: 'report', action: 'panel-state', id: '' });
+  assert.equal(((await client.reply('report')) as Message).result, 'panel-recorded');
+
+  const runtime = fixture.desktop.runtime as any;
+  const browser = await runtime.requestBrowserOpen({ url: 'https://example.com/' }, signal());
+  assert.equal(browser.outcome, 'offline');
+  const present = await runtime.requestPresent({ presentation: 'window' }, signal());
+  assert.equal(present.outcome, 'offline');
+});

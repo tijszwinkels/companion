@@ -986,6 +986,14 @@ export class AgentSessions implements InspectableModule {
     return this.wakes.cancel(owner, timerId);
   }
 
+  /**
+   * Whether `id` is a saved (closed) conversation. A map lookup: the
+   * listener asks for every draft edit, so it must not copy or sort history.
+   */
+  hasSaved(id: string): boolean {
+    return this.previous.has(id);
+  }
+
   previousSnapshot(): PreviousSession[] {
     return [...this.previous.values()].sort((first, second) => second.updatedAt - first.updatedAt);
   }

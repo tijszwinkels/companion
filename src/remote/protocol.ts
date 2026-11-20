@@ -33,14 +33,12 @@ export type {
 export const maximumClientMessageBytes = 128 * 1024;
 
 /**
- * What a socket may send before it has authenticated, in bytes on the wire
- * (frame headers included): one 32 KiB message in a single masked frame (8
- * header bytes), the message size every socket was allowed before drafts.
- * Counted from the upgrade until the device token has been checked, so an
- * unauthenticated socket never makes the gateway hold more than it could
- * when 32 KiB was the bound for every message. Past it the socket is cut.
+ * Largest WebSocket message a socket may send before it is authenticated and
+ * admitted, in bytes: the bound every message had before drafts. It also
+ * holds while a refused socket is still closing, so an unauthenticated socket
+ * never makes the gateway hold more than before (see message-limit.ts).
  */
-export const maximumUnauthenticatedBytes = 32 * 1024 + 8;
+export const maximumUnauthenticatedMessageBytes = 32 * 1024;
 
 /**
  * Longest draft a remote draft host may write, in UTF-16 units: the
