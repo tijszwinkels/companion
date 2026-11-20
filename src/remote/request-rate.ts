@@ -40,7 +40,10 @@ export class DeviceRequestRate {
       this.buckets.set(deviceId, bucket);
     }
 
-    const refill = ((now - bucket.updatedAt) / 1000) * requestsPerSecond;
+    // A wall clock set back must not drain the bucket (negative refill) and
+    // stall every connection of the device: no time passed, no refill.
+    const elapsedMilliseconds = Math.max(0, now - bucket.updatedAt);
+    const refill = (elapsedMilliseconds / 1000) * requestsPerSecond;
     bucket.tokens = Math.min(requestBurst, bucket.tokens + refill);
     bucket.updatedAt = now;
 

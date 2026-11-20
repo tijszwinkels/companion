@@ -9,6 +9,7 @@ import {
   maximumConnectionsPerDevice,
   maximumRemoteConnections,
 } from '../../src/remote/protocol.ts';
+import { DeviceRequestRate, requestBurst } from '../../src/remote/request-rate.ts';
 import { deferred } from '../helpers.ts';
 import { connectPhone, remoteFixture, waitFor, type PhoneClient } from '../remote-fixture.ts';
 
@@ -414,4 +415,21 @@ test("limits: a device's connections share one request rate; another device has 
   const shared = pongs(first) + pongs(second);
   // 30 from the burst, plus at most a few refilled while the test ran.
   assert.ok(shared >= 30 && shared <= 34, `shared device answered ${shared} heartbeats`);
+});
+
+test('limits: a clock set back never stalls a device', () => {
+  let now = 1_000_000;
+  const rate = new DeviceRequestRate(() => now);
+
+  // One request leaves 29 tokens; then the wall clock jumps back a minute.
+  assert.equal(rate.take('device'), true);
+  now -= 60_000;
+
+  // The remaining burst is still there, immediately and later on.
+  for (let index = 1; index < requestBurst; index++) {
+    assert.equal(rate.take('device'), true, `request ${index + 1} after the step`);
+  }
+  assert.equal(rate.take('device'), false);
+  now += 1000;
+  assert.equal(rate.take('device'), true, 'refills again from the new time');
 });

@@ -2157,10 +2157,12 @@ export class AgentSessions implements InspectableModule {
         }
       }
       // The turn's own save above ran before the mark existed. Save once
-      // more so a reload or restart finds it; a queued successor waits for
-      // this like for the rest of the turn's bookkeeping.
+      // more so a reload or restart finds it. Not awaited: the turn's
+      // remaining bookkeeping (the application delivery outcome in drain)
+      // must follow its completion at once, before a close or Stop could
+      // abort the conversation. Shutdown waits for this save.
       if (markedUnread) {
-        await this.saveUnread(session);
+        void this.saveUnread(session);
       }
     }
   }

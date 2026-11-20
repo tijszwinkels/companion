@@ -1038,6 +1038,14 @@ test('unread: the withdrawal clears whatever the departed phone showed', async (
   await phone.closed;
   await waitFor(() => remoteVisibleSelections(listener).length === 1);
   await waitFor(() => remoteVisibleSelections(listener)[0] === '');
+  // Only visibility goes: the selection stays for the draining requests.
+  const runtime = listener.desktop.runtime as unknown as {
+    remoteClients: Map<number, { selection: string }>;
+  };
+  assert.deepEqual(
+    [...runtime.remoteClients.values()].map((remote) => remote.selection),
+    [second.id],
+  );
 
   await endTurn(sessions, second.run, second.id, 'success');
   assert.equal(unreadOf(sessions, second.id), true);
@@ -1152,6 +1160,63 @@ test('unread: panel reports never take request slots from what follows them', as
   const reply = await connection.write(batch.join('\n') + '\n', 'after');
   assert.equal(reply.type, 'result', JSON.stringify(reply));
   connection.close();
+});
+
+test("unread: the turn's bookkeeping does not wait for the mark's save", async (context) => {
+  const { directory } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  // Held writes must not keep the listener from closing if an assertion fails.
+  let releaseHeld = () => {};
+  context.after(async () => {
+    releaseHeld();
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
+  const { id, run } = await startTurn(sessions, runs, 'Closed while its mark saves');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Record whether the turn counted as stopped when the application
+  // delivery outcome (the bookkeeping after the turn) was decided.
+  const internals = sessions as unknown as {
+    finishApplicationDelivery(
+      session: { controller: AbortController },
+      batchId?: string,
+    ): Promise<void>;
+  };
+  const original = internals.finishApplicationDelivery.bind(sessions);
+  const abortedAtDelivery: boolean[] = [];
+  internals.finishApplicationDelivery = async (session, batchId) => {
+    abortedAtDelivery.push(session.controller.signal.aborted);
+    return original(session, batchId);
+  };
+
+  // Let the turn's own save through, then hold the mark's save.
+  const writes = holdArchiveWrites(sessions);
+  releaseHeld = () => {
+    for (const gate of writes.gates) {
+      gate.release();
+    }
+    writes.restore();
+  };
+  run.finish();
+  await waitFor(() => writes.gates.length === 1);
+  writes.gates[0].release();
+  await waitFor(() => writes.gates.length === 2);
+
+  // The turn has finished its bookkeeping while the mark's save waits ...
+  await turnEnded(sessions, id);
+  assert.deepEqual(abortedAtDelivery, [false]);
+  assert.equal(unreadOf(sessions, id), true);
+
+  // ... so closing now cannot turn the successful turn into a stopped one.
+  const closing = sessions.remove(id);
+  writes.gates[1].release();
+  writes.restore();
+  await closing;
+  assert.deepEqual(abortedAtDelivery, [false]);
+  assert.equal(sessions.previousSnapshot().find((entry) => entry.id === id)?.unread, true);
 });
 
 /** A raw listener connection that sends requests and waits for their replies. */
