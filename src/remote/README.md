@@ -642,6 +642,13 @@ Rules:
    send (requests it sent before are handled first), so a page nobody sees
    neither counts as a reviewer of agent proposals nor blocks them.
 
+Known limits: `draft-snapshot` is one message holding every nonempty draft.
+The relay refuses a listener line over 64 Mi characters, as it does for the
+full state snapshot, so a snapshot past that (thousands of maximal drafts)
+would close draft hosts' relays; it is not split into pages. A connection
+whose output falls behind (256 queued messages or 16 MiB) is closed as slow,
+draft events included, and reconnects from a fresh snapshot.
+
 Everything else remote connections cannot do stays refused, draft host or
 not: `paste`, `submit-utterance`, `media-playback`, `composer-focus`,
 `agent-draft-result`, `set-capture-storage`, `set-application-chat-read`,
