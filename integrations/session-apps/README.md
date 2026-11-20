@@ -1,7 +1,13 @@
 # HTML session surface
 
 Status: first implementation path (desktop standalone host only). The phone app
-and the portable Quickshell panel keep their existing conversation views.
+and the portable Quickshell panel keep their existing conversation views. The
+[browser shell](../shell/README.md) renders the same chat page in an ordinary
+browser, with a bridge over the remote gateway instead of QWebChannel. Both
+hosts share `chat/`, so changes to the page or its protocol (`chat/protocol.ts`,
+`ChatState.mjs`) must keep both hosts in step. The browser shell needed one
+change to the page's history scrolling, described in
+[its README](../shell/README.md#one-change-to-the-shared-chat-page).
 
 In the standalone Companion host every conversation view, in the sidebar and in
 pop-out windows, shows the **HTML session surface** instead of the classic Qt
@@ -32,7 +38,10 @@ come from `../panel/SessionView.qml`, `AgentChoices.qml`, `PanelAction.qml`,
 `SessionTab.qml` and `Markdown.mjs` (see `chat/styles.css`, `rail/styles.css`).
 Like the classic view, the chat stays at the newest message while the reader
 is there, through resizing, text scale changes and streaming, and otherwise
-keeps the message at the top edge in place. The phone app keeps its own
+keeps the message at the top edge in place. The end of a detached history
+snapshot (older pages that no longer reach the newest message) is not the
+newest message: a reader there keeps their place, as in the classic view, and
+Jump to latest returns to the live end. The phone app keeps its own
 presentation.
 
 ## Who owns what

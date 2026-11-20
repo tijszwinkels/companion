@@ -1,0 +1,307 @@
+/*
+ * Browser shell around the trusted chat page. The chat itself keeps the
+ * desktop chat stylesheet (integrations/session-apps/chat/styles.css, bundled
+ * first); this file only lays out the frame: header, connection banner,
+ * conversation list, pairing and toasts, in the chat's default dark colors.
+ *
+ * The chat stylesheet makes html and body fill the window without scrolling;
+ * the list and the transcript scroll inside their own areas.
+ */
+
+body {
+  background: #1a1b26;
+  color: #a9b1d6;
+  font-family: system-ui, sans-serif;
+}
+
+#app {
+  height: 100%;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.shell *,
+.shell *::before,
+.shell *::after {
+  box-sizing: border-box;
+}
+
+/* ---- Header and banner ---------------------------------------------------- */
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #292e42;
+  min-width: 0;
+}
+
+.shell-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-state {
+  flex: none;
+  font-size: 12px;
+  color: #737b9c;
+}
+
+.connection-state.online {
+  color: #9ece6a;
+}
+
+.shell-button {
+  flex: none;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid #3b4261;
+  border-radius: 6px;
+  background: #24283b;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.shell-button:hover:not(:disabled) {
+  border-color: #7aa2f7;
+}
+
+.shell-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.shell-button.primary {
+  background: #7aa2f7;
+  border-color: #7aa2f7;
+  color: #1a1b26;
+  font-weight: 600;
+}
+
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: #3b2f1e;
+  color: #e0af68;
+  font-size: 13px;
+}
+
+.connection-banner span {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- Main area ---------------------------------------------------------------- */
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The chat page fills the area; wide windows keep a readable column. */
+.chat-host {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.held-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px auto 0;
+  padding: 8px 12px;
+  width: calc(100% - 24px);
+  max-width: 936px;
+  border: 1px solid #e0af68;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.held-input > span:first-child {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.held-feedback {
+  color: #737b9c;
+}
+
+.list-empty {
+  padding: 24px 16px;
+  color: #737b9c;
+}
+
+.conversation-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 auto;
+  padding: 8px 12px;
+  width: 100%;
+  max-width: 960px;
+  list-style: none;
+}
+
+.conversation-list li + li {
+  margin-top: 6px;
+}
+
+.conversation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #292e42;
+  border-radius: 8px;
+  background: #1f2335;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation:hover {
+  border-color: #7aa2f7;
+}
+
+.conversation-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.conversation-state {
+  font-size: 12px;
+  color: #737b9c;
+}
+
+.conversation-preview {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #737b9c;
+}
+
+.unread {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #7aa2f7;
+  vertical-align: middle;
+}
+
+/* ---- Pairing ------------------------------------------------------------------- */
+
+.pairing {
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+.pairing h1 {
+  font-size: 20px;
+}
+
+.pairing form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.pairing label {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.pairing input {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #3b4261;
+  border-radius: 6px;
+  background: #24283b;
+  color: inherit;
+  font: inherit;
+}
+
+.pairing .shell-button.primary {
+  margin-top: 12px;
+  min-height: 40px;
+}
+
+.pairing code {
+  overflow-wrap: anywhere;
+}
+
+.error {
+  color: #f7768e;
+}
+
+/* ---- Toasts -------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, 100%);
+  padding: 8px 8px 8px 12px;
+  border-radius: 8px;
+  background: #24283b;
+  border: 1px solid #3b4261;
+  font-size: 13px;
+  pointer-events: auto;
+}
+
+.toast.error {
+  border-color: #f7768e;
+}
+
+.toast.success {
+  border-color: #9ece6a;
+}
