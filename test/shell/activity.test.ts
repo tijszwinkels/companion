@@ -1312,77 +1312,188 @@ test(
     const { fixture, browser } = await setup(context);
     await heard(fixture, 'Synthetic entry deleted slowly');
     await heard(fixture, 'Synthetic entry refused deletion');
+    await heard(fixture, 'Synthetic entry refused while hidden');
+    await heard(fixture, 'Synthetic entry refused after reopening');
 
-    // Hold the listener's deletion until released, or refuse it.
+    // Each deletion at the listener waits until the test decides it: done
+    // or refused.
     const runtime = fixture.desktop.runtime as unknown as {
       history: { delete(id: string): Promise<void> };
     };
     const deleteRecord = runtime.history.delete.bind(runtime.history);
-    let release = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let refuse = false;
+    let decide: (outcome: 'delete' | 'refuse') => void = () => {};
     runtime.history.delete = async (id: string) => {
-      if (refuse) {
+      const outcome = await new Promise<'delete' | 'refuse'>((resolve) => {
+        decide = resolve;
+      });
+      if (outcome === 'refuse') {
         throw Error('Synthetic refusal');
       }
-      await held;
       return deleteRecord(id);
     };
 
     const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
     await clickSelector(page, barToggle);
+    const confirmText = (utterance: string) =>
+      `(${entryExpression(utterance)}?.querySelector('.activity-confirm')?.textContent ?? '')`;
+    const buttonState = async (utterance: string, label: string) =>
+      page.evaluate<string | null>(
+        `document.querySelector('${await entryButton(page, utterance, label)}').getAttribute('aria-disabled')`,
+      );
+    const pressDelete = async (utterance: string) => {
+      await clickSelector(
+        page,
+        await entryButton(page, utterance, 'Delete utterance, screenshot and audio'),
+      );
+      await clickSelector(page, await entryButton(page, utterance, 'Delete permanently'));
+      await page.waitFor(`${confirmText(utterance)}.includes('Deleting…')`);
+    };
+    const hideAndShow = async (between: () => Promise<void> = async () => {}) => {
+      await clickSelector(page, columnToggle);
+      await page.waitFor(`!document.querySelector('${column}')`);
+      await between();
+      await clickSelector(page, barToggle);
+      await page.waitFor(`document.querySelector('${column}')`);
+    };
+    const toastGone = async () => {
+      await page.evaluate(
+        `document.querySelectorAll('.toast button').forEach((button) => button.click())`,
+      );
+      await page.waitFor(`!document.querySelector('.toast')`);
+    };
+
+    // On its way: Cancel is unavailable and pressing it changes nothing.
     const slow = 'Synthetic entry deleted slowly';
-    await clickSelector(
-      page,
-      await entryButton(page, slow, 'Delete utterance, screenshot and audio'),
-    );
-    await clickSelector(page, await entryButton(page, slow, 'Delete permanently'));
-    const confirmText = `${entryExpression(slow)}?.querySelector('.activity-confirm')?.textContent ?? ''`;
-    await page.waitFor(`(${confirmText}).includes('Deleting…')`);
-
-    // Cancel is unavailable while the deletion is on its way; pressing it
-    // changes nothing.
-    const cancel = await entryButton(page, slow, 'Cancel');
-    assert.equal(
-      await page.evaluate(`document.querySelector('${cancel}').getAttribute('aria-disabled')`),
-      'true',
-    );
-    await clickAt(page, await box(page, cancel));
+    await pressDelete(slow);
+    assert.equal(await buttonState(slow, 'Cancel'), 'true');
+    await clickAt(page, await box(page, await entryButton(page, slow, 'Cancel')));
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.match(await page.evaluate<string>(confirmText), /Deleting…/);
+    assert.match(await page.evaluate<string>(confirmText(slow)), /Deleting…/);
 
-    // Hidden and shown again, it still says so.
-    await clickSelector(page, columnToggle);
-    await page.waitFor(`!document.querySelector('${column}')`);
-    await clickSelector(page, barToggle);
-    await page.waitFor(`(${confirmText}).includes('Deleting…')`);
+    // Hidden and shown again, it still says so; one request was sent.
+    await hideAndShow();
+    await page.waitFor(`${confirmText(slow)}.includes('Deleting…')`);
     assert.equal(requestActions(sockets).filter((action) => action === 'delete-history').length, 1);
 
-    // The listener answers: the entry leaves the column.
-    release();
+    // The listener deletes it: the entry leaves the column.
+    decide('delete');
     await page.waitFor(`!${entryExpression(slow)}`);
 
-    // A refused deletion: the confirmation stays, both buttons available.
-    refuse = true;
+    // Refused with the column shown: the confirmation stays, both buttons
+    // available again.
     const refused = 'Synthetic entry refused deletion';
-    await clickSelector(
-      page,
-      await entryButton(page, refused, 'Delete utterance, screenshot and audio'),
-    );
-    await clickSelector(page, await entryButton(page, refused, 'Delete permanently'));
+    await pressDelete(refused);
+    decide('refuse');
     await page.waitFor(`document.querySelector('.toast.error')`);
-    await page.waitFor(
-      `document.querySelector('${await entryButton(page, refused, 'Delete permanently')}')?.getAttribute('aria-disabled') !== 'true'`,
-    );
+    await page.waitFor(`!${confirmText(refused)}.includes('Deleting…')`);
+    assert.equal(await buttonState(refused, 'Delete permanently'), null);
+    assert.equal(await buttonState(refused, 'Cancel'), null);
+
+    // The error toast is drawn above the column also where the column lies
+    // over the chat: its Dismiss receives a press at its centre.
+    await resize(page, 420);
+    await page.waitFor(`document.querySelector('${column}.overlay')`);
     assert.equal(
-      await page.evaluate(
-        `document.querySelector('${await entryButton(page, refused, 'Cancel')}').getAttribute('aria-disabled')`,
-      ),
-      null,
+      await page.evaluate(`(() => {
+        const dismiss = document.querySelector('.toast.error button');
+        const rect = dismiss.getBoundingClientRect();
+        return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === dismiss;
+      })()`),
+      true,
+      'Dismiss is reachable above the column',
     );
-    assert.ok(await page.evaluate(`Boolean(${entryExpression(refused)})`));
+    await resize(page, 1280);
+    await toastGone();
+    await clickSelector(page, await entryButton(page, refused, 'Cancel'));
+    await page.waitFor(`${confirmText(refused)} === ''`);
+
+    // Refused while the column is hidden: shown again with the
+    // confirmation open, both buttons available.
+    const whileHidden = 'Synthetic entry refused while hidden';
+    await pressDelete(whileHidden);
+    await hideAndShow(async () => {
+      decide('refuse');
+      await page.waitFor(`document.querySelector('.toast.error')`);
+    });
+    await page.waitFor(`${confirmText(whileHidden)}.includes('Delete this utterance')`);
+    assert.equal(await buttonState(whileHidden, 'Delete permanently'), null);
+    assert.equal(await buttonState(whileHidden, 'Cancel'), null);
+    await toastGone();
+
+    // Refused after the column was shown again: the same.
+    const afterReopening = 'Synthetic entry refused after reopening';
+    await pressDelete(afterReopening);
+    await hideAndShow();
+    await page.waitFor(`${confirmText(afterReopening)}.includes('Deleting…')`);
+    decide('refuse');
+    await page.waitFor(`${confirmText(afterReopening)}.includes('Delete this utterance')`);
+    assert.equal(await buttonState(afterReopening, 'Delete permanently'), null);
+    assert.equal(await buttonState(afterReopening, 'Cancel'), null);
+
+    assert.equal(requestActions(sockets).filter((action) => action === 'delete-history').length, 4);
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'a divider drag ended by the column going away keeps the width reached',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const { page, sockets, browserContextId } = await pairedPage(fixture, browser, 1280, 800);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`${columnWidth} === 320`);
+
+    // Pressed and dragged to 400 px; the button is still held.
+    const start = await box(page, '.activity-divider');
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: start.x, y: 300 });
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: start.x,
+      y: 300,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    for (let step = 1; step <= 4; step++) {
+      await page.call('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: start.x + ((1280 - 400 - start.x) * step) / 4,
+        y: 300,
+        button: 'left',
+        buttons: 1,
+      });
+    }
+    await page.waitFor(`${columnWidth} === 400`);
+    assert.equal(
+      (await page.evaluate<{ activityWidth?: number }>(storedActivity)).activityWidth,
+      undefined,
+    );
+
+    // Another tab hides the column before the release: the width reached is
+    // remembered, and shown again after a reload.
+    const second = await desktopPage(browser, 1280, 800, browserContextId);
+    await second.page.navigate(`${fixture.origin}/`);
+    await second.page.waitFor(online, 8000);
+    await clickSelector(second.page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: 880,
+      y: 300,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+    assert.equal(
+      (await page.evaluate<{ activityWidth?: number }>(storedActivity)).activityWidth,
+      400,
+    );
+    await second.page.close();
+    await page.navigate(`${fixture.origin}/`);
+    await page.waitFor(online, 8000);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`${columnWidth} === 400`);
     await assertCleanPage(fixture, page, sockets);
   },
 );

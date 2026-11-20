@@ -12,7 +12,7 @@
  * over the chat and ends wherever the button is released.
  */
 
-import { useRef, useState } from 'preact/hooks';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 
@@ -57,6 +57,21 @@ export function Divider(props: {
   const dragPointer = useRef<number | null>(null);
   const dragMoved = useRef(false);
   const [dragging, setDragging] = useState(false);
+
+  // The divider goes away during a drag that moved (the window narrowed,
+  // another tab hid what it resizes): that also ends the drag, and the
+  // width reached is remembered once, as on release. A press that did not
+  // move still writes nothing.
+  const latestRemember = useRef(props.onRemember);
+  latestRemember.current = props.onRemember;
+  useLayoutEffect(() => {
+    return () => {
+      if (dragPointer.current !== null && dragMoved.current) {
+        dragPointer.current = null;
+        latestRemember.current();
+      }
+    };
+  }, []);
 
   /** The preferred width for the pointer's position in the divider's container. */
   function pointerWidth(event: PointerEvent): number {

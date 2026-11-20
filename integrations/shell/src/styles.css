@@ -1123,8 +1123,11 @@ body {
 
 /* ---- Toasts -------------------------------------------------------------------- */
 
+/* Above the Activity column, which lies over the chat in narrow windows
+   (z-index 3). */
 .toasts {
   position: fixed;
+  z-index: 10;
   right: 12px;
   bottom: 12px;
   left: 12px;

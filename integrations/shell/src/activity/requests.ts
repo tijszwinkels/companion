@@ -1,7 +1,8 @@
 /**
  * Which Activity requests await their answer, per entry (and one for Pause
  * and Resume), so an entry never has two requests on their way and its
- * buttons stay disabled meanwhile.
+ * buttons stay unavailable meanwhile; and which entries have their delete
+ * confirmation open.
  *
  * Lives in the workspace, not in the entry's component: hiding the column
  * while a request is on its way and showing it again must not offer the
@@ -18,10 +19,34 @@ export class ActivityRequests {
   /** Pending keys and what each request is (for example `delete`), or ''. */
   private readonly pending = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
+  /**
+   * Entries whose delete confirmation is open. Kept here, for the pairing,
+   * so it survives the column being hidden and shown (and a refusal that
+   * arrives meanwhile); closed by Cancel or a completed deletion. An entry
+   * that goes away is no longer drawn, so its key is simply never shown.
+   */
+  private readonly confirmations = new Set<string>();
 
   /** Whether a request for `key` (an entry ID, or `pause`) awaits its answer. */
   isPending(key: string): boolean {
     return this.pending.has(key);
+  }
+
+  /** Whether the delete confirmation of entry `key` is open. */
+  isConfirming(key: string): boolean {
+    return this.confirmations.has(key);
+  }
+
+  setConfirming(key: string, open: boolean): void {
+    if (open === this.confirmations.has(key)) {
+      return;
+    }
+    if (open) {
+      this.confirmations.add(key);
+    } else {
+      this.confirmations.delete(key);
+    }
+    this.changed();
   }
 
   /** What the request for `key` awaiting its answer is (its `kind`), or ''. */

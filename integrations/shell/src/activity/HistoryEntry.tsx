@@ -54,11 +54,13 @@ export function HistoryEntry(props: {
   const store = useStore();
   const { entry } = props;
   const [choosing, setChoosing] = useState(false);
-  // The delete confirmation is open; also when the column is shown again
-  // while this entry's deletion awaits its answer.
-  const [confirming, setConfirming] = useState(
-    () => props.requests.pendingKind(entry.id) === 'delete',
-  );
+  // The delete confirmation is open. Kept by the workspace (requests.ts),
+  // not here, so hiding and showing the column keeps it open, also through
+  // a refusal that arrives meanwhile.
+  const confirming = props.requests.isConfirming(entry.id);
+  function setConfirming(open: boolean) {
+    props.requests.setConfirming(entry.id, open);
+  }
   const [copyFeedback, setCopyFeedback] = useState('');
   const cancelButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
@@ -79,12 +81,15 @@ export function HistoryEntry(props: {
   const deleting = props.requests.pendingKind(entry.id) === 'delete';
 
   // The confirmation takes keyboard focus when it opens (in the same frame,
-  // see Workspace.tsx). When it closes with focus inside it, focus goes back
-  // to × (DeleteConfirmation).
+  // see Workspace.tsx), not when it is drawn open again after the column was
+  // hidden. When it closes with focus inside it, focus goes back to ×
+  // (DeleteConfirmation).
+  const wasConfirming = useRef(confirming);
   useLayoutEffect(() => {
-    if (confirming && !deleting) {
+    if (confirming && !wasConfirming.current && !deleting) {
       cancelButton.current?.focus();
     }
+    wasConfirming.current = confirming;
   }, [confirming]);
 
   /**
