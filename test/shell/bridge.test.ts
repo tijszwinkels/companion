@@ -261,6 +261,35 @@ test('listener drafts reach the page: unsaved text, the agent source with Clear,
   assert.equal(bridge.canClose(sessionA), true);
 });
 
+test('a draft with \\r\\n line breaks reaches the page as the text box keeps it, and can be sent', async () => {
+  const { store, bridge, messages } = harness();
+  await statusWhere(messages, (candidate) => candidate.sessionId === sessionA);
+
+  // Written elsewhere (an agent's proposal from a Windows file).
+  store.setDraft(sessionA, 'first\r\nsecond\rthird');
+  const status = await statusWhere(messages, (candidate) => candidate.draft!.text !== '');
+  assert.equal(status.draft!.text, 'first\nsecond\nthird');
+
+  // The page sends what its text box holds: written as an edit first, then sent.
+  const answer = await ask((callback) =>
+    bridge.send(sessionA, status.draft!.revision, 'first\nsecond\nthird', callback),
+  );
+  assert.equal(answer.accepted, true);
+  const send = store.pending.find((request) => request.action === 'send-agent')!;
+  assert.equal(send.parameters.text, 'first\nsecond\nthird');
+  assert.equal(store.draft(sessionA), 'first\nsecond\nthird');
+
+  // While the send waits, Close is held (page and list): it would reach the
+  // listener before the send.
+  assert.equal(bridge.canClose(sessionA), false);
+  assert.deepEqual(await ask((callback) => bridge.closeSession(sessionA, callback)), {
+    accepted: false,
+  });
+  send.resolve({});
+  await statusWhere(messages, (candidate) => candidate.pendingSend === false);
+  assert.equal(bridge.canClose(sessionA), true);
+});
+
 test('a send based on an older draft revision is refused (no second send)', async () => {
   const { store, bridge, messages } = harness();
   await settle();

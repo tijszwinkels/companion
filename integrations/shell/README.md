@@ -863,8 +863,7 @@ not yet).
    echo: it is never applied a second time (the edit is settled by its
    answer, rule 3). Showing,
    switching or reopening a conversation writes nothing; each conversation
-   keeps its own draft, and an edit typed just before a switch goes to the
-   conversation it was typed in.
+   keeps its own draft, and an edit typed just before a switch goes to the conversation it was typed in. Line breaks reach the page as `\n`, as a text box keeps them; a draft written elsewhere with `\r\n` is sent by first writing that `\n` text as an edit, so the listener still clears it after the send.
 3. **Writing.** Every change of the text (typing, a paste, Clear) is one
    `draft-set` with a new `editId`. Per conversation at most one edit is in
    flight, from sending until its answer arrives; text typed meanwhile
@@ -899,10 +898,17 @@ not yet).
    waits for its answer, `panel-state` reports `pendingSend` for that
    conversation (reported before `send-agent` leaves, withdrawn when its
    answer, or its loss, arrives), so the listener refuses agent proposals
-   for it meanwhile. The send leaves only after the edits that were on their
-   way or waiting when it was pressed are answered, so the listener has the
-   sent text as its draft first (text typed after pressing Send does not
-   delay it). The listener clears the draft after accepting the send
+   for it meanwhile (when another conversation's send still waits, that one
+   is reported next; a send that started before the connection's draft
+   snapshot is reported as soon as it arrives). The send leaves only after
+   the edits that were on their way or waiting when it was pressed are
+   answered, so the listener has the sent text as its draft first; text
+   typed after pressing Send waits behind the sent text instead of
+   replacing it, and does not delay the send. Close (the page's and the
+   list's ×) waits for the send's answer, so it cannot reach the listener
+   before the send. A send whose answer was lost says to check the
+   conversation; the box shows the listener's draft (empty if the send
+   arrived). The listener clears the draft after accepting the send
    if the draft still equals the sent text, and every editor follows; this
    page never writes an empty draft for a send. If the box still shows the
    sent text (for example unsaved text that differed from the listener's),
@@ -925,7 +931,7 @@ not yet).
 9. **Without listener drafts** (rule 1), the browser behaves exactly as
    before: drafts per conversation in the phone Store, saved in this
    browser, cleared by a completed send, no `draft-set`, no `pendingSend`,
-   no ✎ or "Draft: …", `draftUnsaved` and the agent note always empty. When
+   no ✎ or "Draft: …", `draftUnsaved` and the agent note always empty. Drafts of conversations that are no longer open are pruned as before, once the current connection has shown that it offers no drafts (until then such a draft may be offline text that a connection with drafts offers by rule 8). When
    a reconnect changes the mode, the shown texts carry over: from listener
    to local drafts they become this browser's drafts (saved locally, no
    longer marked unsaved); from local to listener drafts they are offered
@@ -1326,6 +1332,11 @@ Known limits:
 - A listener restart loses drafts (memory only, as on the desktop); the
   browser then shows the new listener's empty drafts, and its own unsaved
   text stays unsaved.
+- A send waits while its text is written; if the connection drops in that
+  moment the send fails with its notice and is not sent, and if the text
+  box was changed after pressing Send, the unsent text is no longer in it.
+  This needs a drop within one answer's time after Send and new typing in
+  that same moment.
 - Text emptied while not connected (an offline Clear) stays empty and
   unsaved across a reconnect, but not across a reload of the page: this
   browser keeps no empty text, so after a reload the listener's draft is

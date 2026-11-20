@@ -144,14 +144,14 @@ async function desktopEditor(fixture: Fixture, context: { after(callback: () => 
 /**
  * Another connection of the same device sending draft edits to
  * `conversation` as fast as it can, which uses up the device's draft-edit
- * allowance (src/remote/README.md, "Drafts", rate) until stopped. A send on
- * a closed socket ends it too, so a failing test cannot leave it running.
+ * allowance (src/remote/README.md, "Drafts", rate) until stopped. It also
+ * ends when its socket is no longer open (the fixture closed it).
  */
 function startFlood(client: PhoneClient, conversation: string): { stop(): Promise<void> } {
   let running = true;
   let edits = 0;
   const loop = (async () => {
-    while (running) {
+    while (running && client.socket.readyState === client.socket.OPEN) {
       edits++;
       try {
         client.send({

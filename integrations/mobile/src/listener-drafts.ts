@@ -30,7 +30,8 @@
  * - **Writing.** Every edit is one `draft-set` with a fresh `editId`. At
  *   most one is in flight per conversation, from sending until its answer
  *   arrives; text typed meanwhile waits, and newer text replaces waiting
- *   text, so fast typing never queues stale edits. A change that carries an
+ *   text, so fast typing never queues stale edits (except text a send waits
+ *   for, which leaves as it is; see `written`). A change that carries an
  *   `editId` is this page's own (the listener names it only to the
  *   connection that wrote it): it is never shown a second time.
  * - **Unsaved text.** Text the listener has not confirmed (typed while not
@@ -106,6 +107,13 @@ interface DraftEntry {
   inFlight: { editId: string; text: string } | null;
   /** The newest text typed while an edit was in flight, still to be sent. */
   waiting: string | null;
+  /**
+   * A send waits for `waiting` (see `written`): it leaves as it is, and
+   * text typed after it waits in `later` instead of replacing it.
+   */
+  waitingPinned: boolean;
+  /** Text typed after a send pinned `waiting`; it becomes `waiting` once that leaves. */
+  later: string | null;
   /** Why the shown text is not saved in the listener, or '' (it is, or it is the listener's). */
   unsaved: string;
   /** Edits sent so far, and how many of them are settled (answered or lost). */
@@ -163,7 +171,10 @@ export class ListenerDrafts {
         continue;
       }
       entry.inFlight = null;
-      entry.waiting = null;
+      this.dropWaiting(entry);
+      // The edit in flight is abandoned: counted as settled, so a later
+      // send waits only for edits sent after it (see `written`).
+      entry.settled = entry.issued;
       if (entry.unsaved === '') {
         entry.unsaved = reconnectedReason;
       }
@@ -214,7 +225,8 @@ export class ListenerDrafts {
       entry.listenerSequence = draft ? draft.sequence : snapshot.sequence;
       // Edits of the previous connection were settled by disconnected().
       entry.inFlight = null;
-      entry.waiting = null;
+      this.dropWaiting(entry);
+      entry.settled = entry.issued;
       this.releaseWaiters(entry);
 
       const shown = this.host.shown(id);
@@ -244,23 +256,33 @@ export class ListenerDrafts {
   /**
    * The connection's first accepted `panel-state` answer. Without a snapshot
    * before it, this connection does not share drafts: the page keeps them
-   * locally, as before. Returns true when the mode becomes local now (from
-   * a fresh page or from listener drafts): the Store then keeps the shown
-   * texts as its local drafts, with its usual pruning.
+   * locally, as before. Returns true when this decides it for the current
+   * connection: the Store then keeps the shown texts as its local drafts,
+   * with its usual pruning (see `localDecided`).
    */
   reportAccepted(): boolean {
     if (this.decided) {
       return false;
     }
     this.decided = true;
-    const becameLocal = this.currentMode !== 'local';
     this.currentMode = 'local';
     // Shown texts stay where they are and become local drafts; nothing is
     // "not saved" any more, and the listener's copies no longer matter.
     this.releaseAll();
     this.entries.clear();
     this.host.changed();
-    return becameLocal;
+    return true;
+  }
+
+  /**
+   * The current connection has shown that drafts are local. Only then may
+   * the Store prune drafts of conversations that are not open: until a
+   * connection has decided, such a draft may be text the listener never
+   * received (typed offline), which a connection with listener drafts
+   * offers instead.
+   */
+  get localDecided(): boolean {
+    return this.currentMode === 'local' && this.decided;
   }
 
   // ---- The listener's changes and answers ------------------------------------------
@@ -333,7 +355,7 @@ export class ListenerDrafts {
     entry.settled++;
     if (failure instanceof UncertainOutcome) {
       entry.inFlight = null;
-      entry.waiting = null;
+      this.dropWaiting(entry);
       if (entry.unsaved === '') {
         entry.unsaved = reconnectedReason;
       }
@@ -354,7 +376,10 @@ export class ListenerDrafts {
     entry.inFlight = null;
     if (entry.waiting !== null) {
       const text = entry.waiting;
-      entry.waiting = null;
+      // Text typed after a send pinned the waiting text goes next.
+      entry.waiting = entry.later;
+      entry.later = null;
+      entry.waitingPinned = false;
       this.send(id, entry, text);
       this.releaseWaiters(entry);
       return;
@@ -375,7 +400,7 @@ export class ListenerDrafts {
    */
   private refused(entry: DraftEntry, reason: string): void {
     entry.inFlight = null;
-    entry.waiting = null;
+    this.dropWaiting(entry);
     entry.unsaved = refusedPrefix + reason;
     this.releaseWaiters(entry);
     this.host.changed();
@@ -405,7 +430,10 @@ export class ListenerDrafts {
     // Discard now would be undone when this edit is applied). If this edit
     // fails, its own reason marks the text again.
     entry.unsaved = '';
-    if (entry.inFlight !== null) {
+    if (entry.inFlight !== null && entry.waitingPinned) {
+      // A send waits for the waiting text: it is not replaced.
+      entry.later = text;
+    } else if (entry.inFlight !== null) {
       entry.waiting = text;
     } else {
       this.send(id, entry, text);
@@ -431,7 +459,7 @@ export class ListenerDrafts {
       return false;
     }
     entry.unsaved = '';
-    entry.waiting = null;
+    this.dropWaiting(entry);
     if (this.host.shown(id) !== entry.listenerText) {
       this.host.show(id, entry.listenerText);
     }
@@ -487,10 +515,12 @@ export class ListenerDrafts {
     if (!entry || (entry.inFlight === null && entry.waiting === null)) {
       return Promise.resolve();
     }
-    // The waiting text, if any, leaves as the next edit.
+    // The waiting text, if any, leaves as the next edit, unchanged: text
+    // typed from now on waits behind it.
     let target = entry.issued;
     if (entry.waiting !== null) {
       target += 1;
+      entry.waitingPinned = true;
     }
     return new Promise((resolve) => {
       entry.waiters.push({ target, resolve });
@@ -561,6 +591,8 @@ export class ListenerDrafts {
         listenerSequence: 0,
         inFlight: null,
         waiting: null,
+        waitingPinned: false,
+        later: null,
         unsaved: '',
         issued: 0,
         settled: 0,
@@ -599,6 +631,13 @@ export class ListenerDrafts {
       }
     }
     entry.waiters = remaining;
+  }
+
+  /** No text waits to be written any more (it stays shown). */
+  private dropWaiting(entry: DraftEntry): void {
+    entry.waiting = null;
+    entry.later = null;
+    entry.waitingPinned = false;
   }
 
   /** Resolve every waiting send (sign-out, or drafts no longer shared). */

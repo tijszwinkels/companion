@@ -1112,9 +1112,10 @@ test(
 
     await page.waitFor(`document.querySelector('.connection-banner')`, 5000);
     await page.waitFor(`document.querySelector('.state').textContent === 'Disconnected'`);
-    // The unanswered send keeps its text and says to check before resending.
+    // The unanswered send keeps its text and says to check before resending
+    // (with listener drafts the box then follows the listener's draft).
     await page.waitFor(
-      `document.querySelector('.composer').textContent.includes('check the conversation before sending it again')`,
+      `document.querySelector('.composer').textContent.includes("Check the conversation before sending it again; the text box shows Companion's draft.")`,
     );
     assert.equal(
       await page.evaluate(`document.querySelector('.chat textarea').value`),

@@ -308,6 +308,15 @@ export class StandInListener {
     }
   }
 
+  /** Answer the first held request that `matches`; the others keep waiting. */
+  releaseMatching(matches: (frame: Frame) => boolean): void {
+    const index = this.held.findIndex(({ frame }) => matches(frame));
+    if (index >= 0) {
+      const [next] = this.held.splice(index, 1);
+      this.handle(next.link, next.frame);
+    }
+  }
+
   /** Forget held requests: they are lost with their connection. */
   dropHeld(): void {
     this.held = [];

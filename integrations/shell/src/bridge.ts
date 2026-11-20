@@ -636,11 +636,17 @@ export class GatewayChatBridge implements NativeBridge {
   /**
    * The shown draft for the page. An agent's unedited proposal names its
    * source and offers Clear (`clearable`, which the Qt host never sets).
+   *
+   * Line breaks are given as the text box keeps them (`\n`): a draft written
+   * elsewhere may contain `\r\n`, which a textarea turns into `\n`, and the
+   * page sends only text that equals what it was given. Sending such a
+   * draft then writes the `\n` text as an edit first (see send()), so the
+   * listener still clears the draft it holds after the send.
    */
   private pageDraft(id: string, text: string, cursor: number): ChatStatus['draft'] {
     const source = this.store.draftSource(id);
     const draft: NonNullable<ChatStatus['draft']> = {
-      text: text,
+      text: text.replace(/\r\n?/g, '\n'),
       cursor: cursor,
       revision: this.draftRevision(id),
       source: source,
@@ -1042,7 +1048,7 @@ export class GatewayChatBridge implements NativeBridge {
    * the same refusals as the chat page's Close session.
    */
   canClose(sessionId: string): boolean {
-    return this.online && !this.holdsText(sessionId);
+    return this.online && !this.holdsText(sessionId) && !this.pendingSend(sessionId);
   }
 
   /**
@@ -1055,8 +1061,19 @@ export class GatewayChatBridge implements NativeBridge {
     return held || this.store.draftUnsaved(sessionId) !== '';
   }
 
+  /**
+   * Close session. Not while the conversation holds text only this page has,
+   * and not while a send of it waits: with listener drafts a send leaves
+   * only after its text is written, so a Close admitted meanwhile would
+   * reach the listener first and the send would be refused.
+   */
   closeSession(sessionId: string, callback?: (answer: string) => void): void {
-    if (!this.sameSession(sessionId) || !this.online || this.holdsText(sessionId)) {
+    if (
+      !this.sameSession(sessionId) ||
+      !this.online ||
+      this.holdsText(sessionId) ||
+      this.pendingSend(sessionId)
+    ) {
       this.answer(callback, { accepted: false });
       return;
     }

@@ -332,10 +332,10 @@ export class Store {
     if (this.listenerDrafts === undefined) {
       return;
     }
-    const becameLocal = this.listenerDrafts.reportAccepted();
-    if (becameLocal) {
+    const decidedLocal = this.listenerDrafts.reportAccepted();
+    if (decidedLocal) {
       // The shown texts are now local drafts: kept, pruned and saved as
-      // before (pruning waited until the mode was known, see pruneDrafts).
+      // before (pruning waited until this connection decided, see pruneDrafts).
       this.pruneDrafts(new Set(this.state.sessions.keys()));
     }
   }
@@ -528,10 +528,15 @@ export class Store {
         return undefined;
       }
       const explanation = error instanceof Error ? error.message : String(error);
-      const message =
+      let message =
         error instanceof UncertainOutcome
           ? `${explanation} The draft remains here; check the conversation before sending it again.`
           : `${explanation} The draft remains here.`;
+      // A shared draft follows the listener: if the send arrived, the
+      // listener cleared it, so the box need not hold the text any more.
+      if (id !== 'new' && this.draftsShared && error instanceof UncertainOutcome) {
+        message = `${explanation} Check the conversation before sending it again; the text box shows Companion's draft.`;
+      }
       this.update({ sends: new Map(this.state.sends).set(id, { pending: false, error: message }) });
       return undefined;
     }
@@ -550,28 +555,47 @@ export class Store {
     this.reportSelection();
   }
 
-  /** The send of `id` has its answer (or lost it): no longer reported as waiting. */
+  /**
+   * The send of `id` has its answer (or lost it): no longer reported as
+   * waiting. Another conversation's send that still waits is reported
+   * instead (the listener takes one conversation per connection).
+   */
   private endPendingSend(id: string): void {
     if (this.pendingSendReport !== id) {
       return;
     }
-    this.pendingSendReport = '';
+    this.pendingSendReport = this.waitingSend(id);
     if (this.listenerDrafts !== undefined && this.listenerDrafts.ready) {
       this.reportSelection();
     }
   }
 
   /**
+   * A conversation whose send still waits for its answer (the latest
+   * started, other than `except`), or ''. The new-conversation box is not a
+   * conversation the listener knows.
+   */
+  private waitingSend(except = ''): string {
+    let found = '';
+    for (const [id, send] of this.state.sends) {
+      if (send.pending && id !== 'new' && id !== except) {
+        found = id;
+      }
+    }
+    return found;
+  }
+
+  /**
    * Only open conversations and the new-conversation composer retain drafts.
-   * With the `listenerDrafts` option they are pruned only once a connection
-   * has shown that drafts are local: the listener keeps every conversation's
+   * With the `listenerDrafts` option they are pruned only once the current
+   * connection has shown that drafts are local: the listener keeps every conversation's
    * draft (also of closed ones, which may be reopened), and until the mode
    * is known a draft of a conversation closed elsewhere may be text the
    * listener never received, kept here so that it is offered, not lost.
    * Sends are always pruned.
    */
   private pruneDrafts(active: Set<string>): void {
-    const local = this.listenerDrafts === undefined || this.listenerDrafts.mode === 'local';
+    const local = this.listenerDrafts === undefined || this.listenerDrafts.localDecided;
     if (local) {
       for (const id of this.drafts.keys()) {
         if (id !== 'new' && !active.has(id)) {
@@ -715,6 +739,13 @@ export class Store {
           this.listenerDrafts.snapshot(event);
           // Local copies have been offered: deleted from this browser.
           this.saveDrafts();
+          // A send that started before this connection became a draft host
+          // is reported now, so agents cannot propose a draft for it.
+          const waiting = this.waitingSend();
+          if (waiting !== '') {
+            this.pendingSendReport = waiting;
+            this.reportSelection();
+          }
         }
         return;
       case 'draft':

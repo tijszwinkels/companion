@@ -276,6 +276,35 @@ test('draft text shown: each row of the README table', async (context) => {
       },
     },
     {
+      row: 'A send, then new text typed before the sent text is written',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        listener.holdActions.add('draft-set');
+        tab.type('a', 'h');
+        tab.type('a', 'hello');
+        const sending = tab.store.sendDraft('a');
+        // The person starts the next message before "h" is answered.
+        tab.type('a', 'next');
+        await settle();
+        listener.release();
+        await sending;
+        await settle();
+        const order = tab.link.requests
+          .filter((frame) => frame.action === 'draft-set' || frame.action === 'send-agent')
+          .map((frame) => `${frame.action}:${frame.text}`);
+        assert.deepEqual(order, [
+          'draft-set:h',
+          'draft-set:hello',
+          'draft-set:next',
+          'send-agent:hello',
+        ]);
+        assert.equal(listener.text('a'), 'next', 'the newer text stays');
+        assert.equal(tab.shown('a'), 'next');
+      },
+    },
+    {
       row: 'A send from elsewhere of the same text',
       async play() {
         const listener = freshListener();
@@ -447,6 +476,38 @@ test('writing: each row of the README table', async (context) => {
       },
     },
     {
+      row: 'An edit lost in a reconnect, then a send',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        listener.holding = true;
+        tab.type('a', 'lost');
+        await settle();
+        tab.drop();
+        await tab.reconnect();
+        tab.type('a', 'send me');
+        listener.holdActions.add('draft-set');
+        await settle();
+        const sending = tab.store.sendDraft('a');
+        tab.type('a', 'send me, and the next message');
+        await settle();
+        // Only "send me" is answered: the send leaves, it does not wait for
+        // the text typed after it.
+        listener.releaseNext();
+        await settle();
+        const sends = tab.link.requests.filter((frame) => frame.action === 'send-agent');
+        assert.deepEqual(
+          sends.map((frame) => frame.text),
+          ['send me'],
+        );
+        listener.release();
+        await sending;
+        await settle();
+        assert.equal(tab.shown('a'), 'send me, and the next message');
+      },
+    },
+    {
       row: 'Offline Clear, then reconnect',
       async play() {
         const listener = freshListener();
@@ -600,6 +661,59 @@ test('agent drafts: each row of the README table', async (context) => {
         assert.equal(tab.link.pendingSend, '', 'withdrawn with the answer');
         assert.equal(tab.shown('a'), '');
         assert.equal(listener.propose('a', 'Agent idea', 'Planner'), 'inserted');
+      },
+    },
+    {
+      row: "A proposal while another conversation's send ended first",
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        tab.type('a', 'Sending a');
+        tab.store.open('b');
+        tab.type('b', 'Sending b');
+        await settle();
+        listener.holdActions.add('send-agent');
+        const sendingA = tab.store.sendDraft('a');
+        await settle();
+        const sendingB = tab.store.sendDraft('b');
+        await settle();
+        assert.equal(tab.link.pendingSend, 'b', 'the latest send is reported');
+        // B's answer arrives first: A still waits and is reported instead.
+        listener.releaseMatching((frame) => frame.action === 'send-agent' && frame.id === 'b');
+        await sendingB;
+        await settle();
+        assert.equal(tab.link.pendingSend, 'a');
+        assert.equal(listener.propose('a', 'Agent idea', 'Planner'), 'conflict');
+        listener.release();
+        await sendingA;
+        await settle();
+        assert.equal(tab.link.pendingSend, '');
+      },
+    },
+    {
+      row: 'A proposal while a send started before the draft snapshot waits',
+      async play() {
+        const listener = freshListener();
+        // The connection's first report (and so its draft snapshot) waits.
+        listener.holdActions.add('panel-state');
+        listener.holdActions.add('send-agent');
+        const tab = await openTab(listener, context);
+        tab.type('a', 'Early');
+        const sending = tab.store.sendDraft('a');
+        await settle();
+        assert.equal(tab.store.draftsShared, false, 'the mode is not known yet');
+        // The report is answered: the snapshot makes this connection a draft
+        // host, and the waiting send is reported at once.
+        listener.holdActions.delete('panel-state');
+        listener.releaseNext();
+        await settle();
+        assert.equal(tab.link.pendingSend, 'a');
+        assert.equal(listener.propose('a', 'Agent idea', 'Planner'), 'conflict');
+        listener.release();
+        await sending;
+        await settle();
+        assert.equal(tab.link.pendingSend, '');
       },
     },
     {
@@ -799,6 +913,24 @@ test('migration and fallback: each row of the README table', async (context) => 
         assert.equal(reloaded.shown('a'), 'Typed offline in a');
         assert.equal(reloaded.unsaved('a'), keptLocallyReason);
         assert.deepEqual(reloaded.edits(), []);
+      },
+    },
+    {
+      row: 'No drafts, offline text of a conversation closed elsewhere, then a reconnect with drafts',
+      async play() {
+        const older = freshListener();
+        older.supportsDrafts = false;
+        const tab = await openTab(older, context);
+        tab.drop();
+        await settle();
+        tab.type('a', 'Typed offline in a');
+        assert.deepEqual(localDrafts(), { a: 'Typed offline in a' });
+        // Closed elsewhere; the gateway comes back with drafts.
+        const listener = new StandInListener(['b']);
+        await tab.reconnect(listener);
+        assert.equal(tab.store.draftsShared, true);
+        assert.equal(tab.unsaved('a'), keptLocallyReason, 'offered, not pruned');
+        assert.deepEqual(localDrafts(), { a: 'Typed offline in a' });
       },
     },
     {
