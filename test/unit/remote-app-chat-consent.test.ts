@@ -20,7 +20,7 @@ import {
   type Permission,
   type Reply,
 } from '../app-consent-fixture.ts';
-import { waitFor } from '../remote-fixture.ts';
+import { delay, waitFor } from '../remote-fixture.ts';
 
 // ---- Expected answers ------------------------------------------------------
 
@@ -392,5 +392,49 @@ test('desktop connection: these two actions behave exactly as before', async (co
     assert.equal(late.type, 'error');
     assert.equal(late.message, 'Error: This conversation is no longer selected on the desktop');
     assert.equal(f.allowedNow(permission), false);
+  }
+});
+
+test('a report the gateway refuses still ends the page counting as visible', async (context) => {
+  // The device's request budget runs out just when the page is hidden: the
+  // gateway refuses the hide report, so it repeats the last report it
+  // forwarded with `visible: false`, and the waiting grant is refused.
+  const f = await consentFixture();
+  context.after(() => f.close());
+  const id = f.applicationConversation;
+
+  for (const permission of ['read', 'send'] as const) {
+    await f.arrange(permission, false);
+    const phone = await f.openPhone();
+    await f.phoneReports(phone, id, true);
+
+    const release = await f.holdApplicationQueue();
+    const waiting = f.phoneSend(phone, f.change(permission, true));
+
+    // Spend the rest of the device's budget (pings share it), then hide.
+    for (let ping = 0; ping < 60; ping++) {
+      phone.socket.send(JSON.stringify({ type: 'ping' }));
+    }
+    const hide = await f.phoneSend(phone, { action: 'panel-state', id, visible: false }).reply();
+    assert.equal(hide.type, 'error');
+    assert.match(hide.message!, /Too many requests/);
+
+    await waitFor(() => !f.remoteVisibleSelections().includes(id), 3000);
+    await release();
+    const answer = await waiting.reply();
+    assert.equal(answer.type, 'error', permission);
+    assert.match(answer.message!, showFirst, permission);
+    assert.equal(f.allowedNow(permission), false, permission);
+
+    // The selection stays: stopping still works once the budget refills.
+    await delay(1000);
+    await f.phoneReports(phone, id, true);
+    const allowed = await f.phoneSend(phone, f.change(permission, true)).reply();
+    assert.equal(allowed.type, 'result', allowed.message ?? '');
+    await f.phoneReports(phone, id, false);
+    const stopped = await f.phoneSend(phone, f.change(permission, false)).reply();
+    assert.equal(stopped.type, 'result', stopped.message ?? '');
+    assert.equal(f.allowedNow(permission), false, permission);
+    await f.closePhone(phone);
   }
 });

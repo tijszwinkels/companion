@@ -70,6 +70,9 @@ const draftEditRefusal = 'Too many draft edits; this edit was not saved';
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
 const withdrawalRequestId = 'withdraw';
 
+/** Upstream request ID of a report the gateway writes itself (see hideAfterRefusedReport). */
+const hiddenReportRequestId = 'hidden-report';
+
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
 
@@ -137,6 +140,14 @@ export class Relay {
    * upstream. See withdrawVisibility.
    */
   private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
+  /**
+   * The fields of the last `panel-state` written upstream (without its
+   * request ID): what the listener believes this connection shows. See
+   * hideAfterRefusedReport.
+   */
+  private lastReport?: Record<string, unknown>;
+  /** A report was refused before the role was confirmed; hide once it is. */
+  private hideWhenReady = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   /**
    * Whether this connection is a draft host (the client asked with
@@ -249,6 +260,9 @@ export class Relay {
         action: parsed.request.action,
         message: 'Too many requests; slow down',
       });
+      if (parsed.request.action === 'panel-state') {
+        this.hideAfterRefusedReport();
+      }
       return;
     }
 
@@ -326,6 +340,9 @@ export class Relay {
           ? draftEditRefusal
           : 'Too many unfinished requests; wait for earlier ones',
       });
+      if (request.action === 'panel-state') {
+        this.hideAfterRefusedReport();
+      }
       return;
     }
 
@@ -337,6 +354,11 @@ export class Relay {
       requestMilliseconds,
     );
     this.pending.set(upstreamId, { request, finish, timer });
+
+    // An accepted report is newer than any refused before it.
+    if (request.action === 'panel-state') {
+      this.hideWhenReady = false;
+    }
 
     if (this.ready) {
       this.sendRequest(upstreamId, request);
@@ -369,10 +391,42 @@ export class Relay {
     // started closing) describes a page nobody sees any more: keep its
     // selection and order, but never let it count as visible.
     if (request.action === 'panel-state' && !this.phoneIsOpen()) {
-      this.writeUpstream({ ...fields, ...draftHost, visible: false, requestId: upstreamId });
+      this.lastReport = { ...fields, ...draftHost, visible: false };
+      this.writeUpstream({ ...this.lastReport, requestId: upstreamId });
       return;
     }
+    if (request.action === 'panel-state') {
+      this.lastReport = { ...fields, ...draftHost };
+    }
     this.writeUpstream({ ...fields, ...draftHost, requestId: upstreamId });
+  }
+
+  /**
+   * The gateway refused one of the client's `panel-state` reports (request
+   * rate or pending bound). The client may have reported its page hidden or
+   * another conversation, so the listener must not keep counting the page
+   * as visible: an application chat permission waiting in the listener's
+   * queue would otherwise be allowed on a page nobody sees, and the unread
+   * mark would keep clearing. The gateway therefore repeats the last report
+   * it forwarded with `visible: false` (same selection, draft host and
+   * pending send). It writes at most one such report per forwarded visible
+   * report, so a flood of refused reports never becomes a flood upstream.
+   * The listener never waits on a report, so it takes no slot there, and
+   * nobody waits for its reply. The client's next accepted report replaces
+   * it.
+   */
+  private hideAfterRefusedReport(): void {
+    if (!this.ready) {
+      // Queued reports are written when the role is confirmed; hide after them.
+      this.hideWhenReady = true;
+      return;
+    }
+    if (!this.lastReport || this.lastReport.visible !== true || this.upstream.destroyed) {
+      return;
+    }
+
+    this.lastReport = { ...this.lastReport, visible: false };
+    this.writeUpstream({ ...this.lastReport, requestId: hiddenReportRequestId });
   }
 
   /** The device's rate limit is shared by all its connections. */
@@ -488,6 +542,11 @@ export class Relay {
       return;
     }
 
+    if (isReply && message.requestId === hiddenReportRequestId) {
+      // Nobody waits for the gateway's own report either.
+      return;
+    }
+
     if (isReply && typeof message.requestId === 'string') {
       const pending = this.pending.get(message.requestId);
       if (!pending) {
@@ -566,6 +625,10 @@ export class Relay {
         this.sendRequest(upstreamId, pending.request);
       }
     }
+    if (this.hideWhenReady) {
+      this.hideWhenReady = false;
+      this.hideAfterRefusedReport();
+    }
 
     // A phone that left during role negotiation, or whose socket is already
     // closing: withdraw after its queued reports, edits and sends, which the
@@ -616,8 +679,9 @@ export class Relay {
   /**
    * The result of an accepted permission change: `"preview"` in preview mode,
    * otherwise the new permission state as for sessions (chat-access.ts), or
-   * null if the listener's answer is malformed. The change itself was made;
-   * the client learns its state from the session event that follows.
+   * null if the listener's answer is malformed. The change itself was made,
+   * and the listener published the conversation's new state before it
+   * answered, so the client keeps the latest `chatAccess` it received.
    */
   private permissionResult(result: unknown): unknown {
     if (result === 'preview') {

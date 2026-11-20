@@ -738,7 +738,12 @@ same checks as the desktop; the listener applies them
    **this** connection (its latest `panel-state` with `visible: true`);
    stopping needs only that it is selected there. The listener checks this
    when the request arrives and again when the change runs, so a page hidden
-   or switched in between allows nothing. A connection whose client left
+   or switched in between allows nothing. When the gateway refuses one of a
+   client's `panel-state` reports (request rate or pending bound), that
+   report might have said the page is hidden, so the gateway repeats the last
+   report it forwarded with `visible: false` (same selection, draft host and
+   pending send; at most once per forwarded visible report, and nobody waits
+   for its reply). The client's next accepted report replaces it. A connection whose client left
    (`withdraw-visibility`) can stop but not allow. Refusals say "Open this
    conversation on this device first" or "Show this conversation on this
    device first" and say nothing about other devices. The application ID, code
@@ -751,8 +756,11 @@ same checks as the desktop; the listener applies them
    revision changes with every change, and the person would see a misleading
    "permissions changed".
 4. **Result.** The new permission state, in the shape below, or `"preview"` in
-   preview mode; `null` if the listener's answer were malformed (the change
-   was made; the next session event shows it).
+   preview mode; `null` if the listener's answer were malformed. The change
+   was made, and the listener sends the conversation's new state before it
+   answers, so a client that receives `null` keeps showing the latest
+   `chatAccess` it received (or reconnects for a fresh snapshot); it does not
+   wait for another event.
 5. **What a client receives.** Each conversation's `application.chatAccess`
    (snapshots, events) and the result above are rebuilt field by field by
    [`chat-access.ts`](chat-access.ts), and dropped whole if any field is
@@ -778,7 +786,11 @@ same checks as the desktop; the listener applies them
      connection.
    - `send` is absent from older listeners; absence never means allowed.
    - **Removed:** `send.grantId`, the identity the application puts into each
-     message it sends. A client drawing the controls never needs it.
+     message it sends. A client drawing the controls never needs it, so no
+     WebSocket message carries it. This is a rule for the gateway's messages
+     only: the application itself, running in its frame on the same browser,
+     still reads its own grant ID from its view's `state` (`chatSend`), as it
+     must to send, exactly as on the desktop.
    - Never present: view addresses (`viewUrl` stays replaced by `frameUrl`),
      paths or capabilities. Fields the listener adds later are dropped until
      reviewed.

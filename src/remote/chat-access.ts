@@ -22,7 +22,9 @@
  *   checks that this connection shows the conversation. Passed on.
  * - `send.grantId`: the identity of the current send grant, which the
  *   application puts into each message it sends (with its view address). A
- *   client drawing the controls never needs it, so it is removed.
+ *   client drawing the controls never needs it, so it is removed from every
+ *   WebSocket message. The application itself still reads it from its own
+ *   view state through its frame (`chatSend`), as it needs it to send.
  *
  * Nothing in the result is a capability, a path or a view address. Anything
  * the listener adds later is dropped here until it is reviewed, like new

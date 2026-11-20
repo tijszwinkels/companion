@@ -15,6 +15,7 @@ import type { IntentState } from '../core/router.ts';
 import type { ActivityHistoryEntry, ActivityHistoryRemoval } from '../desktop/activity-history.ts';
 import type { HistoryEntry } from '../desktop/history.ts';
 import type { CaptureStorageState } from '../capture-storage/policy.ts';
+import type { SessionApplicationDescriptor } from '../session-apps/types.ts';
 
 export type {
   ActivityHistoryEntry as ActivityEntry,
@@ -167,7 +168,8 @@ export interface ApplicationChatPermissionChange {
  * it: `application.chatAccess` in sessions, and the result of
  * `set-application-chat-read` / `set-application-chat-send`. The gateway
  * rebuilds it field by field from the listener's state (see chat-access.ts);
- * the listener's `send.grantId` never reaches a remote client.
+ * the listener's `send.grantId` is never in a gateway WebSocket message (the
+ * application reads its own through its frame, as on the desktop).
  */
 export interface RemoteApplicationChatAccess {
   /** What the application's code asks for: `chat.read`, `chat.send` or both. */
@@ -263,6 +265,29 @@ export type GatewayMessage =
       message: string;
       duplicate?: boolean;
     };
+
+/**
+ * A session application as a remote client receives it: no `viewUrl` (the
+ * listener's loopback view capability), `frameUrl` instead when the gateway
+ * has a frame origin, and `chatAccess` without the send grant's ID.
+ */
+export type RemoteSessionApplication = Omit<
+  SessionApplicationDescriptor,
+  'viewUrl' | 'chatAccess'
+> & {
+  frameUrl?: string;
+  chatAccess?: RemoteApplicationChatAccess;
+};
+
+/**
+ * A conversation as a remote client receives it (see RemoteSessionApplication).
+ * `EngineEvent` and `EngineState` still declare the listener's `AgentSession`,
+ * which existing clients compile against; on the wire, sessions have this
+ * shape. New client code should read `application` through this type.
+ */
+export type RemoteAgentSession = Omit<AgentSession, 'application'> & {
+  application?: RemoteSessionApplication;
+};
 
 /**
  * Listener events relayed to the phone. Screenshot file URLs are replaced by
