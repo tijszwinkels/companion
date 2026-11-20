@@ -113,6 +113,54 @@ function continueStartup(): void {
   }
 }
 
+/**
+ * Settle the demo's unread marks before anyone can pair: wait until every
+ * conversation in `turns` has asked its number of questions (the invoice
+ * export asks two, the second after the first turn) and its last answer has
+ * completed, then mark each of them read except `unreadId`, as if a device
+ * had shown it then (the listener's shared mark, src/desktop/README.md
+ * "Unread mark"). The demo then starts with `unreadId` as its one unread
+ * conversation. Checks every 50 ms, at most for 30 seconds (the scripted
+ * answers take a few seconds); a stop requested meanwhile ends the startup
+ * (`continueStartup`), and marks not settled by then fail the startup, so
+ * the demo never prints a pairing code with the wrong marks.
+ */
+async function settleDemoMarks(
+  agentSessions: AgentSessions,
+  turns: Map<string, number>,
+  unreadId: string,
+): Promise<void> {
+  for (let waited = 0; waited < 30_000; waited += 50) {
+    continueStartup();
+
+    const snapshot = agentSessions.snapshot();
+    let settled = true;
+    for (const [id, questions] of turns) {
+      const session = snapshot.find((candidate) => candidate.id === id);
+      if (!session) {
+        settled = false;
+        continue;
+      }
+      const asked = session.messages.filter((message) => message.kind === 'user').length;
+      const done = session.status === 'completed' && session.turnStartedAt === undefined;
+      if (asked < questions || !done || session.unread !== true) {
+        settled = false;
+      }
+    }
+
+    if (settled) {
+      for (const id of turns.keys()) {
+        if (id !== unreadId) {
+          agentSessions.markRead(id);
+        }
+      }
+      return;
+    }
+    await delay(50);
+  }
+  throw Error('The demo conversations did not finish their scripted answers in 30 seconds.');
+}
+
 directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
 const controller = new AbortController();
 
@@ -500,9 +548,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
 
   // Several conversations for the list: coding questions, a quick question
   // and one whose turn keeps running (see scriptedRun). Their answers
-  // complete before the browser pairs, so the browser shows them unread at
-  // first (the phone Store's rule for a fresh page); opening one marks it
-  // read.
+  // complete before the browser pairs, so the listener marks them unread
+  // (no page shows them). All but the city trip are then marked read, as if
+  // read on another device before (see `settleDemoMarks`), so the browser
+  // shows one unread conversation, also after a reload; opening it marks it
+  // read on every page.
   //
   // The invoice export is asked "yesterday" (the shifted clock) and, once
   // that turn has ended, continued today, so it shows both kinds of time.
@@ -519,14 +569,32 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   continueStartup();
   sessions.followUp(invoice, 'Thanks. Is anything left to do today?', controller.signal);
 
-  sessions.start(frame('🐛 Why does the list test fail? Please fix the bug.'), controller.signal);
-  sessions.start(
+  const bug = sessions.start(
+    frame('🐛 Why does the list test fail? Please fix the bug.'),
+    controller.signal,
+  );
+  const trip = sessions.start(
     frame('🗺️ Plan a two-day city trip for me', 'org.mozilla.firefox', true),
     controller.signal,
     'quickQuestion',
   );
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
-  sessions.start(frame('Notification rules: summarise them'), controller.signal, 'quickQuestion');
+  const rules = sessions.start(
+    frame('Notification rules: summarise them'),
+    controller.signal,
+    'quickQuestion',
+  );
+  await settleDemoMarks(
+    sessions,
+    new Map([
+      [invoice, 2],
+      [bug, 1],
+      [rules, 1],
+      [trip, 1],
+    ]),
+    trip,
+  );
+  continueStartup();
 
   // ---- Gateway --------------------------------------------------------------------
 

@@ -923,6 +923,47 @@ body {
   color: #f7768e;
 }
 
+/* ---- Limit page ------------------------------------------------------------------ */
+
+/* The page's content without a box of its own, so its children keep their
+   places in .shell's column; it only makes them inert under the limit page. */
+.shell-content {
+  display: contents;
+}
+
+/* Over everything (toasts are z-index 10, the screenshot viewer's layer
+   20), opaque, until Retry connects. */
+.limit-page {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+  background: #1a1b26;
+}
+
+.limit-card {
+  width: 100%;
+  max-width: 440px;
+}
+
+.limit-card h1 {
+  font-size: 20px;
+}
+
+.limit-card p {
+  line-height: 1.5;
+}
+
+.limit-card .shell-button.primary {
+  margin-top: 12px;
+  min-height: 40px;
+  padding: 6px 20px;
+}
+
 /* ---- Activity: the list's entry, the bar's ☰ and the column ------------------- */
 
 /* The line between the Activity entry and the conversations (the agreed
