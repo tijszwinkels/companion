@@ -933,7 +933,9 @@ test(
       'Keep typing in the original',
     );
     assert.equal(await page.evaluate(`history.state.companionPanel.selected`), original);
-    assert.equal(await page.evaluate(`document.querySelectorAll('.session-tab.unread').length`), 2);
+    // Arrivals still running are not unread: the listener's shared mark is
+    // set only when a turn completes unseen.
+    assert.equal(await page.evaluate(`document.querySelectorAll('.session-tab.unread').length`), 0);
     assert.deepEqual(page.errors, []);
   },
 );

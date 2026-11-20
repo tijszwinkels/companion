@@ -5,6 +5,10 @@
  * rail, the page title, and phone settings where the desktop has its close
  * button. When the computer offers local apps to this phone, an Apps button
  * appears before the settings button (see Apps.tsx).
+ *
+ * When the gateway refuses this page over a connection limit, the limit page
+ * (LimitPage.tsx) lies over everything until the reader's Retry connects;
+ * the app stays underneath, inert.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -13,6 +17,7 @@ import { useAppState, useStore } from '../hooks.ts';
 import { ActivityPage } from './Activity.tsx';
 import { AppsSheet, usePhoneApps } from './Apps.tsx';
 import { ConversationPage } from './Conversation.tsx';
+import { LimitPage } from './LimitPage.tsx';
 import { AppsIcon, MenuIcon, SettingsIcon } from '../../../chat-ui/icons.tsx';
 import { Pairing } from './Pairing.tsx';
 import { PreviousPage } from './Previous.tsx';
@@ -75,67 +80,73 @@ export function App() {
       ? selected.title || 'Untitled'
       : 'Companion';
   const unreadCount = state.unread.size;
+  const limited = state.connection.status === 'limited';
 
+  // The wrapper is laid out as if it were not there (`display: contents`);
+  // it only makes the app inert under the limit page.
   return (
     <div class="app">
-      <ConnectionBanner />
-      <div class="shell">
-        {railOpen && <Rail />}
-        <main class="body">
-          <header class="page-header">
-            <button
-              class="icon-button"
-              aria-label={railOpen ? 'Hide sessions' : 'Show sessions'}
-              aria-description={
-                !railOpen && unreadCount > 0 ? `${unreadCount} unread sessions` : undefined
-              }
-              aria-expanded={railOpen}
-              onClick={() => setRailOpen(!railOpen)}
-            >
-              <MenuIcon />
-              {!railOpen && unreadCount > 0 && <span class="menu-dot" aria-hidden="true" />}
-            </button>
-            <h1 ref={heading} tabIndex={-1} data-page-heading>
-              {title}
-            </h1>
-            {phoneApps.apps.length > 0 && (
+      <div class="app-content" inert={limited}>
+        <ConnectionBanner />
+        <div class="shell">
+          {railOpen && <Rail />}
+          <main class="body">
+            <header class="page-header">
               <button
                 class="icon-button"
-                aria-label="Apps"
-                aria-haspopup="dialog"
-                onClick={() => setAppsOpen(true)}
+                aria-label={railOpen ? 'Hide sessions' : 'Show sessions'}
+                aria-description={
+                  !railOpen && unreadCount > 0 ? `${unreadCount} unread sessions` : undefined
+                }
+                aria-expanded={railOpen}
+                onClick={() => setRailOpen(!railOpen)}
               >
-                <AppsIcon size={20} />
+                <MenuIcon />
+                {!railOpen && unreadCount > 0 && <span class="menu-dot" aria-hidden="true" />}
               </button>
-            )}
-            <button
-              class="icon-button"
-              aria-label="Phone settings"
-              aria-haspopup="dialog"
-              onClick={() => setSettings(true)}
-            >
-              <SettingsIcon size={20} />
-            </button>
-          </header>
+              <h1 ref={heading} tabIndex={-1} data-page-heading>
+                {title}
+              </h1>
+              {phoneApps.apps.length > 0 && (
+                <button
+                  class="icon-button"
+                  aria-label="Apps"
+                  aria-haspopup="dialog"
+                  onClick={() => setAppsOpen(true)}
+                >
+                  <AppsIcon size={20} />
+                </button>
+              )}
+              <button
+                class="icon-button"
+                aria-label="Phone settings"
+                aria-haspopup="dialog"
+                onClick={() => setSettings(true)}
+              >
+                <SettingsIcon size={20} />
+              </button>
+            </header>
 
-          {state.showingPrevious ? (
-            <PreviousPage />
-          ) : selected ? (
-            <ConversationPage key={selected.id} session={selected} />
-          ) : (
-            <ActivityPage />
-          )}
-        </main>
+            {state.showingPrevious ? (
+              <PreviousPage />
+            ) : selected ? (
+              <ConversationPage key={selected.id} session={selected} />
+            ) : (
+              <ActivityPage />
+            )}
+          </main>
+        </div>
+        {settings && <SettingsSheet onClose={() => setSettings(false)} />}
+        {appsOpen && (
+          <AppsSheet
+            apps={phoneApps.apps}
+            refresh={phoneApps.refresh}
+            onClose={() => setAppsOpen(false)}
+          />
+        )}
+        <Toasts />
       </div>
-      {settings && <SettingsSheet onClose={() => setSettings(false)} />}
-      {appsOpen && (
-        <AppsSheet
-          apps={phoneApps.apps}
-          refresh={phoneApps.refresh}
-          onClose={() => setAppsOpen(false)}
-        />
-      )}
-      <Toasts />
+      {limited && <LimitPage />}
     </div>
   );
 }
@@ -156,6 +167,11 @@ function ConnectionBanner() {
   }, [retryAt]);
 
   if (status === 'online' && state.engine?.ready !== false) {
+    return null;
+  }
+
+  // The limit page has its own Retry.
+  if (status === 'limited') {
     return null;
   }
 

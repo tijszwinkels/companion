@@ -11,7 +11,9 @@ A paired browser can:
 1. pair with the gateway and reconnect, exactly as the phone panel does;
 2. show the open conversations in a list on the left, as a narrow strip or a
    full list, and switch between them (see
-   [conversation list and layout](#conversation-list-and-layout)); close
+   [conversation list and layout](#conversation-list-and-layout)), with
+   unread answers marked the same on every browser and phone (see
+   [markers](#markers)); close
    them, reorder them by dragging, and reopen saved ones from Previous
    sessions;
 3. show the selected conversation with the **desktop chat page**
@@ -258,13 +260,141 @@ remote role sends (`src/list/entries.ts`):
 - **Working** (a turning ring around the icon, and `working…` in the bar):
   the conversation's status is `starting` or `running`. It appears when a
   turn starts and goes when the turn ends (done, stopped or failed).
-- **Answer not seen** (green dot and tint): the Store's `unread` set. The
-  rule: it is set when this page learns of a completed turn it had not
-  seen, in an event or in a snapshot, unless that conversation is shown on
-  a visible page, whatever the conversation does now (it may already run
-  its next turn); and when a conversation this page never saw arrives in an
-  event and is not shown. It is cleared when this page selects the
-  conversation or learns it was closed (an event), and on sign-out.
+- **Answer not seen** (green dot and tint): the listener's unread mark
+  (below). The list, the strip and the phone panel show the same mark, and
+  so does every other browser and phone paired with the same listener.
+
+#### Marker source
+
+Rule (`integrations/mobile/src/store.ts`, shared with the phone panel):
+
+1. The listener keeps one unread mark per conversation, `unread`, the same
+   for every device ([unread mark](../../src/desktop/README.md#unread-mark)):
+   set when a turn completes successfully while no connection shows the
+   conversation on a visible page, cleared when any connection shows it on a
+   visible page, saved with the conversation.
+2. A conversation's marker is the `unread` field of the latest version of
+   that conversation this page received (a snapshot's `sessions`, an
+   `agent-session` or `agent-restored` event), whenever that version carries
+   it as `true` or `false`. A listener with the shared mark sends it with
+   every conversation in every snapshot and event.
+3. A conversation whose latest version has no `unread` field (an older
+   listener, which never sends it) is marked by the page's own rule instead:
+   the [fallback](#fallback-for-an-older-listener) below. The page tells the
+   two apart per conversation, by the field alone.
+4. This page clears the listener's mark only by reporting the conversation as
+   visible (the [visible report](#visible-report)); it never clears or sets
+   the mark by itself.
+5. The "… — answer ready" toast stays the page's own: it is shown when a turn
+   completes in a conversation that is not selected and shown on a visible
+   page (also behind the settings screen or the narrow Activity column),
+   whichever source the marker has.
+
+| Case                                                        | Marker                                                                             |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Listener sends `unread: true` / `false`                     | shown / not shown, whatever the page's own rule says                               |
+| Turn completes while another conversation is shown          | shown (the listener sets it); the toast                                            |
+| Turn completes in the conversation shown on a visible page  | not shown; no toast                                                                |
+| The conversation is read on another device (or another tab) | goes, with the listener's `agent-session` update                                   |
+| Reload, or the first snapshot after pairing                 | as the listener sends it: an answer completed before stays marked until shown      |
+| Reconnect                                                   | as the reconnect snapshot sends it, also for changes made while offline            |
+| A conversation reopened from Previous sessions              | the saved mark arrives with it; reopened here it is selected and shown, so it goes |
+| A conversation reopened elsewhere                           | the saved mark, until a device shows it                                            |
+| A conversation started elsewhere, still running             | not shown (nothing completed yet)                                                  |
+| Listener without `unread` (older listener)                  | the fallback rule below                                                            |
+
+#### Visible report
+
+Rule (`integrations/mobile/src/store.ts`, `reportSelection`; the shell's
+covers in `src/settings/settings-view.ts` and `src/layout/activity-overlay.ts`):
+
+1. The page reports its selection to the listener as `panel-state`
+   `{"id": "<conversation or empty>", "visible": <boolean>}`.
+2. `visible` is `true` only while all of these hold: the page is visible
+   (`document.visibilityState` is `visible`), a conversation is selected, and
+   it is shown to the reader: not covered by the settings screen, and not
+   covered by the Activity column lying over the chat in a narrow window
+   (under 640 px), and no dialog lies over it: the shell's screenshot
+   viewer, or on the phone a sheet, a menu or the screenshot viewer (every
+   dialog that uses the phone panel's `Modal`). With no conversation selected (the empty
+   view, Previous sessions, the phone's Activity page) it is `false`.
+   Keyboard focus is never needed.
+3. The first report on each connection is sent when its first snapshot has
+   arrived. After that the page reports again whenever the selection or
+   `visible` changes, and only then: never the same report twice on one
+   connection. Resizing the window or dragging a divider changes nothing
+   unless it moves the window across the narrow limit while the column is
+   shown.
+4. Becoming not visible is reported at once, so a turn that completes right
+   after counts as not seen. Becoming visible is reported once the current
+   browser event has finished: leaving a cover often comes together with a
+   change of selection (browser Back from the settings screen goes to
+   another conversation), and the conversation that was only underneath must
+   not be reported as seen in between.
+5. A report that was not delivered is forgotten, so the next change is
+   reported in full. Over a lost connection nothing more is done (the
+   listener withdraws the connection's visibility itself). Refused by the
+   gateway (its request rate, a conversation closed meanwhile), the page
+   reports again a second later with what is true then, one attempt at a
+   time, so a page that has become hidden never stays counted as visible.
+   After five refusals in a row it stops trying by itself until a report is
+   accepted or the page reconnects; changes are still reported.
+   Refused because the gateway does not know `visible` (a gateway older than
+   the shared mark), the page reports `{"id"}` alone from then on, as
+   before, until it reconnects.
+6. A conversation closed while selected leaves the page showing nothing:
+   the page reports `{"", false}`. The listener drops its reports of a
+   closed conversation, so after a reopen it is reported again when
+   shown.
+
+| Page    | Selected conversation                | What happens next                                     | Sent                                         |
+| ------- | ------------------------------------ | ----------------------------------------------------- | -------------------------------------------- |
+| visible | none                                 | first snapshot after connecting                       | `{"", false}`                                |
+| visible | none                                 | tab hidden, then visible again                        | nothing                                      |
+| visible | A, shown                             | select A again                                        | nothing                                      |
+| visible | none                                 | select A                                              | `{A, true}` at once                          |
+| visible | A, shown                             | select B                                              | `{B, true}` at once                          |
+| visible | A, shown                             | the gear shows the settings screen                    | `{A, false}` at once                         |
+| visible | A, behind the settings screen        | the gear again                                        | `{A, true}` after the click                  |
+| visible | A, behind the settings screen        | browser Back to B                                     | `{B, true}` only (never `{A, true}`)         |
+| visible | A, behind the settings screen        | B chosen in the list                                  | `{B, true}` only (never `{A, true}`)         |
+| visible | A, behind the settings screen        | a started conversation C is selected underneath       | `{C, false}`                                 |
+| visible | A, shown, narrow window              | the Activity column is shown over it                  | `{A, false}` at once                         |
+| visible | A, behind the narrow Activity column | the column is hidden                                  | `{A, true}`                                  |
+| visible | A, shown, column beside it (wide)    | window narrowed under 640 px, then widened            | `{A, false}`, then `{A, true}`               |
+| visible | A, shown, column hidden              | window resized across 640 px                          | nothing                                      |
+| visible | A, shown, column beside it           | a divider dragged, the window resized above 640 px    | nothing                                      |
+| visible | A, shown                             | tab hidden, then visible again                        | `{A, false}` at once, then `{A, true}`       |
+| hidden  | A                                    | a reconnect                                           | `{A, false}` after the new snapshot          |
+| visible | A, shown                             | a reconnect                                           | `{A, true}` after the new snapshot           |
+| visible | A, shown                             | A closed elsewhere                                    | `{"", false}`                                |
+| visible | none (A was closed)                  | A reopened and selected again                         | `{A, true}` again                            |
+| visible | B, shown; its report refused (rate)  | a second later                                        | `{B, true}` again                            |
+| hidden  | A; `{A, false}` refused (rate)       | a second later                                        | `{A, false}` again                           |
+| visible | A, shown; every report refused       | time passes                                           | five more attempts a second apart, then none |
+| visible | A, shown; gateway without `visible`  | the refusal arrives                                   | `{A}` (no `visible`), from then on           |
+| visible | A, shown                             | a dialog opens (screenshot viewer; phone sheet, menu) | `{A, false}` at once; closed: `{A, true}`    |
+
+The phone panel follows the same rule. Its conversation page is the one on
+screen while a conversation is selected and no sheet, menu or screenshot
+viewer lies over it (any of them counts as covering, also a sheet that
+leaves part of the page visible: a wrong `true` would clear a mark on every
+device). In the browser shell the screenshot viewer is such a dialog; it
+also closes when the limit page appears.
+
+#### Fallback for an older listener
+
+For a conversation without the listener's `unread` field (rule 3 above),
+the Store's own rule: it is set when this page learns of a completed turn it
+had not seen, in an event or in a snapshot, unless that conversation is
+shown on a visible page, whatever the conversation does now (it may already
+run its next turn); and when a conversation this page never saw arrives in
+an event and is not shown. It is cleared when this page selects the
+conversation while it is shown, when a cover over the selected
+conversation lifts (after the current event, as the visible report), or
+when it learns the conversation was closed (an event), and on sign-out. A
+cover (the settings screen, the narrow Activity column) counts as not
+shown.
 
 | Event                                                                                                           | Unread mark                                                                 |
 | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -273,6 +403,8 @@ remote role sends (`src/list/entries.ts`):
 | A turn completes in the shown conversation, page hidden (other tab)                                             | set                                                                         |
 | A turn completes in the selected conversation while the settings screen covers it                               | set                                                                         |
 | A conversation with that mark is selected underneath the settings screen (a started one)                        | kept until it is shown                                                      |
+| The cover over a marked selected conversation lifts (the column hidden, the gear)                               | cleared                                                                     |
+| Browser Back from the settings screen to another conversation                                                   | the one underneath keeps its mark                                           |
 | A turn is stopped or fails                                                                                      | not set                                                                     |
 | A conversation this page has not seen arrives in an event (started elsewhere)                                   | set                                                                         |
 | A conversation this page has seen is reopened elsewhere                                                         | not set                                                                     |
@@ -286,11 +418,25 @@ remote role sends (`src/list/entries.ts`):
 | The conversation is closed                                                                                      | cleared                                                                     |
 | Sign-out                                                                                                        | all cleared                                                                 |
 
-The first-snapshot and offline rows are the Store's existing rules (the
-phone behaves the same): it keeps no record of what this browser saw before
-loading, and it learns of changes made while offline from the reconnect
-snapshot, where only a new completed turn counts. `test/shell/markers.test.ts`
-plays every row against the real Store.
+The first-snapshot and offline rows are why the listener's mark replaced
+this rule: the page keeps no record of what this browser saw before
+loading, so after a reload every finished conversation shows as unread,
+and reading a conversation on one device does not clear it on another.
+
+#### Tests
+
+`test/shell/markers.test.ts` plays every row of the three tables above
+against the real Store in Node (with a stand-in for the page's visibility
+and the socket): the marker source with a listener that sends `unread` and
+with one that does not, the visible report row by row, and the fallback
+rule. `test/shell/shared-unread.test.ts` checks the shared mark end to end
+in headless Chromium against the real gateway and listener: a turn
+completed while another conversation is shown stays marked after a reload,
+showing it clears the mark in a second tab of the same browser, a hidden tab
+clears nothing, and the narrow Activity column covers the chat (only
+crossing the narrow limit reports). The settings screen's cover is checked
+in the browser by `test/shell/settings.test.ts` ("an answer completed behind
+the settings screen is marked unread; going back clears it").
 
 ## Activity
 
@@ -536,8 +682,9 @@ heading.
   background on the desktop. Not for an audio-only entry or one whose
   screenshot was not kept, nor while the listener offers no conversation
   controls or runs in preview mode. The listener's answer does not name the new
-  conversation, so it appears in the list with the "not seen" marker and is
-  not selected.
+  conversation, so it appears in the list, working, and is not selected; it
+  gets the "not seen" marker if its answer completes while no device shows
+  it.
 - **Correct** and **Incorrect** (`label-history`) label the decision; they
   need a decision (an intent), capture storage on at the listener, and the
   entry's complete saved capture (otherwise the reason is shown, as on the
@@ -640,12 +787,13 @@ on.
    is selected underneath and shown when the settings screen is left; the
    conversation underneath closed elsewhere shows the empty view then).
 4. The conversation underneath is **not shown** while the settings screen
-   covers it: an answer completed meanwhile gets the "answer not seen" mark
-   and the toast, as for a conversation that is not selected (the Store's
-   `selectionShown` option, off on the phone), and a conversation selected
-   underneath it (a started one) keeps its mark. Going back to it with the
-   gear, or by Back and Forward, shows it, which clears the mark, as
-   choosing it does.
+   covers it: the page reports it as not visible (see
+   [visible report](#visible-report)), so an answer completed meanwhile gets
+   the "answer not seen" mark and the toast, as for a conversation that is
+   not selected (the Store's `selectionShown` option), and a conversation
+   selected underneath it (a started one) keeps its mark. Going back to it
+   with the gear, or by Back and Forward, shows it, which clears the mark,
+   as choosing it does.
 5. Text only the chat editor holds is offered there as on Previous sessions
    (Copy, Discard).
 
@@ -1299,6 +1447,8 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   "Disconnected" state. Sending, choosing, stopping and closing are refused
   while offline, and after reconnecting until the listener's new snapshot has
   arrived (the shown conversation may have been closed or reopened meanwhile).
+- Refused over a connection limit, the page shows the limit page instead of
+  retrying (see [the limit page](#the-limit-page)).
 - Stop follows one rule, below.
 - Paging through history follows one rule, below.
 - Notices and pending choices belong to one conversation lifetime (ID and
@@ -1310,6 +1460,55 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   stored pairing changes, so it cannot write its old drafts back. Input only
   the editor holds stays reachable from the list (Copy, Discard) when its
   conversation is not shown.
+
+### The limit page
+
+The gateway admits 8 remote connections, at most 4 per paired device (a
+browser's tabs count for its device), and refuses a newcomer with close code
+4429 and the reason `device` or `total` (see
+[Limits](../../src/remote/README.md)). Rule (the phone Connection,
+`integrations/mobile/src/connection.ts`, shared with the phone panel):
+
+1. Refused with reason `device`, the page says: "This browser already has
+   four Companion tabs connected. Close one you do not need, then Retry."
+2. Refused with reason `total`, it says: "Companion already has eight
+   browsers and phones connected. Close one you do not need, then Retry."
+3. The limit page lies over the whole page with a Retry button (focused).
+   The page underneath stays as it was, inert. Nothing reconnects by itself
+   while it is shown: not after a delay, not when the tab becomes visible,
+   not when the network returns. No other tab is closed, and the page names
+   no other device.
+4. Retry tries once. Admitted, the page continues as after any reconnect
+   (the new snapshot, then the visible report). Refused again, the limit
+   page shows again. If the network is down at that moment, the page shows
+   "offline" and reconnects when the network returns, as before.
+5. A refusal with code 4429 and any other reason, or none (an older
+   gateway), keeps the earlier behaviour: "Too many phones are connected.
+   Retrying…" and a retry with backoff.
+
+| Case                                                                     | Result                                                               |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Fifth tab of one browser (reason `device`)                               | the limit page with the `device` text and Retry                      |
+| Ninth connection in all (reason `total`)                                 | the limit page with the `total` text and Retry                       |
+| 4429 with an unknown reason or none                                      | the banner "Too many phones are connected. Retrying…", retried       |
+| Limit page shown; time passes, the tab is hidden and shown, network back | no new connection                                                    |
+| Refused (named) while the browser already reports itself offline         | the limit page; the network's return reconnects nothing              |
+| Retry after another tab was closed                                       | connected; the limit page goes                                       |
+| Retry while the limit still holds                                        | refused again; the limit page shows again                            |
+| A second tab opened while the limit page is shown                        | that tab is refused too and shows its own limit page; nothing closes |
+
+`test/shell/limit-page.test.ts` plays the table: the reasons and the
+automatic-reconnect rows against the real Connection in Node with a stand-in
+socket (the Connection is the phone panel's too), and the fifth tab, the
+second tab, Retry and the `total` limit in headless Chromium against the
+real gateway for the shell. `test/mobile/limit-and-unread.test.ts` checks
+the phone panel's limit page in the browser (the fifth tab, Retry after a
+tab closed, the `total` limit).
+
+Known limit: if the browser reports going offline just before the named
+refusal arrives, the page treats it as a network loss and makes one more
+attempt when the network returns; if the limit still holds, that attempt is
+refused and shows the limit page.
 
 ### The Stop rule
 
@@ -1670,9 +1869,21 @@ Node, each with the cases of its README table above: the remembered width and
 hidden state (initial, invalid, dragged, keys, narrow windows, reload), the
 entries' icons (also without `Intl.Segmenter`), changes from two tabs, and the
 reorder gesture (every row of the reordering table, plus the drawn insertion
-line). `markers.test.ts` plays every row of the markers table against the
-real phone Store in Node (with stand-ins for history, storage and page
-visibility), read through the list's own derivation.
+line). `markers.test.ts` plays every row of the three markers tables
+(marker source, visible report, fallback) against the real phone Store in
+Node (with stand-ins for history, storage, page visibility and the socket),
+read through the list's own derivation. `limit-page.test.ts` plays the limit
+page's table: in Node against the real phone Connection with a stand-in
+socket (each reason, an unknown or missing reason, nothing reconnecting by
+itself, Retry admitted or refused), and in the browser against the real
+gateway (the fifth tab, a sixth opened meanwhile, Retry refused while the
+limit holds and admitted after a tab closed, the ninth connection in all).
+`shared-unread.test.ts` checks the listener's shared unread mark in the
+browser: a turn completed while another conversation is shown stays marked
+after a reload, a second tab of the same browser showing it clears it in
+both, a tab hidden behind another reports so and clears nothing, and the
+narrow Activity column covers the chat (only crossing the narrow limit
+reports).
 
 `shell.test.ts` and `list.test.ts` run the built shell in headless Chromium at
 desktop sizes, on the phone tests' fixtures (real gateway, real listener
@@ -1869,29 +2080,32 @@ modes after reconnects. `bridge.test.ts` checks what the page gets
 shown conversation only, Close refused while text is unsaved).
 
 `drafts.test.ts` plays the rows a browser can time against the real gateway
-and listener: text typed in one page reaching a second page of the same
-device and a desktop-role client on the listener's control socket, and the
-other way round, with a send clearing it everywhere and `pendingSend`
-reported around it; fast typing ending with exactly the final text at the
-listener, each edit leaving only after the previous one's answer (read from the frames the browser reports), and a message sent with Enter right after typing it leaving only after its last edit, so the box and the listener's draft end empty; an edit refused while another connection
-of the same device uses up the draft-edit allowance, kept with Save and
-Discard and saved or discarded without losing text; an agent proposal with
-its note, Clear, editing and sending, and one for another conversation
-marked in the list without a switch; ✎ in the strip and "Draft: …" in the
-full list; a local draft from before offered once (again after a reload
-while undecided, not after Discard); against a gateway without drafts
-(`older-gateway.ts`, a proxy that drops `drafts` from `auth` as an older
-gateway ignored it) local drafts exactly as before, with no `draft-set`, no
-`pendingSend` and no list marks; and unsaved text, an agent draft and the
+and listener: text typed in one page reaching a second page of the same device
+and a desktop-role client on the listener's control socket, and the other way
+round, with a send clearing it everywhere and `pendingSend` reported around
+it; fast typing ending with exactly the final text at the listener, each edit
+leaving only after the previous one's answer (read from the frames the browser
+reports), and a message sent with Enter right after typing it leaving only
+after its last edit, so the box and the listener's draft end empty; an edit
+refused while another connection of the same device uses up the draft-edit
+allowance, kept with Save and Discard and saved or discarded without losing
+text; an agent proposal with its note, Clear, editing and sending, and one for
+another conversation marked in the list without a switch; ✎ in the strip and
+"Draft: …" in the full list; a local draft from before offered once (again
+after a reload while undecided, not after Discard); against a gateway without
+drafts (`older-gateway.ts`, a proxy that drops `drafts` from `auth` as an
+older gateway ignored it) local drafts exactly as before, with no `draft-set`,
+no `pendingSend` and no list marks; and unsaved text, an agent draft and the
 list at 420, 1280 and 1600 px without overflow. With
 `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves those screens.
 `chat-composer.test.ts` draws the chat page's text box area in every draft
-state with and without `clearable` (and none while the editor holds input only it has) and compares it with
-`fixtures/chat-composer-reference.txt`, drawn by the base revision's
-`Chat.tsx` (`chat-composer-page.ts` says how to draw it again).
+state with and without `clearable` (and none while the editor holds input only
+it has) and compares it with `fixtures/chat-composer-reference.txt`, drawn by
+the base revision's `Chat.tsx` (`chat-composer-page.ts` says how to draw it
+again).
 
-Not covered in the browser: a page hidden in a background tab and reconnect
-snapshots (the markers table's rows for them are in `markers.test.ts`); a cancelled
+Not covered in the browser: reconnect snapshots (the markers tables' rows
+for them are in `markers.test.ts`); a cancelled
 pointer, lost pointer capture, the window losing focus and a missing order
 revision during a drag (checked in `reorder-gesture.test.ts`); a pen drag,
 and touch on real touch hardware (a synthetic touch swipe is covered); the × following input the editor holds (that needs over 16,000
@@ -1906,7 +2120,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | File                                   | Responsibility                                                                |
 | -------------------------------------- | ----------------------------------------------------------------------------- |
 | `src/main.tsx`                         | Creates the phone Store, the bridge and the chat page's ChatStore             |
-| `src/App.tsx`                          | Pairing, connection banner, toasts; the workspace once paired                 |
+| `src/App.tsx`                          | Pairing, connection banner, toasts, the limit page; the workspace once paired |
 | `src/workspace/Workspace.tsx`          | List, main area and Activity column with their dividers; held input           |
 | `src/workspace/ChatBar.tsx`            | The bar above the chat: ☰, title, state, model, gear, Activity ☰            |
 | `src/workspace/BarState.tsx`           | The bar's state: `working · 2:16`, `working…`, `ready · last turn 0:42`       |
@@ -1921,6 +2135,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/layout/Divider.tsx`               | The draggable, keyboard-operable divider (list and Activity)                  |
 | `src/layout/activity-width.ts`         | Activity column width rules: range, keys, wide and narrow windows             |
 | `src/layout/useActivityLayout.ts`      | The Activity column's layout of this page: preference, shown, remembering     |
+| `src/layout/activity-overlay.ts`       | Whether the Activity column lies over the chat now (for the visible report)   |
 | `src/activity/ActivityColumn.tsx`      | The Activity column: header, listening, start a conversation, history         |
 | `src/activity/HistoryEntry.tsx`        | One history entry and its actions                                             |
 | `src/activity/entry-actions.ts`        | Which actions an entry offers and enables, without DOM access                 |

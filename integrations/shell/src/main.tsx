@@ -23,6 +23,7 @@ import { ChatStore } from '../../session-apps/chat/store.ts';
 import '../../session-apps/chat/styles.css';
 import { App } from './App.tsx';
 import { GatewayChatBridge, type TranscriptView } from './bridge.ts';
+import { ActivityOverlay } from './layout/activity-overlay.ts';
 import type { LayoutStorage } from './layout/stored-layout.ts';
 import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
 import { SettingsView } from './settings/settings-view.ts';
@@ -79,18 +80,27 @@ window.addEventListener('popstate', () => {
   settingsView.setShown(false);
 });
 
+// Whether the Activity column lies over the chat (a narrow window); the
+// workspace sets it after each drawing (layout/activity-overlay.ts).
+const activityOverlay = new ActivityOverlay();
+
 // The Store reads this listener run's Activity history for the Activity
 // column (the phone panel's default), and after each reconnect from the
 // start, so changes made elsewhere while offline (deletions, labels) are not
 // missed. The selected conversation is not shown while the settings screen
-// covers it, so an answer completed then is marked unread. Conversation
-// drafts are the listener's where the gateway offers them (README,
-// "Listener drafts"), else kept in this browser as before.
+// or the narrow Activity column covers it: the page then reports it to the
+// listener as not visible, so its unread mark stays (README "Markers").
+// Conversation drafts are the listener's where the gateway offers them
+// (README, "Listener drafts"), else kept in this browser as before.
 const store = new Store({
   rereadActivityAfterReconnect: true,
-  selectionShown: () => !settingsView.shown,
+  selectionShown: () => !settingsView.shown && !activityOverlay.coversChat,
   listenerDrafts: true,
 });
+// Either cover coming or going changes what the reader sees: the Store
+// reports again when that changes what it last reported.
+settingsView.subscribe(() => store.selectionShownChanged());
+activityOverlay.subscribe(() => store.selectionShownChanged());
 
 // The listener's clock offset is taken from each state message as the
 // Store applies it. Subscribed first, so the bridge and the page already
@@ -184,7 +194,14 @@ window.addEventListener('storage', (event) => {
 
 render(
   <StoreContext.Provider value={store}>
-    <App chat={chat} bridge={bridge} times={times} settingsView={settingsView} viewer={viewer} />
+    <App
+      chat={chat}
+      bridge={bridge}
+      times={times}
+      settingsView={settingsView}
+      activityOverlay={activityOverlay}
+      viewer={viewer}
+    />
   </StoreContext.Provider>,
   document.getElementById('app')!,
 );
