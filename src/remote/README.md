@@ -177,7 +177,9 @@ page a secure context.
 - **Screenshots.** Session screenshot `file://` URLs become
   `api/screenshots/<session-uuid>`, fetched with the bearer token. The gateway
   serves only `<sessions directory>/<uuid>.png`, and only to a device that was
-  shown that conversation. Widget view URLs are removed.
+  shown that conversation. Widget view URLs are removed; with a frame origin
+  configured they are replaced by frame addresses (see
+  [Widget and application frames](#widget-and-application-frames)).
 - **Data minimization.** The desktop's recent-utterance list (latest 100 across
   earlier runs, used for paste recovery) is emptied before snapshots reach phones;
   the phone shows only the current run's Activity.
@@ -243,6 +245,269 @@ and live app connections using the same recheck interval as phone relays. The ap
 proxy binds loopback only; TLS and host names for app origins are separate user
 deployment decisions. See the [local apps guide](../../docs/local-apps.md) for the
 full policy and limits.
+
+## Widget and application frames
+
+Without extra options the gateway removes widget and session application view
+addresses, as described above, and a browser shows only a widget's name. With
+`--frames-listen HOST:PORT | unix:PATH` and `--frame-origin URL` (both, or
+neither) the gateway also runs a **frame origin**: a second listener in the
+same process that serves those pages to paired browsers, on an origin that is
+not the gateway's.
+
+```text
+browser shell ──iframe──▶ frame origin ──Unix socket──▶ widget service (listener)
+(gateway origin)          /f/<handle>/     widgets.sock    /view/<capability>
+```
+
+Code: [`frames/`](frames/) (handle table, admission, headers, listener); the
+listener side is [`src/widgets/socket.ts`](../widgets/socket.ts) and
+[`src/widgets/README.md`](../widgets/README.md).
+
+### Options
+
+- `--frames-listen` takes a literal IP or `localhost` with a port, or
+  `unix:/absolute/path`. Over TCP the listener uses TLS exactly when the
+  gateway does (`--tls-cert`/`--tls-key`, same certificate); plain HTTP is
+  allowed only on loopback. A Unix socket is claimed like the gateway's
+  (private directory, lifetime lock, 0600) and needs an https origin, which
+  Tailscale Serve terminates; there `X-Forwarded-Host` replaces `Host`, as on
+  the gateway's socket.
+- `--frame-origin` is exactly `scheme://host[:port]`, https or loopback http,
+  and must differ from every `--origin`. Its host name must differ from every
+  `--app-origin`'s (cookies ignore ports). Origins end up in
+  Content-Security-Policy sources, so with frames on the frame origin must
+  name a host name or IPv4 address, and every gateway origin a host name, an
+  IPv4 address or an IPv6 literal (no `*` or other characters a source would
+  expand). IPv6-literal gateway origins, such as the loopback default
+  `http://[::1]:PORT`, keep working for the phone app but cannot embed frames
+  (browsers refuse them as `frame-ancestors` sources); at least one gateway
+  origin must be able to. The frame listener must bind a specific address
+  (every spelling of "all interfaces", such as `0:0:0:0:0:0:0:0` or
+  `::ffff:0.0.0.0`, is refused).
+- The gateway reaches the widget service at `widgets.sock` next to the control
+  socket (`$XDG_RUNTIME_DIR/companion/widgets.sock`).
+- Funnel requests are refused, and `--require-tailscale-login` is required, on
+  the frame origin exactly as on the gateway.
+
+When both options are absent nothing changes: no second listener, the relay
+removes view addresses as before, and every gateway response and header is
+byte-identical to the previous release.
+
+### What a client receives
+
+For remote clients the relay replaces the listener's `viewUrl` with
+`frameUrl = <frame origin>/f/<handle>/` in widget attachments (messages in
+snapshots, events and `agent-history-page` replies, and the pinned
+attachment) and in a conversation's `application` descriptor. `viewUrl` and
+`application.chatAccess` are still removed. A client embeds `frameUrl` exactly
+as given, without adding a query or fragment, in
+`<iframe sandbox="allow-scripts allow-same-origin allow-forms">`. The page
+finds its own address from its location. Clients that ignore `frameUrl` keep
+working. `src/remote/protocol.ts` does not declare the field; it is part of
+the listener's session types it passes through.
+
+### Rules: handle lifetime
+
+1. A handle is 256 bits from the system's random source (43 base64url
+   characters), bound to one paired device and one listener view.
+2. The same device gets the same handle for the same view in every snapshot,
+   event, history page and pinned attachment while the handle lives, also
+   through a second connection of that device. Frames do not reload because
+   of an update.
+3. Another device gets a different handle for the same view. A handle is a
+   bearer capability like the listener's own address: frame requests carry
+   no device credential. "Bound to a device" means it is only sent to that
+   device, ends with that device, and its requests use that device's budget.
+4. A device's handles live while any of its connections is open, and for 30
+   seconds after the last one closed. A connection within those 30 seconds
+   keeps them; after that they are gone and a new connection gets new ones.
+5. They end at once when the device is revoked (the existing recheck, every
+   5 seconds, also during the 30 seconds), when device authorization cannot
+   be read, when the conversation closes (`agent-removed`), when the widget
+   service answers 404 for the view (the conversation closed or the
+   application was removed; for every device), and when the gateway stops.
+   Handles live in memory only. A request whose body was still arriving when
+   its handle ended is not forwarded. Only ordered facts end handles: relays
+   deliver listener events at different times (an initial snapshot waits for
+   role negotiation), so a snapshot without a view never ends anything.
+   `agent-removed` ends the views that the same connection saw for that
+   conversation before the event, for every device; a reopened conversation
+   has new capabilities. Removing an application is seen through the widget
+   service's 404.
+6. Replacing an application's code keeps its view address, so the handle stays;
+   the page reloads itself when it sees the new code version.
+7. Bounds: 1024 handles per device, 4096 in total. At a bound no new handle is
+   issued and the view is sent without `frameUrl`, as when no frame origin is
+   configured. Existing handles are never evicted.
+
+### Rules: request admission
+
+Checked in this order; every refusal has a fixed JSON body and the headers
+below, including refusals of upgrades and `CONNECT`.
+
+0. 64 or more header fields (Node may have dropped some, so a Funnel marker
+   could be missing): 431. A repeated `Host`, `Origin`, `Content-Type`,
+   `Content-Length`, `Transfer-Encoding`, `Authorization`, `Upgrade`,
+   `Expect`, `X-Forwarded-Host` or `Tailscale-*` field: 400.
+1. A `Tailscale-Funnel-Request` header, or a missing/wrong required Tailscale
+   login: 403.
+2. `Host` (on a Unix socket: `X-Forwarded-Host`) other than the frame
+   origin's host, or none: 421. Requests Node's parser cannot read
+   (malformed, oversized headers, conflicting framing, header deadline) get
+   400, 431 or 408 with the same refusal headers and body.
+3. An `Authorization` header, an `Upgrade` header, or any query string: 400.
+   WebSocket upgrades and `CONNECT` are refused on the socket level.
+4. The request target must be exactly `/f/<handle>/` followed by one
+   operation from the list below (nothing for the document). Any other path,
+   including the gateway's own paths, percent-encoding, dot segments, a second
+   `/view/` or an absolute-form target: 404 `Not found`.
+5. A method other than the operation's: 405.
+6. An `Origin` other than the frame origin: 403. A POST without `Origin`: 403.
+7. POST: `Content-Type` other than `application/json` 415; no
+   `Content-Length` or any `Transfer-Encoding` 411; a length above the
+   limit: 413. GET with a body: 400. `Expect: 100-continue` (exactly that
+   value) is answered only after every step here admitted the request; any
+   other expectation: 417.
+8. An unknown or ended handle, or one whose view does not implement the
+   operation: 404 `Not found`, the same answer as step 4. Steps 3–7 never
+   look at the handle.
+9. The device's budget, 40 requests per second with bursts of 120, separate
+   from the WebSocket's: 429. Connections and handles stay.
+10. More than 16 forwarded requests at a time, or 8 for one device: 503.
+
+| Operation      | Method | Body limit | Widget | Application |
+| -------------- | ------ | ---------- | ------ | ----------- |
+| (document)     | GET    | none       | yes    | yes         |
+| `state`        | GET    | none       | yes    | yes         |
+| `action`       | POST   | 160 KiB    | yes    | yes         |
+| `present`      | POST   | 160 KiB    | yes    | no          |
+| `viewport`     | POST   | 160 KiB    | yes    | no          |
+| `query`        | POST   | 160 KiB    | no     | yes         |
+| `chat-read`    | POST   | 160 KiB    | no     | yes         |
+| `chat-send`    | POST   | 32 KiB     | no     | yes         |
+| `chat-receipt` | POST   | 1 KiB      | no     | yes         |
+
+The list and limits come from
+[`src/widgets/frame-operations.ts`](../widgets/frame-operations.ts), shared
+with the widget service. `popout`, `frame`, `layout`, `input` and `/agent` are
+never forwarded. Chat reading and sending still need the desktop's explicit
+per-application grants; `chatAccess`, which a client would need to ask for
+them, stays removed for remote clients.
+
+Forwarded requests carry only a fixed `Host`, and for POST `Content-Type:
+application/json` and `Content-Length`; no cookie, origin, credential or other
+client header reaches the listener. Upstream answers: a redirect (3xx), an
+unexpected content type (the document must be `text/html`, everything else
+`application/json`) or an answer over 4 MiB (document) / 1 MiB (JSON): 502,
+never passed on or followed. A 404 ends the view's handles (rule 5) and is
+answered like an unknown handle. An unreachable listener: 503; no answer
+within 15 seconds: 504; other statuses pass through with their JSON body.
+
+Resources: at most 64 sockets on the frame listener, 10 seconds for a TLS
+handshake and for request headers (enforced within a second; a failed or
+unfinished handshake closes the socket at once), 30 seconds for
+a whole exchange including the client reading the answer. A forwarded
+request keeps its slot until the client has the answer (or has gone) and the
+listener has answered. A client that leaves does not cancel the request: the
+widget service would complete an accepted action anyway, so its slot stays
+taken until the listener answers or the 15-second upstream timeout passes;
+beyond that, the listener's own queue of 16 operations per conversation
+bounds the work. A request already forwarded when its device is revoked still
+receives its answer. Frame requests use the
+widget service socket, not the control socket: they do not count against the
+gateway's phone connections or the listener's client slots. Requests for
+unknown handles are not budgeted (no device is known) but are answered
+without touching the listener; restrict who can reach the port as for the
+gateway.
+
+Refusals written outside the request path (Node parser errors, upgrades,
+`CONNECT`) say `Connection: close`, and the socket is destroyed when the write
+finishes or after 5 seconds, whichever is first. Unsupported expectations go
+through the request path like any request (header checks, 417, the 30-second
+deadline). Known limit: such a raw refusal on a connection that pipelines
+requests can reach the client before the answer to an earlier request on the
+same connection, which is then lost (an admitted action may still be carried
+out). Browsers do not pipeline; this is accepted rather than tracked.
+
+**Connection limits.** The gateway's limits (4 connections per device, 8 in
+total, draining relays counted; see [Security model](#security-model)) and its
+per-device WebSocket request bucket do not apply to frame requests, and frame
+requests never use up either: they arrive on another listener and have their
+own per-device budget. A device's handles follow its open phone connections,
+up to all four: closing three keeps them without a grace period; the 30-second
+grace period starts when the last one closes. A relay that is still draining
+after its phone closed does not keep handles alive (its browser is gone);
+the grace period outlasts the 15-second drain.
+
+### Rules: headers
+
+- Every frame-origin response, forwarded or refused, carries
+  `Content-Security-Policy: frame-ancestors <gateway origins>; webrtc 'block'`
+  (IPv6-literal gateway origins omitted, see Options),
+  `Origin-Agent-Cluster: ?1`, `Referrer-Policy: no-referrer`,
+  `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store`,
+  `X-Content-Type-Options: nosniff` and `Permissions-Policy: camera=(),
+microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(),
+display-capture=()`.
+- From a forwarded answer only `Content-Type` and each upstream
+  `Content-Security-Policy` (unchanged, as additional headers) are kept.
+  `X-Frame-Options`, `Set-Cookie`, `Location` and every other upstream header
+  are dropped. No cookie is set or forwarded in either direction.
+- With a frame origin configured, the gateway's own policy for the phone app
+  and the shell gains exactly `; frame-src <frame origin>` at its end.
+  Without one it is byte-identical to before.
+
+### What a widget page can and cannot reach
+
+A widget or application page runs authored JavaScript in two layers: host.js
+on the frame origin, and the widget module in an inner `srcdoc` frame with an
+opaque, sandboxed origin (`connect-src 'none'`). It **can** read its own view's
+state, call its declared actions and queries, report its layout, change its
+own presentation, and, only after the person allowed it on the desktop, read
+or send chat. It **cannot** reach the gateway's origin (different origin: no
+`localStorage`, device token, cookies or same-origin API calls), any other
+view (another handle is needed), other operations of its own view, or the
+listener's control socket or loopback port. It cannot make HTTP requests to
+any third origin (`connect-src 'none'` in the inner frame, `connect-src
+'self'` on the host page). It cannot be framed by any page except the
+gateway's.
+
+**WebRTC is not blocked in Chromium.** CSP `webrtc 'block'` is sent, but
+Chromium (tested here) does not implement that directive yet, and no
+Permissions Policy covers it, so widget code can open an `RTCPeerConnection`
+and send STUN/ICE traffic to a server of its choice from the browser's
+network. Widget code is authored by the agent from the user's own library;
+treat that as the same trust as on the desktop, not as a no-egress sandbox.
+
+**Residual risk accepted by this design.** A second port on the same host name
+is a different origin but the same _site_ (scheme plus registrable domain). A
+browser may therefore keep the frame page and the shell in one process, and a
+renderer exploit in the frame could reach the shell's memory, including the
+device token. The `Origin-Agent-Cluster` header and the inner opaque sandboxed
+frame reduce this. Only a frame origin on a different registrable domain is a
+different site; another host name under the same registrable domain (for
+example two names in one tailnet's `ts.net` domain) is still the same site.
+Cookies are scoped to the host name regardless of port; the gateway and the
+frame origin use none, and app origins need distinct host names for that
+reason. A different frame host name can be configured later without code
+changes.
+
+### Tests
+
+`test/unit/remote-frames-lifetime.test.ts`,
+`test/unit/remote-frames-admission.test.ts` and
+`test/unit/remote-frames-headers.test.ts` hold one table of cases per rule set
+above, run against the real gateway on loopback, a real widget service with a
+synthetic widget and application (`test/frame-fixture.ts`) and real control
+and widget sockets. The headers file also compares a gateway without frame
+options with a recording made on the revision before this feature
+(`test/fixtures/gateway-base-output.json`). `remote-frames-options.test.ts`
+covers option combinations and CLI usage errors, `widgets-socket.test.ts` the
+listener's socket route, and `remote-frames-browser.test.ts` embeds a frame in
+headless Chromium from a gateway page and from a third origin. The widget
+renderer is synthetic in these tests (the bundle's own reducers run in Node);
+real Tailscale Serve, a phone and a production listener are not used.
 
 ## Requests, receipts and reconnection
 

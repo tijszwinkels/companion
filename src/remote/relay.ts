@@ -33,6 +33,7 @@ import {
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
 import { PhoneOutput } from './outbound.ts';
 import { draftEditBurst } from './request-rate.ts';
+import type { RelayFrames } from './frames/handles.ts';
 
 /** WebSocket close codes the phone app understands. */
 export const closeCodes = {
@@ -103,6 +104,8 @@ export interface RelayOptions {
   drafts?: boolean;
   /** Remember that this device may fetch a session's screenshot. */
   allowScreenshot(deviceId: string, sessionId: string): void;
+  /** Frame addresses for this device's views; absent when no frame origin is configured. */
+  frames?: RelayFrames;
   /** The gateway retains draining relays until their upstream is really closed. */
   onClosed(): void;
   log(message: string): void;
@@ -645,6 +648,9 @@ export class Relay {
     if (message.type === 'agent-session' || message.type === 'agent-restored') {
       sessions.push(message.session);
     }
+    if (message.type === 'agent-removed') {
+      this.options.frames?.conversationRemoved(message.id);
+    }
 
     for (const session of sessions) {
       const value = session as {
@@ -657,8 +663,12 @@ export class Relay {
       // like a widget's. The phone keeps the descriptor's metadata only.
       const application = value.application as Record<string, unknown> | undefined;
       if (application && typeof application === 'object') {
+        const applicationFrame = this.options.frames?.application(value.id, application.viewUrl);
         delete application.viewUrl;
         delete application.chatAccess;
+        if (applicationFrame) {
+          application.frameUrl = applicationFrame;
+        }
       }
       this.rewriteSession(value);
       if (value.pinnedMessage) {
@@ -685,7 +695,11 @@ export class Relay {
 
       const widget = message.widget as Record<string, unknown> | undefined;
       if (widget && typeof widget === 'object') {
+        const widgetFrame = this.options.frames?.widget(session.id, widget.viewUrl);
         delete widget.viewUrl;
+        if (widgetFrame) {
+          widget.frameUrl = widgetFrame;
+        }
       }
     }
   }

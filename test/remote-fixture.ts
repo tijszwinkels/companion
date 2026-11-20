@@ -53,6 +53,8 @@ export async function remoteFixture(
     preview?: boolean;
     /** The listener's wall clock (wakes, turn and message times); real by default. */
     clock?: () => number;
+    /** Widget source library; the checkout's bundled widgets by default. */
+    widgetLibrary?: string;
     /** Replaces the synthetic model catalogue, e.g. to hold `agent-models` open. */
     models?: () => Promise<AgentModelCatalog>;
   } = {},
@@ -103,7 +105,7 @@ export async function remoteFixture(
     },
     () => {},
     directory,
-    undefined,
+    options.widgetLibrary,
     undefined,
     // Conversation screenshots are saved only while capture storage is on.
     captureStorage,
