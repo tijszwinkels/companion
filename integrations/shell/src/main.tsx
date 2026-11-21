@@ -147,6 +147,14 @@ const viewer = new ScreenshotViewerState((path, signal) =>
 );
 bridge.onScreenshot((request) => viewer.open(request));
 
+// Inline widget frames behind the open viewer count as covered: they stop
+// polling and a loading frame's deadline waits (widgets/chat-cover.ts).
+// Only the frames: the visible report for the unread mark (selectionShown
+// above) does not read this.
+viewer.subscribe(() => {
+  chatCover.setViewerOpen(viewer.state.kind !== 'closed');
+});
+
 // The viewer shows a screenshot of the shown conversation only: it closes
 // when another conversation (or another lifetime of the same one) is shown,
 // and on sign-out or revocation.

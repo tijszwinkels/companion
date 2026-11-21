@@ -239,6 +239,33 @@ function WidgetFrame(props: {
     return watchTranscript(transcript);
   }, [hasFrame]);
 
+  // A press inside this panel's frame goes to the frame's own document: the
+  // shell's controls that close on a press outside them (the model picker,
+  // a list entry's ⋯ menu) never see it. When the window loses the focus to
+  // this frame, they get the same outside press as from a press on the page
+  // (README "Rule: a press into a widget"): a synthetic `pointerdown` on the
+  // page's body, so it reaches no chat or list element, and the focus goes
+  // back to the frame if closing a control took it.
+  useEffect(() => {
+    if (!hasFrame) {
+      return;
+    }
+    const lostFocus = () => {
+      const element = iframe.current;
+      if (!element || document.activeElement !== element) {
+        return;
+      }
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      if (document.activeElement !== element) {
+        element.focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener('blur', lostFocus);
+    return () => {
+      window.removeEventListener('blur', lostFocus);
+    };
+  }, [hasFrame]);
+
   // Messages from this panel's frame only (frame-messages.ts checks the
   // source window, the origin and every field). Heights go through the
   // throttle; the listener and the throttle belong to one frame element, so

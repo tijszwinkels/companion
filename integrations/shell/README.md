@@ -1515,9 +1515,14 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
 Rule (`src/widgets/frame-visibility.ts`): a frame is **visible** when its
 panel is in view (it intersects the window after the transcript's
 scrolling clipped it), the browser tab is not hidden, the chat is not
-covered by this page's own screens (the settings screen, or the Activity
-column lying over the chat in a narrow window; `src/widgets/chat-cover.ts`)
-and the shell's requests are admitted. The shell tells the frame when this
+covered by this page's own screens (the settings screen, the Activity
+column lying over the chat in a narrow window, or the screenshot viewer
+while it is open; `src/widgets/chat-cover.ts`) and the shell's requests
+are admitted. A loading frame's 10-second deadline runs only while it is
+visible, so it does not run out behind any of them. This affects only the
+frames: whether the conversation counts as shown for its unread mark (the
+page's visible report, `selectionShown` in `main.tsx`) stays as it is; an
+open screenshot viewer does not change it. The shell tells the frame when this
 changes. The widget page polls its state every 400 ms only while it is
 visible (host.js; a hidden tab stopped it before as well), and only after
 the shell first said it is visible, so a frame the reader cannot see
@@ -1532,6 +1537,7 @@ it is visible). A conversation that is not shown has no frames at all.
 | Hidden tab                             | no      | no, until the tab is shown      |
 | Behind the settings screen             | no      | no, until the settings are left |
 | Behind the narrow Activity overlay     | no      | no, until the column is hidden  |
+| Behind the open screenshot viewer      | no      | no, until the viewer is closed  |
 | Activity beside the chat (wide window) | yes     | yes                             |
 | A different conversation shown         | —       | no (the frame is removed)       |
 | Disconnected                           | no      | no, until admitted again        |
@@ -1560,6 +1566,25 @@ start happen only then. A chat without widgets is not watched.
 | Toward the end, heights unchanged                        | no (not needed) |
 | The content shrank and the browser pulled the view back  | no              |
 | The content grew, or the window was resized              | no              |
+
+### Rule: a press into a widget
+
+A press inside a widget's frame goes to the frame's own document, in
+another process: the shell sees no press, so its controls that close on a
+press outside them (the model picker in the bar, a list entry's ⋯ menu)
+would stay open. So when this page's window loses the focus to a widget's
+frame (`src/widgets/InlineWidget.tsx`), the shell gives those controls the
+same outside press they would get from a press on the page itself (a
+synthetic `pointerdown` on the page's body, outside the chat transcript),
+and then gives the focus back to the widget's frame. Nothing else is
+told: the press reaches no chat or list element, and nothing is sent.
+
+| Case                                                         | Result                                           |
+| ------------------------------------------------------------ | ------------------------------------------------ |
+| Model picker open, press inside a widget                     | The picker closes; the focus stays in the widget |
+| An entry's ⋯ menu open, press inside a widget                | The menu closes; the focus stays in the widget   |
+| Nothing open, press inside a widget                          | Nothing changes; the focus stays in the widget   |
+| The window loses the focus elsewhere (another window or tab) | Nothing (as before)                              |
 
 ### Security
 
@@ -2103,7 +2128,9 @@ The [inline widget](#inline-widgets) rules have one table each:
   (it was pulled back before); a page loaded before the gateway had a frame
   origin failing at once with the reload reason, and showing the widget
   after a reload; while disconnected only the frame inert, its label
-  readable. The tests check
+  readable; the open screenshot viewer making the frame not visible
+  and stopping its polling, and a press into a widget closing an open model
+  picker and an entry's ⋯ menu with the focus left in the widget. The tests check
   that no request left the gateway's origin and the frame origin, and most
   that no policy violation occurred (not the late-setup case, which
   depends on one: the page's own `frame-src` refusal). With

@@ -33,6 +33,7 @@ import {
   type FrameEvent,
   type FrameState,
 } from '../../integrations/shell/src/widgets/frame-state.ts';
+import { ChatCover } from '../../integrations/shell/src/widgets/chat-cover.ts';
 import { readerScrollThroughFrame } from '../../integrations/shell/src/widgets/frame-scroll.ts';
 import { frameVisible } from '../../integrations/shell/src/widgets/frame-visibility.ts';
 import { HeightThrottle } from '../../integrations/shell/src/widgets/height-throttle.ts';
@@ -413,6 +414,7 @@ test('visibility rule table', () => {
     ['hidden tab', { ...visible, pageHidden: true }, false],
     ['behind the settings screen', { ...visible, covered: true }, false],
     ['behind the narrow Activity overlay', { ...visible, covered: true }, false],
+    ['behind the open screenshot viewer', { ...visible, covered: true }, false],
     ['Activity beside the chat (wide window)', visible, true],
     ['disconnected', { ...visible, connected: false }, false],
     ['scrolled out in a hidden tab', { ...visible, inView: false, pageHidden: true }, false],
@@ -465,5 +467,28 @@ test('frame states rule: a refusal by the page policy fails exactly that origin'
   ];
   for (const [name, violation, expected] of cases) {
     assert.equal(policyRefusedFrame(violation, origin), expected, name);
+  }
+});
+
+test('visibility rule: the chat cover is the screens or the open screenshot viewer', () => {
+  const cover = new ChatCover();
+  let told = 0;
+  cover.subscribe(() => {
+    told++;
+  });
+  const cases: [string, () => void, boolean, number][] = [
+    ['nothing covers', () => {}, false, 0],
+    ['the viewer opens', () => cover.setViewerOpen(true), true, 1],
+    ['the settings screen as well', () => cover.setCovered(true), true, 1],
+    ['the viewer closes, settings still shown', () => cover.setViewerOpen(false), true, 1],
+    ['the settings screen is left', () => cover.setCovered(false), false, 2],
+    ['the viewer opened again', () => cover.setViewerOpen(true), true, 3],
+    ['the same again tells nobody', () => cover.setViewerOpen(true), true, 3],
+    ['the viewer closes', () => cover.setViewerOpen(false), false, 4],
+  ];
+  for (const [name, step, covered, tellings] of cases) {
+    step();
+    assert.equal(cover.covered, covered, name);
+    assert.equal(told, tellings, name);
   }
 });

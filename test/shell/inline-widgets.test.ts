@@ -17,6 +17,7 @@ import test from 'node:test';
 import type { WebSocketServer } from 'ws';
 
 import { chatMessage } from '../../src/agents/types.ts';
+import { syntheticWindowPng } from '../../integrations/shell/synthetic-window.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { frameFixture } from '../frame-fixture.ts';
 import { frame, signal } from '../helpers.ts';
@@ -26,7 +27,9 @@ import {
   appDirectory,
   assertNoViolations,
   click,
+  clickAt,
   clickButton,
+  entryExpression,
   horizontalOverflow,
   openConversation,
   pairedPage,
@@ -68,6 +71,10 @@ function frameSource(page: TestPage, name: string, index = 0): Promise<string> {
 function assertTwoOrigins(fixture: ShellFrameFixture, page: TestPage): void {
   for (const url of page.requests) {
     if (url === 'about:blank' || url.startsWith('data:') || url.startsWith('about:')) {
+      continue;
+    }
+    // The screenshot viewer's image, a blob of the gateway's own origin.
+    if (url.startsWith('blob:' + fixture.origin + '/')) {
       continue;
     }
     assert.ok(
@@ -912,5 +919,117 @@ test(
     await page.navigate(`${fixture.origin}/`);
     await openConversation(page, 'Set up later');
     await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'shown'`, 15_000);
+  },
+);
+
+test(
+  'the open screenshot viewer covers the frames; a press into a widget closes the model picker and an entry menu',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await frameSetup(context);
+    // A kept screenshot with the question, as in the viewer's own tests.
+    const before = fixture.runs.length;
+    fixture.sessions.start(
+      {
+        ...frame,
+        utterance: 'Covered fixture',
+        screenshot: {
+          ...frame.screenshot!,
+          png: syntheticWindowPng(640, 400),
+          width: 640,
+          height: 400,
+        },
+      },
+      signal(),
+    );
+    await waitFor(() => fixture.runs.length === before + 1);
+    const run = fixture.runs[before];
+    await fixture.publishCounter(run);
+    run.finish();
+
+    const { page } = await pairedPage(fixture, browser, 1280, 800);
+    await attachFrames(browser, page);
+    await openConversation(page, 'Covered fixture');
+    await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'shown'`, 15_000);
+    await page.waitFor(`${panelExpression('counter')}.dataset.visible === 'true'`);
+    const address = await frameSource(page, 'counter');
+    await waitFor(() => statePolls(page, address) >= 2, 5000);
+
+    // The screenshot viewer open over the page: the frame is not visible and
+    // stops polling; closed, it polls again.
+    await clickButton(page, 'View screenshot');
+    await page.waitFor(`document.querySelector('.screenshot-viewer')`);
+    await page.waitFor(`${panelExpression('counter')}.dataset.visible === 'false'`);
+    const polls = await quiet(() => statePolls(page, address));
+    assert.equal(await quiet(() => statePolls(page, address)), polls);
+    await page.call('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+    });
+    await page.call('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+    });
+    await page.waitFor(`!document.querySelector('.screenshot-viewer')`);
+    await page.waitFor(`${panelExpression('counter')}.dataset.visible === 'true'`);
+    await waitFor(() => statePolls(page, address) >= polls + 2, 5000);
+
+    /** Press the widget's own button, inside its frame, with the mouse. */
+    async function pressInWidget(): Promise<void> {
+      const point = await page.evaluate<{ x: number; y: number }>(`(() => {
+        const frame = ${panelExpression('counter')}.querySelector('iframe');
+        frame.scrollIntoView({ block: 'center' });
+        const box = frame.getBoundingClientRect();
+        return { x: box.left + 40, y: box.top + 24 };
+      })()`);
+      await clickAt(page, point);
+    }
+    const frameFocused = `document.activeElement === ${panelExpression('counter')}.querySelector('iframe')`;
+
+    // The model picker open, then a press into the widget: it closes, and
+    // the focus is in the widget.
+    await click(page, '.model-button');
+    await page.waitFor(`document.querySelector('.model-panel')`);
+    await pressInWidget();
+    await page.waitFor(`!document.querySelector('.model-panel')`);
+    await page.waitFor(frameFocused);
+    await waitInFrame(
+      page,
+      address,
+      `document.getElementById('increment')?.textContent === 'Clicks: 1'`,
+      true,
+    );
+
+    // An entry's ⋯ menu open, then a press into the widget: it closes, and
+    // the focus stays in the widget.
+    await page.evaluate(
+      `${entryExpression('Covered fixture')}.querySelector('.entry-menu-button').click()`,
+    );
+    await page.waitFor(`document.querySelector('.entry-menu')`);
+    await pressInWidget();
+    await page.waitFor(`!document.querySelector('.entry-menu')`);
+    await page.waitFor(frameFocused);
+    await waitInFrame(
+      page,
+      address,
+      `document.getElementById('increment')?.textContent === 'Clicks: 2'`,
+      true,
+    );
+
+    // Nothing open: a press into the widget changes nothing else.
+    await pressInWidget();
+    await page.waitFor(frameFocused);
+    await waitInFrame(
+      page,
+      address,
+      `document.getElementById('increment')?.textContent === 'Clicks: 3'`,
+      true,
+    );
+    assertTwoOrigins(fixture, page);
+    await assertNoViolations(page);
   },
 );
