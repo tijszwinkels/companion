@@ -12,8 +12,9 @@
  *   reported its first height;
  * - `shown`: it reported one (host.js sends the first height only after the
  *   widget drew its first state);
- * - `failed`: it reported an error before that, or did not report within
- *   the deadline; the frame is removed until Try again.
+ * - `failed`: it reported an error (before that: its first state could not
+ *   be drawn; after: its address has ended), or did not report within the
+ *   deadline; the frame is removed until Try again.
  *
  * A panel without a frame address never has a frame state: it shows the
  * "not set up" card.
@@ -79,10 +80,9 @@ export function nextFrameState(state: FrameState, event: FrameEvent): FrameState
   }
 
   if (event.type === 'error') {
-    if (state.phase === 'shown') {
-      // host.js shows later errors inside the frame itself.
-      return state;
-    }
+    // Before shown: the widget's first state could not be drawn. After
+    // shown, host.js sends one only when the frame's address has ended (its
+    // state answers 404); other errors it shows inside the frame itself.
     return { ...state, phase: 'failed', reason: errorReason(event.text) };
   }
 

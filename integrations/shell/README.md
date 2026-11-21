@@ -1391,8 +1391,13 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
    "This page was opened before widgets were set up for it. Reload the page
    to show them."; Try again cannot help there, a reload does. The frame is removed, so it makes no
    requests. Try again creates a new frame for the same address (loading).
-5. An `error` after the widget was shown changes nothing here; host.js shows
-   it inside the frame, as on the desktop.
+5. An `error` after the widget was shown means its frame address has ended:
+   host.js (embedded) sends one only when its state answers 404, which the
+   gateway gives for an ended handle (for example a widget in an older
+   history page after a disconnection longer than the 30-second grace
+   period). The panel then shows its failed state with "Its address has
+   ended, for example after a long disconnection. Reload the page to show it
+   again." Other errors host.js shows inside the frame, as on the desktop.
 6. **Disconnected**: while the shell's requests are not admitted (offline,
    reconnecting, or reconnected before the new snapshot), a shown frame is
    greyed with "Disconnected · reconnecting…" over it, takes no input and
@@ -1429,7 +1434,7 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
 | The page's policy refuses the frame (set up later)     | Failed at once: "… This page was opened before widgets were set up for it. Reload the page to show them." |
 | 10 s pass while out of view, then 9 s in view          | Still loading                                                                                             |
 | Try again                                              | A new frame, loading; shown at its first `geometry`                                                       |
-| `error` after shown                                    | Still shown                                                                                               |
+| `error` after shown (state answered 404)               | Failed: "… Its address has ended, …", Try again                                                           |
 | Connection lost                                        | Greyed, "Disconnected · reconnecting…", no input, `visible: false`                                        |
 | Conversation opened while disconnected                 | No frame in the page (nothing loads) until admitted, then loading                                         |
 | Back with the same address                             | The same frame, shown, `visible: true`; not loaded again                                                  |
@@ -1446,7 +1451,8 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
 
 1. Frame → shell, exactly these fields: `{"type":"geometry","height":N}` (the
    widget's content height in CSS pixels) and `{"type":"error","text":"…"}`
-   (its first state could not be drawn).
+   (its first state could not be drawn, or later: its address has ended,
+   its state answered 404).
 2. Shell → frame, exactly these fields:
    `{"type":"theme","theme":{"foreground":"#rrggbb","background":"#rrggbb","accent":"#rrggbb","muted":"#rrggbb","scale":1}}`
    and `{"type":"visible","visible":true|false}`. Nothing else is ever
@@ -1481,27 +1487,28 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    was removed (or replaced by Try again or a new address) is ignored: its
    panel's listener is gone or its window is no longer the panel's frame.
 
-| Case                                                   | Result                                                   |
-| ------------------------------------------------------ | -------------------------------------------------------- |
-| `geometry` 180 from the frame, frame origin            | Applied: 180 px                                          |
-| `error` "boom" from the frame before shown             | Failed with "boom"                                       |
-| `error` with a text of 1,000 characters                | Its first 200 characters shown                           |
-| `geometry` from the shell's own window                 | Ignored                                                  |
-| `geometry` from the widget's inner frame (`top`)       | Ignored                                                  |
-| `geometry` from another panel's frame                  | Ignored by this panel                                    |
-| `geometry` from the frame's window, another origin     | Ignored                                                  |
-| `geometry` with an extra field, or `height` a string   | Ignored                                                  |
-| `geometry` `NaN` or `Infinity`                         | Ignored                                                  |
-| `geometry` −50 / 0 / 99.6 / 5000                       | 100 / 100 / 100 / 420 px                                 |
-| 1,000 `geometry` messages in one burst, last 410       | The first at once, then at most one per 100 ms; 410 last |
-| A message before the frame's `load` event              | Checked like any other                                   |
-| A message after the frame was removed                  | Ignored                                                  |
-| host.js: `visible` false from the parent               | Polling stops                                            |
-| host.js: `theme` with `"red"` or a scale of 50         | Ignored                                                  |
-| host.js: any message from another window               | Ignored                                                  |
-| host.js: an array with `type` and `visible` properties | Ignored                                                  |
-| host.js embedded, before the first `visible`           | No polling                                               |
-| host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it         |
+| Case                                                   | Result                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `geometry` 180 from the frame, frame origin            | Applied: 180 px                                                           |
+| `error` "boom" from the frame before shown             | Failed with "boom"                                                        |
+| `error` with a text of 1,000 characters                | Its first 200 characters shown                                            |
+| `geometry` from the shell's own window                 | Ignored                                                                   |
+| `geometry` from the widget's inner frame (`top`)       | Ignored                                                                   |
+| `geometry` from another panel's frame                  | Ignored by this panel                                                     |
+| `geometry` from the frame's window, another origin     | Ignored                                                                   |
+| `geometry` with an extra field, or `height` a string   | Ignored                                                                   |
+| `geometry` `NaN` or `Infinity`                         | Ignored                                                                   |
+| `geometry` −50 / 0 / 99.6 / 5000                       | 100 / 100 / 100 / 420 px                                                  |
+| 1,000 `geometry` messages in one burst, last 410       | The first at once, then at most one per 100 ms; 410 last                  |
+| A message before the frame's `load` event              | Checked like any other                                                    |
+| A message after the frame was removed                  | Ignored                                                                   |
+| host.js: `visible` false from the parent               | Polling stops                                                             |
+| host.js: `theme` with `"red"` or a scale of 50         | Ignored                                                                   |
+| host.js: any message from another window               | Ignored                                                                   |
+| host.js: an array with `type` and `visible` properties | Ignored                                                                   |
+| host.js embedded, before the first `visible`           | No polling                                                                |
+| host.js embedded, state answers 404                    | `error` "Its address has ended, …" to the shell; loopback: nothing posted |
+| host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it                          |
 
 ### Rule: visibility
 
@@ -1595,10 +1602,11 @@ start happen only then. A chat without widgets is not watched.
 - **Older pages after a long disconnection.** A widget in an older history
   page the reader has loaded (above the live window) keeps the frame
   address it was loaded with. When the shell was disconnected for more than
-  the gateway's 30-second grace period, that address has ended, and the
-  widget shows its own "Not found" error inside the frame (host.js's status
-  line) instead of updating. Jump to latest and scrolling up again, or
-  reloading the page, loads the page again with a new address. Widgets in
+  the gateway's 30-second grace period, that address has ended: the panel
+  shows its failed state ("Its address has ended … Reload the page to show
+  it again."; rule 5), and Try again cannot help there. Jump to latest and
+  scrolling up again, or reloading the page, loads the page again with a
+  new address. Widgets in
   the live window get their new address with the new snapshot. Refreshing
   the resident older pages after a reconnect would need new logic in the
   paging model (its existing refresh detaches the reader's view), so it is

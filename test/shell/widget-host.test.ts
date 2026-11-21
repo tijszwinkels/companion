@@ -61,6 +61,8 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   // While set, widget actions fail (503) with the same text as the polls.
   const actionFailing = { loopback: false, socket: false };
   const actions = { loopback: 0, socket: 0 };
+  // While set, state polls answer 404, as for a frame address that ended.
+  const ended = { loopback: false, socket: false };
   const held: (() => void)[] = [];
   function release(): void {
     for (const answer of held.splice(0)) {
@@ -77,6 +79,11 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     }
     if (path === '/loopback/state' || path === '/socket/state') {
       polls[route]++;
+      if (ended[route]) {
+        response.writeHead(404, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
       if (failing[route]) {
         response.writeHead(503, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ error: 'Synthetic outage' }));
@@ -127,6 +134,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     held,
     actionFailing,
     actions,
+    ended,
     release,
     server,
   };
@@ -402,6 +410,32 @@ test(
     );
     assert.ok(!seen.includes('#ff0000') && !seen.includes('red'), seen);
     assert.ok(seen.includes('#223344'), seen);
+
+    // A frame address that ended (state answers 404): embedded, host.js
+    // tells the shell with an `error`, so the shell shows its failed state;
+    // on the loopback route nothing is posted to the parent.
+    const fromChild = (page: TestPage) =>
+      page.evaluate<Json[]>(
+        `window.__received.filter((entry) => entry.fromChild).map((entry) => entry.data)`,
+      );
+    documents.ended.socket = true;
+    await shell.waitFor(
+      `window.__received.some((entry) => entry.fromChild && entry.data.type === 'error')`,
+    );
+    const ending = (await fromChild(shell)).find((message) => message.type === 'error')!;
+    assert.deepEqual(Object.keys(ending), ['type', 'text']);
+    assert.match(String(ending.text), /^Its address has ended/);
+    documents.ended.loopback = true;
+    await grows(() => documents!.polls.loopback, 3);
+    assert.deepEqual(await fromChild(loopbackParent), []);
+    assert.equal(
+      await evaluateInFrame(
+        loopbackParent,
+        loopbackFrame,
+        `document.querySelector('.error')?.textContent`,
+      ),
+      'Not found',
+    );
 
     // Widget code cannot open WebRTC connections, on either route.
     for (const [page, address] of [

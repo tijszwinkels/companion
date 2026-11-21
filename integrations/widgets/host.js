@@ -417,7 +417,12 @@ async function fetchState(options) {
     const response = await fetch(api + '/state', options);
     const snapshot = await response.json();
     if (!response.ok) {
-      throw Error(typeof snapshot?.error === 'string' ? snapshot.error : 'Widget is unavailable');
+      const failure = Error(
+        typeof snapshot?.error === 'string' ? snapshot.error : 'Widget is unavailable',
+      );
+      // The status, so the embedded page can tell an ended view (404) apart.
+      failure.status = response.status;
+      throw failure;
     }
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       throw Error('Invalid application state');
@@ -733,6 +738,12 @@ if (api) {
         }
         status.textContent = error.message;
         shellPollingError = status.firstChild;
+        // Embedded, a 404 means the frame address has ended for good (the
+        // gateway's handle ended, for example after a long disconnection):
+        // the shell then shows its failed state instead of this line.
+        if (shellEmbedded && error.status === 404) {
+          postToShell({ type: 'error', text: viewEndedText });
+        }
       });
   }, 400);
 }
@@ -747,6 +758,10 @@ if (api) {
 // (the shell frames it without a referrer); `frame-ancestors` already limits
 // who can frame it to the gateway's pages, and these messages carry only a
 // height and a short error text.
+
+// The reason the shell shows when this page's address has ended.
+const viewEndedText =
+  'Its address has ended, for example after a long disconnection. Reload the page to show it again.';
 
 function postToShell(message) {
   window.parent.postMessage(message, '*');

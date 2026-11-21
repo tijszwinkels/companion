@@ -649,13 +649,12 @@ test(
     await page.waitFor(`${frameHeight('counter')} === 100`);
 
     // Ignored: not a number, extra fields, another type, from the shell's own
-    // window, from the widget's inner frame, an error after shown.
+    // window, from the widget's inner frame.
     await settle(150);
     await fromCounter(`{ type: 'geometry', height: NaN }`);
     await fromCounter(`{ type: 'geometry', height: '300' }`);
     await fromCounter(`{ type: 'geometry', height: 300, token: 'x' }`);
     await fromCounter(`{ type: 'resize', height: 300 }`);
-    await fromCounter(`{ type: 'error', text: 'Late failure' }`);
     await page.evaluate(`window.postMessage({ type: 'geometry', height: 300 }, '*')`);
     await evaluateInFrame(
       page,
@@ -732,6 +731,15 @@ test(
     );
     assert.equal(await phase(page, 'counter'), 'shown');
     assert.equal(counterId.length > 0, true);
+
+    // An error after shown (what host.js sends when the frame's address has
+    // ended): the panel's failed state with that reason and Try again.
+    await fromCounter(`{ type: 'error', text: 'Its address has ended.' }`);
+    await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'failed'`);
+    assert.match(
+      await page.evaluate<string>(`${panelExpression('counter')}.textContent`),
+      /The counter widget could not load\. Its address has ended\..*Try again/,
+    );
     first.run.finish();
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);

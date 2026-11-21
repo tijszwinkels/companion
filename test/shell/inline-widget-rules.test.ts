@@ -137,9 +137,14 @@ test('frame states rule, table rows in Node', () => {
   // Try again only from failed.
   assert.deepEqual(run([{ type: 'retry' }]), loading);
 
-  // error after shown: still shown.
+  // error after shown (host.js: the address ended): failed with its text.
   const shown = run([{ type: 'geometry', height: 180 }]);
-  assert.equal(run([{ type: 'error', text: 'later' }], shown), shown);
+  assert.deepEqual(run([{ type: 'error', text: 'Its address has ended.' }], shown), {
+    phase: 'failed',
+    reason: 'Its address has ended.',
+    height: 180,
+    attempt: 0,
+  });
   // A deadline after shown changes nothing.
   assert.equal(run([{ type: 'deadline' }], shown), shown);
   // Nothing a failed frame sent counts.
