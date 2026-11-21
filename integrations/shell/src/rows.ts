@@ -6,24 +6,44 @@
  * `ChatState.chatRow()` the Qt host uses, so both hosts send the page rows of
  * exactly the same shape. Keep the two in step when either changes.
  *
- * One deliberate difference: the screenshot URL is never passed on. The
- * gateway rewrites it to its authenticated `api/screenshots/<conversation>`
- * route, and this slice has no screenshot viewer, so a row with a screenshot
- * is labelled "screenshot unavailable" instead of offering a View button that
- * could not work. The gateway removes widget view URLs; with a frame origin
- * configured it sends a frame address instead, which `pageRow` passes on as
- * `widget.frameUrl` for the shell's inline widget (widgets/InlineWidget.tsx).
+ * One deliberate difference: the screenshot URL is the gateway's
+ * authenticated route (`api/screenshots/<conversation>`, which the gateway
+ * puts in place of the listener's file URL), and only that route is passed
+ * on (`screenshotPath`). The page then offers View screenshot, and the
+ * bridge opens it in the shell's viewer, fetched with the device token in a
+ * header (../screenshots/). A screenshot the gateway no longer has is
+ * labelled "screenshot unavailable", as one without a route. The gateway
+ * removes widget view URLs; with a frame origin configured it sends a frame
+ * address instead, which `pageRow` passes on as `widget.frameUrl` for the
+ * shell's inline widget (widgets/InlineWidget.tsx).
  */
 
 import type { AgentMessage } from '../../../src/agents/types.ts';
 import { chatRow } from '../../session-apps/ChatState.mjs';
 import type { HistoryRow } from '../../panel/HistoryRows.mjs';
-import type { ChatRow } from '../../session-apps/chat/protocol.ts';
+import type { ChatRow, ChatToolDetails } from '../../session-apps/chat/protocol.ts';
 import { frameAddress } from './widgets/frame-address.ts';
 
 const uuidPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const applicationNamePattern = /^[a-z][a-z0-9-]{0,47}$/;
 const bundlePattern = /^[0-9a-f]{64}$/;
+/** The gateway's authenticated screenshot route for one conversation (src/remote/relay.ts). */
+const screenshotRoutePattern = /^api\/screenshots\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+
+/**
+ * The gateway route of a message's kept screenshot, or '' when it has none
+ * (not kept, not yet saved, or anything but the gateway's own route).
+ */
+export function screenshotPath(message: AgentMessage): string {
+  if (!message.screenshot || message.screenshotSaved === false) {
+    return '';
+  }
+  const url = message.screenshotUrl;
+  if (typeof url !== 'string' || !screenshotRoutePattern.test(url)) {
+    return '';
+  }
+  return url;
+}
 
 /**
  * Whether an application-message origin is complete and well-formed. Only
@@ -94,8 +114,11 @@ function fragmentLabel(message: AgentMessage): string {
   return ' · text ' + (fragment.start + 1) + '–' + fragment.end + ' of ' + fragment.total;
 }
 
-/** `SessionView.rowData()` for one resident row. */
-export function rowData(row: HistoryRow): Record<string, unknown> {
+/**
+ * `SessionView.rowData()` for one resident row. `screenshotGone` is true when
+ * the gateway answered that it no longer has this row's screenshot.
+ */
+export function rowData(row: HistoryRow, screenshotGone = false): Record<string, unknown> {
   const message = row.message;
   const origin = message.origin;
   const applicationMessage = origin !== undefined && origin.kind === 'application-message';
@@ -117,8 +140,8 @@ export function rowData(row: HistoryRow): Record<string, unknown> {
     toolUnavailable: toolGroup ? toolGroup.unavailable === true : false,
     toolRevision: toolGroup ? toolGroup.revision : '',
     screenshot: message.screenshot,
-    // Not shown in the browser yet (see above).
-    screenshotUrl: '',
+    // The gateway route only (see above); '' labels it unavailable.
+    screenshotUrl: screenshotGone ? '' : screenshotPath(message),
     // False only when capture storage deliberately did not save it.
     screenshotNotSaved: message.screenshotSaved === false,
     fromWake: origin ? origin.kind === 'scheduled-wake' : false,
@@ -138,22 +161,37 @@ export function rowData(row: HistoryRow): Record<string, unknown> {
   };
 }
 
+/** What the browser adds to a resident row for the page. */
+export interface PageRowExtras {
+  /** When the message was written, for the reader ('' for none). */
+  time?: string;
+  /** A tool row's in-place details (../tools/tool-details.ts). */
+  tools?: ChatToolDetails;
+  /** The gateway no longer has this row's screenshot. */
+  screenshotGone?: boolean;
+  /** The bridge has the shell's inline widget component (widget.frameUrl). */
+  inlineWidgets?: boolean;
+}
+
 /**
  * The page's row for one resident row: `ChatState.chatRow(rowData(row))`,
  * plus the time the message was written (`ChatRow.time`) when `time` is not
- * empty, and for a widget row, when `inlineWidgets` is set (the bridge has
- * the shell's inline widget component), its frame address
- * (`widget.frameUrl`): the one the gateway sent when it is valid, else ''
- * (the "not set up" card). Without a time or inline widgets the row is
- * exactly the Qt host's.
+ * empty, a tool row's in-place details (`ChatRow.tools`), and for a widget
+ * row, when `inlineWidgets` is set (the bridge has the shell's inline widget
+ * component), its frame address (`widget.frameUrl`): the one the gateway
+ * sent when it is valid, else '' (the "not set up" card). Without inline
+ * widgets a widget row is exactly the Qt host's.
  */
-export function pageRow(row: HistoryRow, time = '', inlineWidgets = false): ChatRow {
-  const page: ChatRow = chatRow(rowData(row));
-  if (time) {
-    page.time = time;
+export function pageRow(row: HistoryRow, extras: PageRowExtras = {}): ChatRow {
+  const page: ChatRow = chatRow(rowData(row, extras.screenshotGone === true));
+  if (extras.time) {
+    page.time = extras.time;
+  }
+  if (extras.tools) {
+    page.tools = extras.tools;
   }
 
-  if (page.widget && inlineWidgets) {
+  if (page.widget && extras.inlineWidgets) {
     // `frameUrl` is not part of the listener's declared attachment type:
     // the gateway adds it for remote clients (src/remote/README.md).
     const attachment = row.message.widget as { frameUrl?: unknown } | undefined;

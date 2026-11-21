@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { chromiumPath, TestBrowser } from '../mobile/browser.ts';
-import { drawRows, drawRowsWithTimes, referenceRows } from './chat-rows-page.ts';
+import {
+  drawComposers,
+  drawRows,
+  drawRowsWithTimes,
+  referenceComposerStatuses,
+  referenceRows,
+} from './chat-rows-page.ts';
 
 /**
  * The shared chat page's one change for message times (`ChatRow.time`,
@@ -22,6 +28,7 @@ import { drawRows, drawRowsWithTimes, referenceRows } from './chat-rows-page.ts'
 
 const chatDirectory = join(import.meta.dirname, '..', '..', 'integrations', 'session-apps', 'chat');
 const referencePath = join(import.meta.dirname, 'fixtures', 'chat-rows-reference.txt');
+const composerReferencePath = join(import.meta.dirname, 'fixtures', 'chat-composer-reference.txt');
 
 let skip: string | undefined;
 try {
@@ -92,6 +99,132 @@ test(
       // The time is the heading's last child, after the sender and notes.
       const expected = `<span class="message-time">${row.time}</span></div>`;
       assert.ok(line.includes(expected), `row ${row.key}: ${line.slice(0, 300)}`);
+    }
+  },
+);
+
+/**
+ * The page's change for tool details in place (`ChatRow.tools`): without the
+ * field the rows are exactly the reference (the first test above, which
+ * also covers every tool row); with it, only tool rows change: their
+ * heading opens and closes the details in place, and an open group draws
+ * the host's status, page and actions.
+ */
+test(
+  'with tool details, only tool rows change; without them every row is as before',
+  { skip },
+  async (context) => {
+    const browser = new TestBrowser();
+    await browser.start();
+    context.after(() => browser.close());
+
+    const reference = await readFile(referencePath, 'utf8');
+    const referenceLines = reference.trimEnd().split(/\n(?=<div class="message )/);
+
+    const closed = {
+      open: false,
+      status: '',
+      failed: false,
+      text: '',
+      loaded: false,
+      reload: '',
+      next: false,
+      restart: false,
+      busy: false,
+    };
+    const withTools = referenceRows.map((row, index) => {
+      if (row.kind !== 'tool') {
+        return row;
+      }
+      // The first tool row open with a loaded page, the others closed.
+      const firstTool = referenceRows.findIndex((candidate) => candidate.kind === 'tool');
+      if (index === firstTool) {
+        return {
+          ...row,
+          tools: {
+            ...closed,
+            open: true,
+            status: 'Tool 1 of 2 · characters 1–9',
+            text: '<b>x</b>',
+            loaded: true,
+            reload: 'Refresh page',
+            next: true,
+          },
+        };
+      }
+      return { ...row, tools: closed };
+    });
+    const drawn = await drawRows(browser, chatDirectory, withTools);
+    const lines = drawn.trimEnd().split(/\n(?=<div class="message )/);
+    assert.equal(lines.length, withTools.length);
+
+    for (let index = 0; index < withTools.length; index++) {
+      const row = withTools[index];
+      const line = lines[index];
+      if (row.kind !== 'tool') {
+        assert.equal(line, referenceLines[index], `row ${row.key} is unchanged`);
+        continue;
+      }
+      assert.notEqual(line, referenceLines[index], `tool row ${row.key} changed`);
+      assert.match(line, /<button aria-expanded="(true|false)"[^>]*class="heading tool-heading"/);
+      if (row.tools?.open) {
+        assert.match(line, /▾ /);
+        // The page's text is text, never markup.
+        assert.match(line, /<pre class="tool-page">&lt;b&gt;x&lt;\/b&gt;<\/pre>/);
+        assert.match(line, /Tool 1 of 2 · characters 1–9/);
+        assert.match(line, />Refresh page<\/button>/);
+        assert.match(line, />Next page<\/button>/);
+        assert.match(line, />Copy page<\/button>/);
+        assert.doesNotMatch(line, />From start<\/button>/);
+      } else {
+        assert.match(line, /▸ /);
+        assert.doesNotMatch(line, /tool-details/);
+      }
+    }
+  },
+);
+
+/**
+ * The page's change for hosts without a classic view (`ChatStatus.classicView`,
+ * integrations/shell/README.md, "Changes to the shared chat page"):
+ *
+ * - without the field the composer (editor and action row) is exactly what
+ *   it was: drawn by the current Chat.tsx for several statuses, it equals
+ *   fixtures/chat-composer-reference.txt, drawn by the base revision's
+ *   Chat.tsx before the field existed (see chat-rows-page.ts). The Qt host
+ *   never sends the field, so its page is unchanged; `true` is the same;
+ * - with `false` the Classic view button is gone and nothing else changes.
+ */
+test(
+  'without classicView the composer is exactly as before; with false only Classic view is gone',
+  { skip },
+  async (context) => {
+    const browser = new TestBrowser();
+    await browser.start();
+    context.after(() => browser.close());
+
+    const reference = await readFile(composerReferencePath, 'utf8');
+    const referenceLines = reference.trimEnd().split('\n');
+    assert.equal(referenceLines.length, referenceComposerStatuses.length);
+
+    // Absent: as before.
+    assert.equal(await drawComposers(browser, chatDirectory, referenceComposerStatuses), reference);
+
+    // True: as before.
+    const offered = referenceComposerStatuses.map((status) => ({ ...status, classicView: true }));
+    assert.equal(await drawComposers(browser, chatDirectory, offered), reference);
+
+    // False: each composer is the reference without its Classic view button.
+    const classicButton =
+      '<button title="Classic Companion view (tool details and widgets)" class="panel-action">Classic view</button>';
+    const hidden = referenceComposerStatuses.map((status) => ({ ...status, classicView: false }));
+    const drawnLines = (await drawComposers(browser, chatDirectory, hidden)).trimEnd().split('\n');
+    assert.equal(drawnLines.length, referenceLines.length);
+    for (let index = 0; index < referenceLines.length; index++) {
+      const line = referenceLines[index];
+      assert.equal(line.split(classicButton).length, 2, `reference ${index} has one button`);
+      assert.equal(drawnLines[index], line.replace(classicButton, ''), `composer ${index}`);
+      assert.doesNotMatch(drawnLines[index], /Classic view/);
     }
   },
 );

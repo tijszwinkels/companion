@@ -47,7 +47,43 @@ export interface ChatRow {
    * switch is on and the message has a time.
    */
   time?: string;
+  /**
+   * In-place details of a tool group (`kind` 'tool'), from a host that shows
+   * them in the page. Optional: absent, the row is drawn exactly as without
+   * it (its heading opens the classic view). The Qt host never sets it; the
+   * browser shell does for every tool row.
+   */
+  tools?: ChatToolDetails;
 }
+
+/**
+ * A tool group's details as the host shows them in place: open or closed,
+ * one line about the page or request, the page's text and which actions are
+ * offered. The host owns all of it; the page only draws it and reports the
+ * reader's actions with `NativeBridge.toolDetails`.
+ */
+export interface ChatToolDetails {
+  open: boolean;
+  /** Loading, a failure, or which call and characters the page shows; may hold '\n'. */
+  status: string;
+  /** Whether `status` reports a failure. */
+  failed: boolean;
+  /** The page's text (a call's name, input and output), plain. */
+  text: string;
+  /** Whether `text` is a loaded page (it can be copied). */
+  loaded: boolean;
+  /** The label of the action that loads the page again ('' for none). */
+  reload: string;
+  /** Whether a next page exists. */
+  next: boolean;
+  /** Whether From start is offered (the page is not the first). */
+  restart: boolean;
+  /** Whether the actions that ask the host are unavailable now. */
+  busy: boolean;
+}
+
+/** The reader's actions on a tool group's in-place details. */
+export type ToolDetailsAction = 'toggle' | 'reload' | 'start' | 'next';
 
 export interface ChatChoice {
   sessionId: string;
@@ -110,6 +146,12 @@ export interface ChatStatus {
   };
   focusShortcut?: string;
   application?: { name: string; version: number } | null;
+  /**
+   * Whether the host offers the classic view (the Classic view button).
+   * Optional: absent means offered, as before; only a host without a
+   * classic view (the browser shell) sends `false`.
+   */
+  classicView?: boolean;
   theme?: {
     foreground: string;
     background: string;
@@ -184,6 +226,11 @@ export interface NativeBridge {
   copyText(text: string, callback?: (answer: string) => void): void;
   openLink(url: string): void;
   openScreenshot(sessionId: string, key: string): void;
+  /**
+   * The reader's action on the in-place details of tool row `key`. Optional:
+   * only a host that sends `ChatRow.tools` implements it.
+   */
+  toolDetails?(sessionId: string, key: string, action: ToolDetailsAction): void;
   openOrigin(sessionId: string, key: string): void;
   classicView(): void;
   openApp(): void;

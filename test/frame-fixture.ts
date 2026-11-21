@@ -122,6 +122,17 @@ const notesManifest = {
   example: { notes: [] },
 };
 
+/**
+ * The notes application, also asking to read and send chat, for the
+ * application chat access tests. Asking grants nothing by itself.
+ */
+const chatNotesManifest = {
+  ...notesManifest,
+  name: 'chat-notes',
+  description: 'A synthetic note list that asks to read and send chat.',
+  application: { eventMode: 'next-input', capabilities: ['chat.read', 'chat.send'] },
+};
+
 const notesModule = `
 export function describe(state) {
   return 'Notes: ' + state.notes.length;
@@ -160,10 +171,14 @@ export async function writeWidget(
   await writeFile(join(directory, 'style.css'), 'button { font-size: 1rem; }\n');
 }
 
-/** Write the synthetic `counter` widget and `notes` application into `library`. */
+/**
+ * Write the synthetic `counter` widget and the `notes` and `chat-notes`
+ * applications into `library`.
+ */
 export async function writeSyntheticLibrary(library: string): Promise<void> {
   await writeWidget(library, counterManifest, counterModule);
   await writeWidget(library, notesManifest, notesModule);
+  await writeWidget(library, chatNotesManifest, notesModule);
 }
 
 export interface FrameFixtureOptions {
@@ -177,6 +192,8 @@ export interface FrameFixtureOptions {
   widgetSocket?: string;
   /** Writes more widgets into the synthetic library (see `writeWidget`). */
   library?: (directory: string) => Promise<void>;
+  /** Run the listener in preview mode. */
+  preview?: boolean;
 }
 
 /** The remote fixture plus a frame origin, a synthetic library and helpers. */
@@ -194,6 +211,7 @@ export async function frameFixture(options: FrameFixtureOptions = {}) {
   const fixture = await remoteFixture({
     widgetLibrary: library,
     appDirectory: options.appDirectory,
+    preview: options.preview,
     gateway: withFrames
       ? {
           frames: {
@@ -249,10 +267,14 @@ export async function frameFixture(options: FrameFixtureOptions = {}) {
     return JSON.parse(result.content[0].text).id as string;
   }
 
-  /** Install (expectedVersion 0) or replace the notes application. */
-  async function applyNotes(run: SyntheticRun, expectedVersion = 0): Promise<void> {
+  /** Install (expectedVersion 0) or replace the notes (or another) application. */
+  async function applyNotes(
+    run: SyntheticRun,
+    expectedVersion = 0,
+    bundle: 'notes' | 'chat-notes' = 'notes',
+  ): Promise<void> {
     await tools(run)('companion_app_apply').execute('apply-' + expectedVersion, {
-      bundle: 'notes',
+      bundle,
       expectedVersion,
       eventMode: 'next-input',
     });

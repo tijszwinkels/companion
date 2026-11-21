@@ -12,7 +12,14 @@ import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
-import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
+import type {
+  BridgeAnswer,
+  ChatRow,
+  ChatStatus,
+  ChatToolDetails,
+  NativeBridge,
+  ToolDetailsAction,
+} from './protocol.ts';
 import type { ChatStore } from './store.ts';
 
 function useSnapshot(store: ChatStore) {
@@ -656,6 +663,19 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
       row.toolCount > 0
         ? `${row.toolCount} tool call${row.toolCount === 1 ? '' : 's'}`
         : row.toolName || 'Tool call';
+    // A host that shows tool details in place sends `tools` (protocol.ts);
+    // without it the row is exactly the classic-view heading below.
+    if (row.tools) {
+      return (
+        <ToolGroup
+          row={row}
+          tools={row.tools}
+          label={count + state}
+          sessionId={sessionId}
+          bridge={bridge}
+        />
+      );
+    }
     return (
       <div class="message tool">
         <div class="panel">
@@ -755,6 +775,89 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
     </div>
   );
 });
+
+/**
+ * A tool group whose details the host shows in place (`ChatRow.tools`), as
+ * the classic view's tool bubble: the heading opens and closes it; open, it
+ * shows the host's status line, one page of one call (name, input and
+ * output, plain text) and the page actions. Everything shown comes from the
+ * host; the page only reports the reader's actions.
+ */
+function ToolGroup(props: {
+  row: ChatRow;
+  tools: ChatToolDetails;
+  label: string;
+  sessionId: string;
+  bridge: NativeBridge;
+}) {
+  const { row, tools, sessionId, bridge } = props;
+  const detailsId = `tool-details-${row.key}`;
+
+  function act(action: ToolDetailsAction) {
+    if (bridge.toolDetails) {
+      bridge.toolDetails(sessionId, row.key, action);
+    }
+  }
+
+  return (
+    <div class="message tool">
+      <div class="panel">
+        <button
+          class="heading tool-heading"
+          aria-expanded={tools.open}
+          aria-controls={tools.open ? detailsId : undefined}
+          onClick={() => act('toggle')}
+        >
+          {tools.open ? '▾' : '▸'} {props.label}
+        </button>
+        {tools.open && (
+          <div class="tool-details" id={detailsId}>
+            {tools.status && (
+              <div class={tools.failed ? 'tool-status error' : 'tool-status'} role="status">
+                {tools.status}
+              </div>
+            )}
+            {tools.text && <pre class="tool-page">{tools.text}</pre>}
+            <div class="tool-actions">
+              {tools.reload && (
+                <button
+                  class="panel-action small"
+                  disabled={tools.busy}
+                  onClick={() => act('reload')}
+                >
+                  {tools.reload}
+                </button>
+              )}
+              {tools.restart && (
+                <button
+                  class="panel-action small"
+                  disabled={tools.busy}
+                  onClick={() => act('start')}
+                >
+                  From start
+                </button>
+              )}
+              {tools.next && (
+                <button
+                  class="panel-action small"
+                  disabled={tools.busy}
+                  onClick={() => act('next')}
+                >
+                  Next page
+                </button>
+              )}
+              {tools.loaded && (
+                <button class="panel-action small" onClick={() => bridge.copyText(tools.text)}>
+                  Copy page
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ---- Choices, Stop and voice status -----------------------------------------
 
@@ -1350,13 +1453,15 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
             {status.application.name}
           </button>
         )}
-        <button
-          class="panel-action"
-          onClick={() => bridge.classicView()}
-          title="Classic Companion view (tool details and widgets)"
-        >
-          Classic view
-        </button>
+        {status.classicView !== false && (
+          <button
+            class="panel-action"
+            onClick={() => bridge.classicView()}
+            title="Classic Companion view (tool details and widgets)"
+          >
+            Classic view
+          </button>
+        )}
         <button
           class="panel-action"
           disabled={

@@ -1356,6 +1356,51 @@ button {
   margin-top: 18px;
 }
 
+/* ---- Limit page ------------------------------------------------------------- */
+
+/* The app's content without a box of its own, so its children keep their
+   places in .app's column; it only makes them inert under the limit page. */
+.app-content {
+  display: contents;
+}
+
+/* Over everything (sheets are z-index 40), opaque, until Retry connects. */
+.limit-page {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: calc(24px + var(--safe-top)) 22px calc(24px + var(--safe-bottom));
+  background: var(--bg);
+}
+
+.limit-card {
+  width: 100%;
+  max-width: 480px;
+}
+
+.limit-card h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--strong);
+}
+
+.limit-card p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.limit-card .action {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 18px;
+}
+
 /* ---- Screenshot viewer ------------------------------------------------------ */
 
 .viewer {

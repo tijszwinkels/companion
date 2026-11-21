@@ -15,6 +15,12 @@
  * and a new synthetic entry is heard every 40 seconds (six in all), so the
  * new-activity marker can be seen while the Activity column is hidden.
  *
+ * Tool details, screenshots and models: the bug-fix conversation's turn
+ * made two tool calls (open the group in the chat; a long output pages);
+ * the city-trip question kept its synthetic screenshot (View screenshot);
+ * the other conversations' screenshots were not kept. The bar's model
+ * picker lists two Pi models (one pinned; Show all models lists both).
+ *
  * Turn and message times: one conversation (the invoice export) was asked
  * "yesterday" and continued today, so its messages show both kinds of
  * time; the flaky-test conversation's turn keeps running, so its timer
@@ -57,6 +63,7 @@ import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { CaptureStoragePolicy, notAdmitted } from '../../src/capture-storage/policy.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
+import { syntheticWindowPng } from './synthetic-window.ts';
 import { useNodeRenderer } from '../../test/widget-node-renderer.ts';
 
 const { values } = parseArgs({
@@ -116,6 +123,54 @@ function continueStartup(): void {
   }
 }
 
+/**
+ * Settle the demo's unread marks before anyone can pair: wait until every
+ * conversation in `turns` has asked its number of questions (the invoice
+ * export asks two, the second after the first turn) and its last answer has
+ * completed, then mark each of them read except `unreadId`, as if a device
+ * had shown it then (the listener's shared mark, src/desktop/README.md
+ * "Unread mark"). The demo then starts with `unreadId` as its one unread
+ * conversation. Checks every 50 ms, at most for 30 seconds (the scripted
+ * answers take a few seconds); a stop requested meanwhile ends the startup
+ * (`continueStartup`), and marks not settled by then fail the startup, so
+ * the demo never prints a pairing code with the wrong marks.
+ */
+async function settleDemoMarks(
+  agentSessions: AgentSessions,
+  turns: Map<string, number>,
+  unreadId: string,
+): Promise<void> {
+  for (let waited = 0; waited < 30_000; waited += 50) {
+    continueStartup();
+
+    const snapshot = agentSessions.snapshot();
+    let settled = true;
+    for (const [id, questions] of turns) {
+      const session = snapshot.find((candidate) => candidate.id === id);
+      if (!session) {
+        settled = false;
+        continue;
+      }
+      const asked = session.messages.filter((message) => message.kind === 'user').length;
+      const done = session.status === 'completed' && session.turnStartedAt === undefined;
+      if (asked < questions || !done || session.unread !== true) {
+        settled = false;
+      }
+    }
+
+    if (settled) {
+      for (const id of turns.keys()) {
+        if (id !== unreadId) {
+          agentSessions.markRead(id);
+        }
+      }
+      return;
+    }
+    await delay(50);
+  }
+  throw Error('The demo conversations did not finish their scripted answers in 30 seconds.');
+}
+
 directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
 const controller = new AbortController();
 
@@ -149,26 +204,40 @@ try {
   );
 
   /**
-   * A spoken request with a synthetic screenshot. The shell does not show
-   * screenshots yet, so its message is labelled "screenshot unavailable".
+   * A spoken request with a synthetic screenshot. Conversations keep it only
+   * when `keep` is set (the city trip): the others were "not saved", as
+   * with capture storage off.
    */
-  function frame(utterance: string, application = 'org.example.Editor'): UserSensorFrame {
+  function frame(
+    utterance: string,
+    application = 'org.example.Editor',
+    keep = false,
+  ): UserSensorFrame {
     const frameId = nextFrameId;
     nextFrameId++;
-    return {
+    const result: UserSensorFrame = {
       id: frameId,
       observedAt: Date.now(),
       utterance: utterance,
       screenshot: {
-        png: syntheticPng,
-        width: 1,
-        height: 1,
+        png: keep ? windowPng : syntheticPng,
+        width: keep ? windowWidth : 1,
+        height: keep ? windowHeight : 1,
         capturedAt: Date.now(),
         window: { address: '0xdemo', app: application, title: 'Synthetic window' },
       },
     };
+    if (!keep) {
+      result.storage = notAdmitted;
+    }
+    return result;
   }
 
+  // A synthetic window for the kept screenshot: a title bar and lines of
+  // "text" on a dark background, drawn here (no file, no capture).
+  const windowWidth = 640;
+  const windowHeight = 400;
+  const windowPng = syntheticWindowPng(windowWidth, windowHeight);
   // ---- Widget library ---------------------------------------------------------
 
   // One synthetic widget: a packing list whose items are ticked off in the
@@ -343,6 +412,12 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
         ],
         ['bash', '{"command":"npm test -- list"}', 'not ok 1 - first() of empty list\n# fail 1\n'],
       ];
+      // A long output, so the details page through it (8,192 characters a page).
+      const log: string[] = [];
+      for (let line = 1; line <= 400; line++) {
+        log.push(`ok ${line} - synthetic check number ${line}`);
+      }
+      calls.push(['bash', '{"command":"npm test -- --verbose"}', log.join('\n') + '\n']);
       for (const [name, input, output] of calls) {
         const id = randomUUID();
         const running: AgentMessage = { ...chatMessage(id, 'tool', ''), toolName: name, input };
@@ -423,8 +498,9 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     directory,
     widgetLibrary,
     undefined,
-    // The default (as before this clock was added): nothing saved.
-    new CaptureStoragePolicy(),
+    // On, so the one conversation that keeps its screenshot (see frame())
+    // can; the others' frames are not admitted.
+    CaptureStoragePolicy.enabledForTesting(),
     demoClock,
   );
   // The widget's actions and descriptions run in this process; the
@@ -602,9 +678,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
 
   // Several conversations for the list: coding questions, a quick question
   // and one whose turn keeps running (see scriptedRun). Their answers
-  // complete before the browser pairs, so the browser shows them unread at
-  // first (the phone Store's rule for a fresh page); opening one marks it
-  // read.
+  // complete before the browser pairs, so the listener marks them unread
+  // (no page shows them). All but the city trip are then marked read, as if
+  // read on another device before (see `settleDemoMarks`), so the browser
+  // shows one unread conversation, also after a reload; opening it marks it
+  // read on every page.
   //
   // The invoice export is asked "yesterday" (the shifted clock) and, once
   // that turn has ended, continued today, so it shows both kinds of time.
@@ -621,10 +699,32 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   continueStartup();
   sessions.followUp(invoice, 'Thanks. Is anything left to do today?', controller.signal);
 
-  sessions.start(frame('🐛 Why does the list test fail? Please fix the bug.'), controller.signal);
-  sessions.start(frame('🗺️ Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
+  const bug = sessions.start(
+    frame('🐛 Why does the list test fail? Please fix the bug.'),
+    controller.signal,
+  );
+  const trip = sessions.start(
+    frame('🗺️ Plan a two-day city trip for me', 'org.mozilla.firefox', true),
+    controller.signal,
+    'quickQuestion',
+  );
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
-  sessions.start(frame('Notification rules: summarise them'), controller.signal, 'quickQuestion');
+  const rules = sessions.start(
+    frame('Notification rules: summarise them'),
+    controller.signal,
+    'quickQuestion',
+  );
+  await settleDemoMarks(
+    sessions,
+    new Map([
+      [invoice, 2],
+      [bug, 1],
+      [rules, 1],
+      [trip, 1],
+    ]),
+    trip,
+  );
+  continueStartup();
 
   // ---- Gateway --------------------------------------------------------------------
 

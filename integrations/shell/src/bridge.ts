@@ -18,18 +18,24 @@
  * - Input: the page's requests, checked again here against the shown
  *   conversation exactly like the Qt bridge, then sent as the gateway's
  *   remote actions: `send-agent`, `choose-agent`, `stop-agent-run`,
- *   `close-agent` and `agent-history-page`. Nothing else leaves the page;
- *   in particular never the unscoped `stop-agent` (see stop()).
+ *   `close-agent`, `agent-history-page` and `agent-tool-page`. Nothing else
+ *   leaves the page; in particular never the unscoped `stop-agent` (see
+ *   stop()). View screenshot is handed to the shell's viewer
+ *   (`onScreenshot`), which fetches the image from the gateway.
  *
  * Differences from the Qt host (deliberate, see integrations/shell/README.md):
  * - The draft is kept in this page per conversation, as the phone panel does
  *   (its Store saves it in this browser's storage). There is no
  *   listener-owned or agent-proposed draft, so `draftUnsaved` is always
  *   empty and Save/Discard have nothing to do.
- * - Recording, voice target, focus shortcut, session applications, the
- *   classic view, tool details and screenshots are not available. Recording
- *   and applications are hidden through `status`; the page's Classic view
- *   and tool-group buttons show a notice in `inputError` instead.
+ * - Recording, voice target, focus shortcut, session applications, widgets
+ *   and the classic view are not available. Recording, applications and the
+ *   Classic view button are hidden through `status` (`classicView: false`);
+ *   widget cards, whose link would open the classic view, show a notice in
+ *   `inputError` instead.
+ * - Tool details open in place in the page (`ChatRow.tools`, an optional
+ *   field the Qt host does not send), by the desktop classic view's rules
+ *   (./tools/tool-details.ts).
  * - Stricter admission: a send must be based on the current draft revision
  *   (no second send of text already sent), and nothing is admitted after a
  *   reconnect until the listener's new snapshot arrived.
@@ -46,7 +52,7 @@
  * A publication made only for the times is not sent when no row's text
  * changed (the offset moves by milliseconds with every state message), so
  * the page is not drawn again for nothing. With the switch off, or without
- * `times`, rows are exactly the Qt host's.
+ * `times`, rows carry no time.
  *
  * Widget frames: a widget row carries the frame address the gateway sent
  * (`widget.frameUrl`, rows.ts), and the page draws widget rows with
@@ -67,11 +73,14 @@ import type {
   HostMessage,
   InlineWidgetProps,
   NativeBridge,
+  ToolDetailsAction,
 } from '../../session-apps/chat/protocol.ts';
 import { ResidentHistory, type PageRequest } from './history.ts';
-import { pageRow } from './rows.ts';
+import { pageRow, screenshotPath } from './rows.ts';
+import type { ScreenshotRequest } from './screenshots/screenshot-viewer.ts';
 import type { DisplaySettings } from './settings/display-settings.ts';
 import type { ListenerClock } from './times/listener-clock.ts';
+import { ToolDetails, type ToolPageAnswer, type ToolPageRequest } from './tools/tool-details.ts';
 import {
   browserCalendar,
   messageTimeText,
@@ -89,8 +98,7 @@ const copyLimit = 1_048_576;
 const rowsIntervalMilliseconds = 30;
 
 /** Shown when the page asks for something only the desktop offers. */
-const classicUnavailable =
-  'Tool details, widgets and the classic view are not available in the browser yet.';
+const classicUnavailable = 'Widgets and the classic view are not available in the browser yet.';
 const applicationUnavailable = 'Session applications are not available in the browser yet.';
 /** Shown when the footer Stop is pressed: there is no run to name. */
 const stopUnavailable =
@@ -168,6 +176,13 @@ export class GatewayChatBridge implements NativeBridge {
   // The shown conversation and its resident rows.
   private shownSession: AgentSession | null = null;
   private readonly resident: ResidentHistory;
+  // The shown conversation's open tool groups (./tools/tool-details.ts).
+  private readonly tools: ToolDetails;
+  // Messages whose screenshot the gateway no longer has ("<lifetime> <message
+  // ID>"), labelled unavailable from then on. Forgotten on sign-out.
+  private readonly goneScreenshots = new Set<string>();
+  // The shell's screenshot viewer, told when the page asks to view one.
+  private readonly screenshotListeners = new Set<(request: ScreenshotRequest) => void>();
 
   // Connection state. `online` (what the page sees, and what admits
   // requests) is true only once the current connection's first complete
@@ -177,6 +192,9 @@ export class GatewayChatBridge implements NativeBridge {
   // engine states until its snapshot, so a new `engine` object after the
   // connection came up means the snapshot was applied.
   private connected = false;
+  // Counts authenticated connections, so an answer can tell whether it
+  // belongs to the connection it was asked on.
+  private connectionNumber = 0;
   private engineAtConnect: unknown = undefined;
   private snapshotSeen = false;
   private online = false;
@@ -237,6 +255,12 @@ export class GatewayChatBridge implements NativeBridge {
         this.scheduleStatus();
       },
     });
+    this.tools = new ToolDetails({
+      // The phone panel's own request for tool pages (its ToolGroup), quiet:
+      // failures are shown in the group, not as toasts.
+      requestPage: (request) => this.requestToolPage(request),
+      changed: () => this.scheduleRows(),
+    });
     store.subscribe(() => this.storeChanged());
     if (times) {
       // A switched setting or a new offset can change every row's time.
@@ -290,6 +314,7 @@ export class GatewayChatBridge implements NativeBridge {
       }
       this.shownSession = session;
       this.resident.show(session);
+      this.tools.show(session);
       this.scheduleRows();
     }
 
@@ -322,6 +347,7 @@ export class GatewayChatBridge implements NativeBridge {
     const connected = state.connection.status === 'online';
     if (connected && !this.connected) {
       // A new authenticated connection: its snapshot is still to come.
+      this.connectionNumber++;
       this.engineAtConnect = state.engine;
       this.snapshotSeen = false;
     }
@@ -335,6 +361,9 @@ export class GatewayChatBridge implements NativeBridge {
     if (online !== this.online) {
       this.online = online;
       this.resident.setOnline(online);
+      this.tools.setOnline(online);
+      // Open tool groups show the loss (or offer to load again).
+      this.scheduleRows();
     }
   }
 
@@ -345,6 +374,7 @@ export class GatewayChatBridge implements NativeBridge {
    */
   private forgetPrivateState(): void {
     this.pairing++;
+    this.goneScreenshots.clear();
     this.knownDrafts.clear();
     this.cursors.clear();
     this.errors.clear();
@@ -488,11 +518,18 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     this.timesDate = this.readerDate();
-    const rows = this.resident
-      .rows()
-      .map((row) =>
-        pageRow(row, this.messageTime(row.message.createdAt), this.inlineWidget !== undefined),
-      );
+    const resident = this.resident.rows();
+    // Open tool groups follow their rows (gone, or newer output).
+    this.tools.sync(resident);
+    const lifetime = this.lifetime(this.shownSession);
+    const rows = resident.map((row) =>
+      pageRow(row, {
+        time: this.messageTime(row.message.createdAt),
+        tools: this.tools.details(row),
+        screenshotGone: this.goneScreenshots.has(lifetime + ' ' + row.message.id),
+        inlineWidgets: this.inlineWidget !== undefined,
+      }),
+    );
     const diff = diffRows(this.sentRows, rows, this.fullRows);
     const onlyTimes = this.onlyTimesChanged;
     this.onlyTimesChanged = false;
@@ -647,6 +684,8 @@ export class GatewayChatBridge implements NativeBridge {
       history: this.resident.status(),
       focusShortcut: '',
       application: null,
+      // There is no classic view in the browser: the page hides its button.
+      classicView: false,
     };
   }
 
@@ -718,6 +757,25 @@ export class GatewayChatBridge implements NativeBridge {
 
   private requestPage(request: PageRequest): Promise<HistoryPage> {
     return this.store.connection.request('agent-history-page', request) as Promise<HistoryPage>;
+  }
+
+  private requestToolPage(request: ToolPageRequest): Promise<ToolPageAnswer> {
+    return this.store.request('agent-tool-page', request, {
+      quiet: true,
+    }) as Promise<ToolPageAnswer>;
+  }
+
+  /** The resident row of the shown conversation with `key`, or null. */
+  private residentRow(key: unknown) {
+    if (typeof key !== 'string') {
+      return null;
+    }
+    for (const row of this.resident.rows()) {
+      if (row.key === key) {
+        return row;
+      }
+    }
+    return null;
   }
 
   // ---- Page → gateway (NativeBridge) --------------------------------------------
@@ -1191,8 +1249,101 @@ export class GatewayChatBridge implements NativeBridge {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  openScreenshot(_sessionId: string, _key: string): void {
-    // Never offered: rows from the gateway carry no screenshot URL.
+  /**
+   * The page's View screenshot: the shown conversation's row `key`, whose
+   * screenshot the gateway kept (`screenshotPath`), opens in the shell's
+   * viewer. The viewer reports a screenshot the gateway no longer has; the
+   * row is then labelled unavailable, as one that was never kept.
+   */
+  openScreenshot(sessionId: string, key: string): void {
+    if (!this.sameSession(sessionId)) {
+      return;
+    }
+    const row = this.residentRow(key);
+    if (!row) {
+      return;
+    }
+    const lifetime = this.lifetime(this.shownSession);
+    const gone = lifetime + ' ' + row.message.id;
+    const path = screenshotPath(row.message);
+    if (path === '' || this.goneScreenshots.has(gone)) {
+      return;
+    }
+    // The gateway grants a connection a screenshot when it relays the
+    // screenshot's route on that connection. A 404 is therefore final only
+    // for a fetch asked and answered on the same admitted connection (after
+    // its snapshot, which relays the live window), for a row of the live
+    // window; a row of an older page kept from an earlier connection (a
+    // gateway restart) may not have been granted again. Decided per fetch.
+    const request: ScreenshotRequest = {
+      path: path,
+      title: this.shownSession?.title || 'Screenshot',
+      attempt: () => {
+        const admittedWhenAsked = this.online;
+        const connection = this.connectionNumber;
+        const pairing = this.pairing;
+        return () => {
+          if (!admittedWhenAsked || !this.online) {
+            return false;
+          }
+          if (this.connectionNumber !== connection || this.pairing !== pairing) {
+            return false;
+          }
+          if (this.lifetime(this.shownSession) !== lifetime) {
+            return false;
+          }
+          const current = this.residentRow(key);
+          if (!current || current.live !== true) {
+            return false;
+          }
+          this.goneScreenshots.add(gone);
+          // At once, so the row loses View screenshot before the reader can
+          // close the viewer (its focus then goes to the page heading).
+          this.cancelRowsTimer();
+          this.publishRows();
+          this.scheduleStatus();
+          return true;
+        };
+      },
+    };
+    for (const listener of this.screenshotListeners) {
+      listener(request);
+    }
+  }
+
+  /**
+   * Call `listener` when the page asks to view a screenshot. Returns the
+   * function that stops it.
+   */
+  onScreenshot(listener: (request: ScreenshotRequest) => void): () => void {
+    this.screenshotListeners.add(listener);
+    return () => {
+      this.screenshotListeners.delete(listener);
+    };
+  }
+
+  /**
+   * The reader's action on the in-place details of tool row `key` of the
+   * shown conversation (open or close it, load a page). Closing works
+   * offline too; loading needs requests to be admitted (ToolDetails).
+   */
+  toolDetails(sessionId: string, key: string, action: ToolDetailsAction): void {
+    if (!this.sameSession(sessionId)) {
+      return;
+    }
+    if (action !== 'toggle' && action !== 'reload' && action !== 'start' && action !== 'next') {
+      return;
+    }
+    const row = this.residentRow(key);
+    if (!row) {
+      return;
+    }
+    // The group's revision and count as the rows have them now, not as
+    // they were last sent to the page.
+    this.tools.sync(this.resident.rows());
+    if (this.tools.act(row, action)) {
+      this.scheduleRows();
+    }
   }
 
   /** An agent heading opens its sender conversation when it is still open. */

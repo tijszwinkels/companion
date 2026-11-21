@@ -54,7 +54,7 @@ function widgetRow(frameUrl?: unknown, inlineWidgets = true) {
       ...(frameUrl === undefined ? {} : { frameUrl }),
     } as AgentMessage['widget'],
   };
-  return pageRow({ key: 'widget:1', message } as Parameters<typeof pageRow>[0], '', inlineWidgets);
+  return pageRow({ key: 'widget:1', message } as Parameters<typeof pageRow>[0], { inlineWidgets });
 }
 
 function run(events: FrameEvent[], start = initialFrameState()): FrameState {

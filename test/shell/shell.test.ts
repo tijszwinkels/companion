@@ -251,9 +251,9 @@ test(
     await page.waitFor(`document.querySelector('.message.user')`);
     assert.match(await transcriptText(page), /Second synthetic question/);
     assert.doesNotMatch(await transcriptText(page), /First synthetic question/);
-    // The screenshot viewer is a later slice: no button that cannot work.
-    assert.equal(await page.evaluate(`Boolean(${buttonExpression('View screenshot')})`), false);
-    assert.match(await text(page, '.message.user .heading'), /screenshot unavailable/);
+    // A kept screenshot offers the viewer (details-browser.test.ts opens it).
+    assert.equal(await page.evaluate(`Boolean(${buttonExpression('View screenshot')})`), true);
+    assert.match(await text(page, '.message.user .heading'), /screenshot attached/);
     // Out of scope controls are hidden through the status fields.
     assert.equal(await page.evaluate(`Boolean(${buttonExpression('Record')})`), false);
     assert.match(await text(page, '.chat-bar-title'), /Second synthetic question/);
@@ -372,11 +372,9 @@ test(
     fixture.runs.at(-1)!.finish();
     await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
 
-    // The classic view is not offered here: its button explains that.
-    await clickButton(page, 'Classic view');
-    await page.waitFor(
-      `document.querySelector('.composer').textContent.includes('not available in the browser')`,
-    );
+    // The classic view is not offered here: the page draws no Classic view
+    // button (the bridge's status says so); Close session is still there.
+    assert.equal(await page.evaluate(`Boolean(${buttonExpression('Classic view')})`), false);
 
     // Close the conversation: it leaves the listener and the list.
     await clickButton(page, 'Close session');

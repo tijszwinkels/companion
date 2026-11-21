@@ -11,12 +11,18 @@
  * Actions, all through the phone panel's Store and the gateway's remote
  * role:
  * - select: a click (or Enter/Space on the focused entry) shows the
- *   conversation (`Store.open`, which also clears its unread mark);
+ *   conversation (`Store.open`, which reports it as shown, so the listener
+ *   clears its unread mark);
  * - close: the × that appears on hover or keyboard focus (`close-agent`);
- * - reorder: dragging (`move-agent` with the captured order revision); the
- *   rules are in reorder-gesture.ts. The list never reorders itself: it
+ * - reorder: dragging (`move-agent` with the captured order revision; the
+ *   rules are in reorder-gesture.ts), Alt+Shift+Up and Alt+Shift+Down on a
+ *   focused entry, or Move up and Move down in the entry's ⋯ menu (one
+ *   place, by move-steps.ts). All three send through one path
+ *   (`requestMove`), one move at a time. The list never reorders itself: it
  *   draws `state.order`, and a completed move shows up when the listener
  *   reports the new order;
+ * - the ⋯ menu on each entry (EntryMenu.tsx): Move up, Move down and Close
+ *   session, by mouse, touch or keyboard;
  * - Previous sessions: the entry at the bottom (`Store.showPrevious`);
  * - Settings: the entry below it, which shows the settings screen in place
  *   of the chat (../settings/SettingsScreen.tsx). Choosing a conversation
@@ -36,7 +42,7 @@
  * same rule as the chat page's own Close.
  */
 
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
@@ -54,7 +60,10 @@ import { settingsScreenId } from '../settings/SettingsScreen.tsx';
 import { TurnTimer } from '../times/TurnTimer.tsx';
 import type { TurnTicker } from '../times/turn-ticker.ts';
 import { runningTurnStart } from '../times/turn-times.ts';
+import { focusedEntryControl, restoreEntryFocus } from './entry-focus.ts';
+import { EntryMenu, type MenuDismissal } from './EntryMenu.tsx';
 import { entryLabel, listEntries, type ListEntry } from './entries.ts';
+import { PendingMove, stepKey, stepMove, type StepDirection } from './move-steps.ts';
 import {
   ReorderGesture,
   type DragView,
@@ -94,10 +103,25 @@ export function ConversationList(props: {
   const entries = listEntries(state);
   const available = props.bridge.admitted;
 
+  // One move at a time (move-steps.ts): an accepted move ends once the list
+  // shows another order revision, which is checked on every drawing. While
+  // one is pending the order counts as unavailable to every way of moving,
+  // so the drag, the keys and the menu send nothing meanwhile. It belongs to
+  // the bridge, not to this drawing of the list, so hiding and showing the
+  // list does not forget it.
+  const pendingMove = pendingMoveOf(props.bridge);
+  const [, setPendingVersion] = useState(0);
+  useEffect(() => {
+    return pendingMove.onChange(() => {
+      setPendingVersion((version) => version + 1);
+    });
+  }, [pendingMove]);
+  pendingMove.orderShown(state.orderRevision);
+
   const order: OrderState = {
     ids: entries.map((entry) => entry.id),
     revision: state.orderRevision,
-    available,
+    available: available && !pendingMove.pending,
   };
 
   const gesture = useRef(new ReorderGesture());
@@ -105,6 +129,17 @@ export function ConversationList(props: {
   orderRef.current = order;
   const [drag, setDrag] = useState<DragView | null>(null);
   const scroller = useRef<HTMLElement>(null);
+  const listElement = useRef<HTMLElement>(null);
+  // The conversation whose ⋯ menu is open, or null.
+  const [menuEntryId, setMenuEntryId] = useState<string | null>(null);
+
+  // Focus on an entry before this drawing, restored after it if the drawing
+  // dropped it (entry-focus.ts). Read here, before the drawing is committed.
+  const focusBefore = focusedEntryControl(listElement.current, menuEntryId);
+  const shownIds = order.ids;
+  useLayoutEffect(() => {
+    restoreEntryFocus(listElement.current, focusBefore, shownIds);
+  });
   const scrollTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   // Set when an activated drag ends; the click the browser sends next is ignored.
   const swallowClick = useRef(false);
@@ -191,20 +226,121 @@ export function ConversationList(props: {
     }, 0);
   }
 
+  /**
+   * The one way a move leaves the list (drag, keys and menu): one
+   * `move-agent` naming the order revision the move was made for, and none
+   * while another move is pending.
+   */
   function requestMove(move: MoveRequest) {
+    const pending = pendingMove;
+    if (pending.pending) {
+      return;
+    }
+    // Starting and ending it draws the list again (its onChange), also a
+    // list drawn anew meanwhile (hidden and shown).
+    pending.sent(move.revision);
+
+    const settle = (accepted: boolean) => {
+      pending.answered(accepted, store.state.orderRevision);
+    };
     // A refused move (the order changed meanwhile) is explained by the
     // Store's toast; the list keeps showing the listener's order.
-    void store
+    store
       .request('move-agent', { id: move.id, beforeId: move.beforeId, revision: move.revision })
-      .catch(() => {});
+      .then(
+        () => settle(true),
+        () => settle(false),
+      );
   }
+
+  /** One place up or down by key or menu, under the current order; nothing at the ends. */
+  function step(id: string, direction: StepDirection) {
+    const move = stepMove(orderRef.current, id, direction);
+    if (move) {
+      requestMove(move);
+    }
+  }
+
+  /**
+   * Alt+Shift+Up and Alt+Shift+Down on an entry's select, ⋯ or × button.
+   * Escape and Tab on the ⋯ of an open menu (focus can be there while the
+   * menu is open: a press on ⋯ released elsewhere) close it as in the menu.
+   */
+  function entryKeyDown(event: KeyboardEvent, id: string) {
+    const onMenuButton = (event.target as HTMLElement).classList.contains('entry-menu-button');
+    if (menuEntryId === id && onMenuButton) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu(true);
+        return;
+      }
+      if (event.key === 'Tab') {
+        // Focus is on the ⋯ already; the Tab goes on from there.
+        closeMenu(false);
+        return;
+      }
+    }
+
+    const direction = stepKey(event);
+    if (direction === null) {
+      return;
+    }
+    // Taken at the ends and while a move is pending too, so the keys never
+    // do something else there.
+    event.preventDefault();
+    step(id, direction);
+  }
+
+  function openMenu(id: string) {
+    setMenuEntryId(id);
+  }
+
+  /**
+   * Close the ⋯ menu; `returnFocus` puts focus on its ⋯ button, scrolling
+   * the list to it unless `preventScroll` (a press elsewhere must not move
+   * what it is pressing).
+   */
+  function closeMenu(returnFocus: boolean, preventScroll = false) {
+    const id = menuEntryId;
+    setMenuEntryId(null);
+    if (returnFocus && id !== null) {
+      document.getElementById(menuButtonId(id))?.focus({ preventScroll });
+    }
+  }
+
+  function dismissMenu(how: MenuDismissal) {
+    // Escape, Tab and a press outside return focus to the ⋯ button (a press
+    // on something focusable then takes it); focus that moved to another
+    // control stays there.
+    closeMenu(how !== 'focus-left', how === 'outside');
+  }
+
+  // The menu closes when its conversation leaves the list (focus then goes
+  // by entry-focus.ts) and when the list changes its appearance (the strip
+  // and the full list place the ⋯ button differently). Layout effects: they
+  // run right after the drawing, so no click can open a menu in between and
+  // be closed by a change it came after.
+  const menuEntryListed = menuEntryId !== null && order.ids.includes(menuEntryId);
+  useLayoutEffect(() => {
+    if (menuEntryId !== null && !menuEntryListed) {
+      setMenuEntryId(null);
+    }
+  }, [menuEntryId, menuEntryListed]);
+  const appearance = props.appearance;
+  const previousAppearance = useRef(appearance);
+  useLayoutEffect(() => {
+    if (previousAppearance.current !== appearance) {
+      previousAppearance.current = appearance;
+      closeMenu(menuHasFocus());
+    }
+  }, [appearance]);
 
   function pointerDown(event: PointerEvent, id: string) {
     // A click owed to an earlier drag can no longer arrive.
     swallowClick.current = false;
     const target = event.target as HTMLElement;
-    // The close button keeps its own click and never starts a drag.
-    if (target.closest('.entry-close')) {
+    // The close and ⋯ buttons keep their own clicks and never start a drag.
+    if (target.closest('.entry-close, .entry-menu-button')) {
       gesture.current.reset();
       refresh();
       return;
@@ -324,9 +460,9 @@ export function ConversationList(props: {
     };
   }, []);
 
-  // A changed order or membership, or the list becoming unavailable, ends a
-  // gesture started under the old state.
-  const orderSignature = `${available}|${order.revision}|${order.ids.join(',')}`;
+  // A changed order or membership, or the list becoming unavailable (also by
+  // a move awaiting its answer), ends a gesture started under the old state.
+  const orderSignature = `${order.available}|${order.revision}|${order.ids.join(',')}`;
   useEffect(() => {
     gesture.current.orderChanged(orderRef.current);
     refresh();
@@ -369,12 +505,21 @@ export function ConversationList(props: {
         ticker={props.ticker}
         dragged={drag?.id === entry.id}
         canClose={props.bridge.canClose(entry.id)}
+        menuOpen={menuEntryId === entry.id}
         onPointerDown={(event) => pointerDown(event, entry.id)}
+        onKeyDown={(event) => entryKeyDown(event, entry.id)}
         onSelect={() => {
           props.onLeaveSettings();
           store.open(entry.id);
         }}
         onClose={() => close(entry)}
+        onMenu={() => {
+          if (menuEntryId === entry.id) {
+            closeMenu(true);
+          } else {
+            openMenu(entry.id);
+          }
+        }}
       />,
     );
   }
@@ -382,9 +527,52 @@ export function ConversationList(props: {
     children.push(<li key="marker-end" class="drop-marker" aria-hidden="true" />);
   }
 
+  // The open ⋯ menu, with what each item does under the current order.
+  let menu = null;
+  const menuEntry = entries.find((entry) => entry.id === menuEntryId);
+  if (menuEntry) {
+    const id = menuEntry.id;
+    menu = (
+      <EntryMenu
+        id={menuId(id)}
+        anchorId={menuButtonId(id)}
+        label={`Actions for ${menuEntry.title}`}
+        items={[
+          {
+            label: 'Move up',
+            enabled: stepMove(order, id, 'up') !== null,
+            choose: () => {
+              closeMenu(true);
+              step(id, 'up');
+            },
+          },
+          {
+            label: 'Move down',
+            enabled: stepMove(order, id, 'down') !== null,
+            choose: () => {
+              closeMenu(true);
+              step(id, 'down');
+            },
+          },
+          {
+            label: 'Close session',
+            description: 'Close session · saved in Previous sessions',
+            enabled: props.bridge.canClose(id),
+            choose: () => {
+              closeMenu(true);
+              close(menuEntry);
+            },
+          },
+        ]}
+        onDismiss={dismissMenu}
+      />
+    );
+  }
+
   return (
     <aside
       id={conversationListId}
+      ref={listElement}
       class={classes.join(' ')}
       style={{ width: `${props.width}px` }}
       aria-label="Conversations"
@@ -404,6 +592,8 @@ export function ConversationList(props: {
         class="conversation-scroll"
         ref={scroller}
         aria-label="Open conversations"
+        // Busy while a move awaits its answer: the order is about to change.
+        aria-busy={pendingMove.pending ? 'true' : undefined}
         onClickCapture={clickCapture}
         onLostPointerCapture={(event) => {
           // Only the list's own capture: when a drag starts, capture moves
@@ -431,6 +621,8 @@ export function ConversationList(props: {
         }}
       />
       <SettingsEntry shown={props.settingsShown} onShow={props.onShowSettings} />
+      {/* Outside the scrolling list, so the strip does not clip it. */}
+      {menu}
     </aside>
   );
 }
@@ -446,9 +638,15 @@ function Entry(props: {
   ticker: TurnTicker;
   dragged: boolean;
   canClose: boolean;
+  /** Its ⋯ menu is open. */
+  menuOpen: boolean;
   onPointerDown: (event: PointerEvent) => void;
+  /** A key pressed on one of its buttons (Alt+Shift+Up/Down moves it). */
+  onKeyDown: (event: KeyboardEvent) => void;
   onSelect: () => void;
   onClose: () => void;
+  /** The ⋯ button: open or close the menu. */
+  onMenu: () => void;
 }) {
   const { entry } = props;
   const classes = ['conversation-entry'];
@@ -488,7 +686,12 @@ function Entry(props: {
   }
 
   return (
-    <li class={classes.join(' ')} data-id={entry.id} onPointerDown={props.onPointerDown}>
+    <li
+      class={classes.join(' ')}
+      data-id={entry.id}
+      onPointerDown={props.onPointerDown}
+      onKeyDown={props.onKeyDown}
+    >
       <button
         class="entry-select"
         aria-current={props.selected ? 'page' : undefined}
@@ -516,6 +719,20 @@ function Entry(props: {
         {/* In the full list it is right-aligned. */}
         {props.appearance === 'full' && timer}
       </button>
+      {/* Always shown (touch has no hover): the menu with Move up, Move
+          down and Close session. */}
+      <button
+        id={menuButtonId(entry.id)}
+        class="entry-menu-button"
+        aria-label={`Actions for ${entry.title}`}
+        aria-haspopup="menu"
+        aria-expanded={props.menuOpen}
+        aria-controls={props.menuOpen ? menuId(entry.id) : undefined}
+        title="Move or close"
+        onClick={props.onMenu}
+      >
+        ⋯
+      </button>
       {/* Shown on hover or keyboard focus, like the rail's close button. */}
       <button
         class="entry-close"
@@ -528,6 +745,36 @@ function Entry(props: {
       </button>
     </li>
   );
+}
+
+/**
+ * The one move awaiting its answer, per bridge (one bridge per page and
+ * pairing), so it outlives a list that is hidden and shown again.
+ */
+const pendingMoves = new WeakMap<GatewayChatBridge, PendingMove>();
+
+function pendingMoveOf(bridge: GatewayChatBridge): PendingMove {
+  let pending = pendingMoves.get(bridge);
+  if (!pending) {
+    pending = new PendingMove();
+    pendingMoves.set(bridge, pending);
+  }
+  return pending;
+}
+
+/** The element id of an entry's ⋯ button. */
+function menuButtonId(id: string): string {
+  return `entry-menu-button-${id}`;
+}
+
+/** The element id of an entry's open ⋯ menu. */
+function menuId(id: string): string {
+  return `entry-menu-${id}`;
+}
+
+/** Whether focus is in the open ⋯ menu. */
+function menuHasFocus(): boolean {
+  return document.activeElement?.closest('.entry-menu') != null;
 }
 
 /** The element id of an entry's last line (its accessible description). */

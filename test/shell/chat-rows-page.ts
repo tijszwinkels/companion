@@ -7,15 +7,22 @@ import { TestBrowser } from '../mobile/browser.ts';
 /**
  * Draws the shared chat page (integrations/session-apps/chat/Chat.tsx) with a
  * fixed set of rows in headless Chromium and returns the HTML of its
- * transcript rows, for chat-heading.test.ts.
+ * transcript rows, or of its composer, for chat-heading.test.ts.
  *
- * The page is bundled from any checkout's chat directory (`chatDirectory`),
- * so the same rows can be drawn by the current Chat.tsx and by an earlier
- * one: the reference (fixtures/chat-rows-reference.txt) was drawn with the
- * base revision's Chat.tsx before `ChatRow.time` existed, with
+ * The page is bundled from any checkout's chat directory (`chatDirectory`,
+ * an absolute path), so the same rows can be drawn by the current Chat.tsx
+ * and by an earlier one: the reference (fixtures/chat-rows-reference.txt)
+ * was drawn with the base revision's Chat.tsx before `ChatRow.time` existed,
+ * with
  *
  *   tsx test/shell/chat-rows-page.ts <base checkout>/integrations/session-apps/chat \
  *     > test/shell/fixtures/chat-rows-reference.txt
+ *
+ * and the composer's (fixtures/chat-composer-reference.txt) with the base
+ * revision's Chat.tsx before `ChatStatus.classicView` existed, with
+ *
+ *   tsx test/shell/chat-rows-page.ts --composer <base checkout>/integrations/session-apps/chat \
+ *     > test/shell/fixtures/chat-composer-reference.txt
  *
  * A stand-in host sends one full rows message and one status message, as
  * the Qt host and the browser bridge do after `ready()`; every other
@@ -112,6 +119,8 @@ async function pageScript(chatDirectory: string): Promise<string> {
           draft: { text: '', cursor: 0, revision: 1, source: '', notice: '' },
           history: { hasOlder: false, pending: false, error: '', canRetry: false,
             changed: false, detached: false, atLatest: true },
+          // A drawing of the composer may vary the status (drawComposers).
+          ...window.__chatStatus,
         };
         const messages = [
           { type: 'rows', seq: 1, sessionId: 'session', full: true,
@@ -264,17 +273,104 @@ export async function drawRowsWithTimes(
   }
 }
 
-// Writes the reference for the chat directory given on the command line.
+/**
+ * Statuses whose composers (the editor and its action row) are drawn for
+ * the reference of the optional `classicView` status field: each is merged
+ * over the default status above, and none carries `classicView`.
+ */
+export const referenceComposerStatuses: Record<string, unknown>[] = [
+  {},
+  { running: true, sessionStatus: 'running' },
+  { running: true, sessionStatus: 'running', stopRunId: 'run-1' },
+  { online: false },
+  { application: { name: 'Planner', version: 2 } },
+  {
+    recording: {
+      available: true,
+      here: false,
+      state: 'idle',
+      canRecord: true,
+      busy: false,
+      stopPending: false,
+      canStop: false,
+    },
+  },
+  { inputError: 'A notice below the editor.' },
+];
+
+/**
+ * The composer's HTML (`.composer`, the editor with its action row) as the
+ * page draws it for each status, one composer per line, with
+ * `chatDirectory`'s Chat.tsx. The transcript has the reference rows.
+ */
+export async function drawComposers(
+  browser: TestBrowser,
+  chatDirectory: string,
+  statuses: Record<string, unknown>[],
+): Promise<string> {
+  const script = await pageScript(chatDirectory);
+  const drawn: string[] = [];
+  for (const status of statuses) {
+    const { targetId } = await browser.call('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await browser.call('Target.attachToTarget', {
+      targetId,
+      flatten: true,
+    });
+    const evaluate = async (expression: string): Promise<unknown> => {
+      const reply = await browser.call(
+        'Runtime.evaluate',
+        { expression, returnByValue: true, awaitPromise: true },
+        String(sessionId),
+      );
+      if (reply.exceptionDetails) {
+        throw Error(`Evaluation failed: ${JSON.stringify(reply.exceptionDetails).slice(0, 400)}`);
+      }
+      return reply.result.value;
+    };
+
+    try {
+      await evaluate(`document.body.innerHTML = '<div id="chat"></div>';
+        window.__chatRows = ${JSON.stringify(referenceRows)};
+        window.__chatStatus = ${JSON.stringify(status)};`);
+      await evaluate(script);
+      // The composer is drawn once the status has arrived.
+      const html = await evaluate(`new Promise((resolve) => {
+        const started = Date.now();
+        const check = () => {
+          const composer = document.querySelector('.composer');
+          if ((composer && document.querySelector('.actions')) || Date.now() - started > 5000) {
+            resolve(composer?.outerHTML ?? '');
+            return;
+          }
+          setTimeout(check, 20);
+        };
+        check();
+      })`);
+      drawn.push(String(html).replaceAll('\n', '\\n'));
+    } finally {
+      await browser.call('Target.closeTarget', { targetId });
+    }
+  }
+  return drawn.join('\n') + '\n';
+}
+
+// Writes a reference for the chat directory given on the command line: the
+// rows (the default) or, with `--composer`, the composers.
 if (process.argv[1] === import.meta.filename) {
-  const chatDirectory = process.argv[2];
+  const composer = process.argv.includes('--composer');
+  const chatDirectory = process.argv.slice(2).find((argument) => !argument.startsWith('--'));
   if (!chatDirectory) {
-    console.error('Usage: tsx test/shell/chat-rows-page.ts <chat directory>');
+    console.error('Usage: tsx test/shell/chat-rows-page.ts [--composer] <chat directory>');
     process.exit(2);
   }
   const browser = new TestBrowser();
   await browser.start();
   try {
-    process.stdout.write(await drawRows(browser, chatDirectory, referenceRows));
+    if (composer) {
+      process.stdout.write(await drawComposers(browser, chatDirectory, referenceComposerStatuses));
+    } else {
+      process.stdout.write(await drawRows(browser, chatDirectory, referenceRows));
+    }
   } finally {
     await browser.close();
   }

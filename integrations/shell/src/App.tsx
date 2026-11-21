@@ -1,7 +1,8 @@
 /**
  * The browser shell around the trusted chat page: pairing, the connection
  * banner and toasts, and once paired the workspace (workspace/Workspace.tsx:
- * the conversation list, the bar above the chat and the chat). The
+ * the conversation list, the bar above the chat and the chat), and the
+ * screenshot viewer over it (screenshots/ScreenshotViewer.tsx). The
  * conversation itself is the desktop chat page (`Chat` from
  * integrations/session-apps/chat/Chat.tsx), rendered unchanged with the
  * gateway bridge (bridge.ts).
@@ -9,14 +10,21 @@
  * State comes from the phone panel's Store: pairing and reconnection,
  * conversations and their order, the selected conversation (with browser
  * Back/Forward through its Navigation), unread marks and toasts.
+ *
+ * When the gateway refuses this tab over a connection limit, the limit page
+ * (`LimitPage`) lies over everything until the reader's Retry connects; the
+ * workspace stays underneath, inert, so nothing the reader had open is lost.
  */
 
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 
 import type { ChatStore } from '../../session-apps/chat/store.ts';
 import { useAppState, useStore } from '../../mobile/src/hooks.ts';
 import type { AppState } from '../../mobile/src/store.ts';
 import type { GatewayChatBridge } from './bridge.ts';
+import type { ActivityOverlay } from './layout/activity-overlay.ts';
+import { ScreenshotViewer } from './screenshots/ScreenshotViewer.tsx';
+import type { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import type { SettingsView } from './settings/settings-view.ts';
 import type { PageTimes } from './times/page-times.ts';
 import type { ChatCover } from './widgets/chat-cover.ts';
@@ -27,6 +35,8 @@ export function App(props: {
   bridge: GatewayChatBridge;
   times: PageTimes;
   settingsView: SettingsView;
+  activityOverlay: ActivityOverlay;
+  viewer: ScreenshotViewerState;
   chatCover: ChatCover;
 }) {
   const state = useAppState();
@@ -40,18 +50,66 @@ export function App(props: {
   }
 
   // `data-connection` lets tests and styles see the connection state; the
-  // banner tells the reader when it is not online.
+  // banner tells the reader when it is not online. The page's content is
+  // laid out as if the wrapper were not there (`display: contents`); it is
+  // only there to make everything inert under the limit page.
+  const limited = state.connection.status === 'limited';
   return (
     <div class="shell" data-connection={state.connection.status}>
-      <ConnectionBanner />
-      <Workspace
-        chat={props.chat}
-        bridge={props.bridge}
-        times={props.times}
-        settingsView={props.settingsView}
-        chatCover={props.chatCover}
-      />
-      <Toasts />
+      <div class="shell-content" inert={limited}>
+        <ConnectionBanner />
+        <Workspace
+          chat={props.chat}
+          bridge={props.bridge}
+          times={props.times}
+          settingsView={props.settingsView}
+          activityOverlay={props.activityOverlay}
+          chatCover={props.chatCover}
+        />
+        <Toasts />
+        <ScreenshotViewer viewer={props.viewer} />
+      </div>
+      {limited && <LimitPage />}
+    </div>
+  );
+}
+
+/**
+ * Shown when the gateway refused this tab over a connection limit (close
+ * code 4429 with the reason `device` or `total`): which limit, what to do,
+ * and Retry. Nothing reconnects by itself while it is shown, and no tab is
+ * ever closed for this one. The text names no other device
+ * (`limitMessages` in the phone Connection, shared with the phone panel).
+ */
+function LimitPage() {
+  const store = useStore();
+  const state = useAppState();
+  const retry = useRef<HTMLButtonElement>(null);
+
+  // The page takes the keyboard focus: everything under it is inert.
+  useEffect(() => {
+    retry.current?.focus();
+  }, []);
+
+  return (
+    <div
+      class="limit-page"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="limit-title"
+      aria-describedby="limit-text"
+    >
+      <div class="limit-card">
+        <h1 id="limit-title">Too many connections</h1>
+        <p id="limit-text">{state.connection.message}</p>
+        <button
+          ref={retry}
+          class="shell-button primary"
+          onClick={() => store.connection.retryAfterLimit()}
+        >
+          Retry
+        </button>
+      </div>
     </div>
   );
 }
@@ -70,6 +128,9 @@ function connectionLabel(state: AppState): string {
   if (status === 'engine-unavailable') {
     return 'Companion not running';
   }
+  if (status === 'limited') {
+    return 'Too many connections';
+  }
   return 'Reconnecting…';
 }
 
@@ -82,7 +143,12 @@ function ConnectionBanner() {
   const store = useStore();
   const state = useAppState();
   const connection = state.connection;
-  if (connection.status === 'online' || connection.status === 'unpaired') {
+  // The limit page has its own Retry; "Retry now" would be under it.
+  if (
+    connection.status === 'online' ||
+    connection.status === 'unpaired' ||
+    connection.status === 'limited'
+  ) {
     return null;
   }
   let message = connection.message;

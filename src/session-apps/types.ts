@@ -39,7 +39,10 @@ export interface ApplicationSendAccess {
   busy: boolean;
 }
 
-/** Desktop-only, ephemeral permission status. Never saved in the app record. */
+/**
+ * Ephemeral permission status. Never saved in the app record. Remote clients
+ * receive it without `send.grantId` (src/remote/chat-access.ts).
+ */
 export interface SessionApplicationChatAccess {
   requested: SessionApplicationChatCapability[];
   read: boolean;
@@ -101,7 +104,7 @@ export interface SessionApplicationDescriptor {
   text: string;
   eventMode: SessionApplicationEventMode;
   eventStatus?: SessionApplicationEventStatus;
-  /** Trusted desktop permission controls; omitted from remote snapshots. */
+  /** Trusted permission controls; remote snapshots carry them without `send.grantId`. */
   chatAccess?: SessionApplicationChatAccess;
   /**
    * Present when the saved application could not be restored (missing or

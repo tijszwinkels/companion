@@ -458,13 +458,18 @@ export class AgentSessions implements InspectableModule {
 
   // ---- Session applications (src/session-apps/README.md) -------------------
 
-  /** Trusted desktop route only; never exposed through agent or application tools. */
-  setApplicationChatRead(id: string, command: JsonObject, validateDesktop?: () => void) {
-    return this.widgets.applications.setChatRead(id, command, validateDesktop);
+  /**
+   * Trusted UI route only (the desktop runtime, for a desktop or paired
+   * remote connection that shows the conversation); never exposed through
+   * agent or application tools. `validateShown` throws when the requesting
+   * connection no longer may change it.
+   */
+  setApplicationChatRead(id: string, command: JsonObject, validateShown?: () => void) {
+    return this.widgets.applications.setChatRead(id, command, validateShown);
   }
 
-  setApplicationChatSend(id: string, command: JsonObject, validateDesktop?: () => void) {
-    return this.widgets.applications.setChatSend(id, command, validateDesktop);
+  setApplicationChatSend(id: string, command: JsonObject, validateShown?: () => void) {
+    return this.widgets.applications.setChatSend(id, command, validateShown);
   }
 
   private withdrawApplicationChat(owner: string, receipts: ApplicationSendReceipt[]): void {

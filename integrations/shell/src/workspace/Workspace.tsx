@@ -56,11 +56,13 @@ import {
   isNarrowWindow,
   sideColumnWidth,
 } from '../layout/activity-width.ts';
+import type { ActivityOverlay } from '../layout/activity-overlay.ts';
 import { Divider } from '../layout/Divider.tsx';
 import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width.ts';
 import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
+import { ModelPicker } from '../models/ModelPicker.tsx';
 import { SettingsScreen } from '../settings/SettingsScreen.tsx';
 import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
 import type { SettingsView } from '../settings/settings-view.ts';
@@ -90,6 +92,7 @@ export function Workspace(props: {
   bridge: GatewayChatBridge;
   times: PageTimes;
   settingsView: SettingsView;
+  activityOverlay: ActivityOverlay;
   chatCover: ChatCover;
 }) {
   const store = useStore();
@@ -204,6 +207,18 @@ export function Workspace(props: {
   // it, the list's Activity entry keeps its own focus), it moves to the
   // column's ☰.
   const chatCovered = activity.shown && overlay;
+
+  // The page's record of the same (layout/activity-overlay.ts), which the
+  // Store reads for its `visible` report: set after each drawing that
+  // changes it, and cleared when the workspace goes (sign-out).
+  const activityOverlay = props.activityOverlay;
+  useLayoutEffect(() => {
+    activityOverlay.setCoversChat(chatCovered);
+  }, [activityOverlay, chatCovered]);
+  useEffect(() => {
+    return () => activityOverlay.setCoversChat(false);
+  }, [activityOverlay]);
+
   const mainArea = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     if (!chatCovered) {
@@ -247,9 +262,11 @@ export function Workspace(props: {
 
   /**
    * The gear: shows the settings screen, or leaves it. Leaving shows the
-   * conversation underneath again, which counts as choosing it: its unread
-   * mark (an answer completed behind the settings screen) is cleared
-   * (`Store.open` of the shown page changes no browser history).
+   * conversation underneath again, which counts as choosing it: the page
+   * reports it as shown, so the listener clears its unread mark (an answer
+   * completed behind the settings screen), and with an older listener the
+   * Store's own mark is cleared (`Store.open` of the shown page changes no
+   * browser history).
    */
   function toggleSettingsFromBar() {
     if (!settingsView.shown) {
@@ -428,6 +445,9 @@ function MainArea(props: {
     // The chat stays drawn while the settings screen covers it (inert and
     // hidden from assistive technology meanwhile), so its scroll position,
     // its following of the live end and its editor survive the round trip.
+    // The picker belongs to one conversation lifetime (its ID and tool
+    // epoch): another one starts with it closed.
+    const lifetime = selected.id + ' ' + (selected.toolEpoch ?? '');
     bar = (
       <ChatBar
         title={selected.title || 'Untitled'}
@@ -439,6 +459,7 @@ function MainArea(props: {
             ticker={props.times.ticker}
           />
         }
+        model={<ModelPicker key={lifetime} session={selected} admitted={props.bridge.admitted} />}
         {...barControls}
       />
     );

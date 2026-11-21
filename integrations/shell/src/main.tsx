@@ -6,7 +6,9 @@
  *   reconnection and the conversations (integrations/mobile/src/store.ts);
  * - the gateway bridge, which plays the Qt host's part for the chat page;
  * - the chat page's own ChatStore, attached to that bridge exactly as the Qt
- *   host attaches it to QWebChannel (integrations/session-apps/chat/main.tsx).
+ *   host attaches it to QWebChannel (integrations/session-apps/chat/main.tsx);
+ * - the screenshot viewer, which the bridge opens for the page's View
+ *   screenshot (screenshots/).
  *
  * The page is static and self-contained: it loads nothing but its own files
  * and talks only to its own origin (the gateway's CSP enforces both).
@@ -14,12 +16,14 @@
 
 import { render } from 'preact';
 
+import { fetchScreenshot } from '../../mobile/src/screenshots.ts';
 import { StoreContext } from '../../mobile/src/hooks.ts';
 import { Store } from '../../mobile/src/store.ts';
 import { ChatStore } from '../../session-apps/chat/store.ts';
 import '../../session-apps/chat/styles.css';
 import { App } from './App.tsx';
 import { GatewayChatBridge, type TranscriptView } from './bridge.ts';
+import { ActivityOverlay } from './layout/activity-overlay.ts';
 import type { LayoutStorage } from './layout/stored-layout.ts';
 import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
 import { SettingsView } from './settings/settings-view.ts';
@@ -27,6 +31,7 @@ import './styles.css';
 import { ListenerClock } from './times/listener-clock.ts';
 import type { PageTimes } from './times/page-times.ts';
 import { TurnTicker } from './times/turn-ticker.ts';
+import { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import { ChatCover } from './widgets/chat-cover.ts';
 import { createInlineWidget } from './widgets/InlineWidget.tsx';
 
@@ -77,15 +82,24 @@ window.addEventListener('popstate', () => {
   settingsView.setShown(false);
 });
 
+// Whether the Activity column lies over the chat (a narrow window); the
+// workspace sets it after each drawing (layout/activity-overlay.ts).
+const activityOverlay = new ActivityOverlay();
+
 // The Store reads this listener run's Activity history for the Activity
 // column (the phone panel's default), and after each reconnect from the
 // start, so changes made elsewhere while offline (deletions, labels) are not
 // missed. The selected conversation is not shown while the settings screen
-// covers it, so an answer completed then is marked unread.
+// or the narrow Activity column covers it: the page then reports it to the
+// listener as not visible, so its unread mark stays (README "Markers").
 const store = new Store({
   rereadActivityAfterReconnect: true,
-  selectionShown: () => !settingsView.shown,
+  selectionShown: () => !settingsView.shown && !activityOverlay.coversChat,
 });
+// Either cover coming or going changes what the reader sees: the Store
+// reports again when that changes what it last reported.
+settingsView.subscribe(() => store.selectionShownChanged());
+activityOverlay.subscribe(() => store.selectionShownChanged());
 
 // The listener's clock offset is taken from each state message as the
 // Store applies it. Subscribed first, so the bridge and the page already
@@ -125,6 +139,30 @@ bridge.inlineWidget = createInlineWidget({
 
 const chat = new ChatStore();
 chat.attach(bridge);
+
+// The page's View screenshot opens the viewer. The image is fetched with
+// this pairing's token in a header, never in an address (screenshots/).
+const viewer = new ScreenshotViewerState((path, signal) =>
+  fetchScreenshot(path, store.connection, signal),
+);
+bridge.onScreenshot((request) => viewer.open(request));
+
+// The viewer shows a screenshot of the shown conversation only: it closes
+// when another conversation (or another lifetime of the same one) is shown,
+// and on sign-out or revocation.
+let viewedLifetime = '';
+store.subscribe(() => {
+  const state = store.state;
+  let lifetime = '';
+  const shown = state.sessions.get(state.selected);
+  if (shown && state.connection.status !== 'unpaired') {
+    lifetime = shown.id + ' ' + (shown.toolEpoch ?? '');
+  }
+  if (lifetime !== viewedLifetime) {
+    viewedLifetime = lifetime;
+    viewer.close();
+  }
+});
 
 // Signed out or revoked: text only the chat editor held (input the bridge
 // refused) belongs to the previous pairing and must not be offered to the
@@ -171,6 +209,8 @@ render(
       bridge={bridge}
       times={times}
       settingsView={settingsView}
+      activityOverlay={activityOverlay}
+      viewer={viewer}
       chatCover={chatCover}
     />
   </StoreContext.Provider>,

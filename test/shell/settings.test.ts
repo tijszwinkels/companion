@@ -76,6 +76,10 @@ async function setupWithClock(context: { after(callback: () => Promise<void>): v
 /**
  * A paired page whose `Date.now` runs `browserAhead` ahead of the real
  * clock (`window.__shiftClock(ms)` moves it on), in `pageZone`.
+ *
+ * The page also records the request IDs of the answers it has handled
+ * (`window.__handledAnswers`), so a test can wait until the page has acted
+ * on its answers and drawn the result (see `answersHandled`).
  */
 async function pairedClockPage(
   fixture: Fixture,
@@ -92,6 +96,32 @@ async function pairedClockPage(
       let shift = ${browserAhead};
       window.__shiftClock = (milliseconds) => { shift += milliseconds; };
       Date.now = () => realNow() + shift;
+    })();`,
+  });
+  // A socket listener added here runs before the page's own; the timeout it
+  // starts runs after the page handled the message, including the drawing
+  // that handling scheduled (Preact draws in a microtask).
+  await page.call('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      window.__handledAnswers = [];
+      const PageSocket = WebSocket;
+      window.WebSocket = class extends PageSocket {
+        constructor(...options) {
+          super(...options);
+          this.addEventListener('message', (event) => {
+            let message = null;
+            try {
+              message = JSON.parse(event.data);
+            } catch {
+              return;
+            }
+            // An answer (a result or a refusal) names its request.
+            if (message && typeof message.requestId === 'string') {
+              setTimeout(() => window.__handledAnswers.push(message.requestId), 0);
+            }
+          });
+        }
+      };
     })();`,
   });
   await page.call('Emulation.setTimezoneOverride', { timezoneId: pageZone });
@@ -120,6 +150,34 @@ async function start(fixture: Fixture, title: string): Promise<{ id: string; run
 function answer(run: SyntheticRun, messageId: string, reply: string): void {
   run.emit({ ...chatMessage(messageId, 'assistant', reply), state: 'done' });
   run.finish();
+}
+
+/**
+ * Wait until the page has sent request `action` for conversation `id`, and
+ * has handled the answers to it and to every request it sent before, with
+ * what they changed drawn: nothing the page asked for is still on its way.
+ */
+async function answersHandled(
+  page: TestPage,
+  sockets: SocketLog,
+  action: string,
+  id: string,
+): Promise<void> {
+  await waitFor(() => {
+    return sockets.sent.some(
+      (frame) => frame.type === 'request' && frame.action === action && frame.id === id,
+    );
+  }, 5000);
+  const requestIds: string[] = [];
+  for (const frame of sockets.sent) {
+    if (frame.type === 'request' && typeof frame.requestId === 'string') {
+      requestIds.push(frame.requestId);
+    }
+  }
+  await page.waitFor(
+    `${JSON.stringify(requestIds)}.every((requestId) => window.__handledAnswers.includes(requestId))`,
+    5000,
+  );
 }
 
 /** Move both clocks on: time passes. */
@@ -388,6 +446,14 @@ test(
     // The bar of the shown conversation.
     await openConversation(page, 'Long run');
     await page.waitFor(barMatches(/^working · 2:00:\d\d$/));
+    // Showing a conversation reports it to the listener (`panel-state`),
+    // which answers with the conversation's actions and then the result;
+    // each answer (as the answers to what the page asked for since pairing)
+    // updates the Store and draws the workspace again. On a busy machine
+    // they can arrive after the bar's time. The observer below must not
+    // start before the page has handled them, or it records that drawing as
+    // a change the timers made.
+    await answersHandled(page, sockets, 'panel-state', long.id);
     await screenshot(page, 'timers-1280-strip');
 
     // Time passes (65 s on both clocks): every time advances, without the
@@ -435,8 +501,9 @@ test(
     const timerRight = await page.evaluate<number>(
       `${entryExpression('Short run')}.querySelector('.entry-timer').getBoundingClientRect().right`,
     );
+    // Right-aligned in the entry's select button (its ⋯ is a column beside it).
     const entryRight = await page.evaluate<number>(
-      `${entryExpression('Short run')}.getBoundingClientRect().right`,
+      `${entryExpression('Short run')}.querySelector('.entry-select').getBoundingClientRect().right`,
     );
     assert.ok(entryRight - timerRight <= 12, `right-aligned: ${entryRight - timerRight} px`);
     assert.equal(
@@ -1263,8 +1330,13 @@ test(
       const rect = ${entryExpression('Route planner')}.querySelector('.entry-timer').getBoundingClientRect();
       return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
     })()`);
+    // The entry's select button (its ⋯ is a column beside it).
     const entry = await page.evaluate<Box>(`(() => {
-      const rect = ${entryExpression('Route planner')}.getBoundingClientRect();
+      const rect = ${entryExpression('Route planner')}.querySelector('.entry-select').getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
+    })()`);
+    const menuButton = await page.evaluate<Box>(`(() => {
+      const rect = ${entryExpression('Route planner')}.querySelector('.entry-menu-button').getBoundingClientRect();
       return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
     })()`);
     assert.ok(title.width >= 47, `title ${title.width} px`);
@@ -1273,6 +1345,9 @@ test(
       timer.right <= entry.right && entry.right - timer.right <= 12,
       'right-aligned in the entry',
     );
+    // Neither the title nor the time reaches under the ⋯.
+    assert.ok(timer.right <= menuButton.left, 'the time ends before the ⋯');
+    assert.ok(title.right <= menuButton.left, 'the title ends before the ⋯');
     await screenshot(page, 'list-150-long-timer');
 
     // The accessible description: the last line, then "running for" and
