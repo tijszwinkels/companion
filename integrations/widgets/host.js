@@ -913,10 +913,11 @@ function reportViewport() {
     })
     .finally(() => {
       viewportInFlight = false;
-      // The size may have changed while this report was on its way. (A
-      // report that failed waits for the next successful poll instead.)
+      // The size may have changed while this report was on its way: it is
+      // reported through the scheduler, as every report is. (A report that
+      // failed waits for the next successful poll instead.)
       if (reportedViewport !== '') {
-        reportViewport();
+        scheduleViewportReport();
       }
     });
 }

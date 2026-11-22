@@ -64,7 +64,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   // While set, state polls answer 404, as for a frame address that ended.
   const ended = { loopback: false, socket: false };
   // `present` (Pin, Unpin) and `viewport` requests, with their bodies.
-  const posted: Record<'loopback' | 'socket', { operation: string; body: Json }[]> = {
+  const posted: Record<'loopback' | 'socket', { operation: string; body: Json; at: number }[]> = {
     loopback: [],
     socket: [],
   };
@@ -131,7 +131,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
         body += part;
       });
       request.on('end', () => {
-        posted[route].push({ operation: operation[1], body: JSON.parse(body) });
+        posted[route].push({ operation: operation[1], body: JSON.parse(body), at: Date.now() });
         if (operation[1] === 'present' && presentRefused[route]) {
           response.writeHead(400, { 'Content-Type': 'application/json' });
           response.end(JSON.stringify({ error: presentRefused[route] }));
@@ -638,8 +638,12 @@ test(
     await resize(shell, 600, 400);
     assert.equal(await quiet(() => viewports().length, 500), 6);
     documents.viewportHolding.socket = false;
+    const released = Date.now();
     documents.release();
     await waitFor(() => viewports().length === 7, 5000);
+    // Through the scheduler, as every report: not sooner than 120 ms later
+    // (less a little for the timer's granularity).
+    assert.ok(viewports()[6].at - released >= 100, String(viewports()[6].at - released));
     assert.deepEqual(viewports()[6].body, {
       widthCssPixels: 600,
       heightCssPixels: 400,

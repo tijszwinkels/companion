@@ -146,18 +146,21 @@ export function Workspace(props: {
 
   /**
    * Where the pinned widget sits for the list's shown state and preferred
-   * width, beside the Activity column when that is shown.
+   * width, beside the Activity column when that is shown. The window's
+   * width and height both come from the pinned layout's one listener
+   * (../layout/usePinnedLayout.ts), never one new and the other old.
    */
   function placeFor(listShown: boolean, listPreference: number): PinnedPlace {
+    const placeWidth = pinnedLayout.windowWidth;
     return pinnedPlace({
-      windowWidth,
+      windowWidth: placeWidth,
       windowHeight: pinnedLayout.windowHeight,
       listShown,
       listPreference,
       activityReserved: activityReservedWidth(
         activity.preference,
         activity.shown,
-        windowWidth,
+        placeWidth,
         listShown,
       ),
       preference: pinnedLayout.preference,

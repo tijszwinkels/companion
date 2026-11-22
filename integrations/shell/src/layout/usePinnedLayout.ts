@@ -1,6 +1,6 @@
 /**
  * The pinned widget's layout on this page: the place, band height and fold
- * this browser remembers (stored-layout.ts), and the window's height. The
+ * this browser remembers (stored-layout.ts), and the window's size. The
  * pure rules are in pinned-place.ts; Workspace.tsx combines them with the
  * list's and the Activity column's layouts.
  *
@@ -34,7 +34,13 @@ export interface PinnedLayoutView {
   heightPercent: number | null;
   /** Whether the band at the top is folded. */
   folded: boolean;
-  /** The page's height in CSS pixels now. */
+  /**
+   * The page's width and height in CSS pixels now, read together by one
+   * `resize` listener: the place depends on both, and a resize that
+   * changes both at once (a maximize) must never be seen with one of them
+   * new and the other old, which could move the widget away and back.
+   */
+  windowWidth: number;
   windowHeight: number;
   /** Fix a place, or 'auto' (remembered). */
   setPreference(preference: PinnedPlacePreference): void;
@@ -55,9 +61,10 @@ function pageStorage(): LayoutStorage | null {
   }
 }
 
-/** The page's height in CSS pixels. */
-function windowHeight(): number {
-  return document.documentElement.clientHeight;
+/** The page's width (without a vertical scroll bar) and height in CSS pixels. */
+function windowSize(): { width: number; height: number } {
+  const root = document.documentElement;
+  return { width: root.clientWidth, height: root.clientHeight };
 }
 
 const keys = [pinnedPlaceKey, pinnedHeightKey, pinnedFoldedKey];
@@ -74,12 +81,21 @@ export function usePinnedLayout(): PinnedLayoutView {
   // drag of the band's edge spans many renders).
   const latest = useRef(layout);
   latest.current = layout;
-  const [height, setWindowHeight] = useState(windowHeight);
+  const [size, setWindowSize] = useState(windowSize);
 
   useEffect(() => {
-    const resized = () => setWindowHeight(windowHeight());
+    const resized = () => {
+      const next = windowSize();
+      // Only a real change draws the page again.
+      setWindowSize((current) => {
+        if (current.width === next.width && current.height === next.height) {
+          return current;
+        }
+        return next;
+      });
+    };
     window.addEventListener('resize', resized);
-    // The height can change between the first render and this effect.
+    // The size can change between the first render and this effect.
     resized();
     return () => window.removeEventListener('resize', resized);
   }, []);
@@ -151,7 +167,8 @@ export function usePinnedLayout(): PinnedLayoutView {
     preference: layout.pinnedPlace,
     heightPercent: layout.pinnedHeight,
     folded: layout.pinnedFolded,
-    windowHeight: height,
+    windowWidth: size.width,
+    windowHeight: size.height,
     setPreference(preference) {
       change({ pinnedPlace: preference }, true);
     },

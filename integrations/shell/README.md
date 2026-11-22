@@ -1778,7 +1778,10 @@ and `src/layout/usePinnedLayout.ts`):
 3. Otherwise a place fixed in this browser wins: **→ Right** fixes the
    right, **↑ Top** fixes the top. **Auto** returns to the shape.
 4. **Auto**: a space wider than tall puts it at the right; taller than wide,
-   or exactly square, at the top. A resize across a limit moves it at once.
+   or exactly square, at the top. A resize across a limit moves it at once;
+   a resize that changes the width and the height together (a maximize) is
+   decided with both new values, so a place that is the same before and
+   after keeps the same frame.
 5. The header offers, at the top: **Fold**, **→ Right** (in a window of at
    least 640 px), **Auto** (while a place is fixed) and **Unpin**; at the
    right: **↑ Top**, **Auto** (while fixed) and **Unpin**. The pressed
@@ -1798,28 +1801,29 @@ and `src/layout/usePinnedLayout.ts`):
    two tabs that fix different places one after the other both show the
    last one.
 
-| Case                                                      | Place                                        |
-| --------------------------------------------------------- | -------------------------------------------- |
-| 1280 × 800, strip (space 1201 × 800)                      | Right                                        |
-| 900 × 1000, strip                                         | Top                                          |
-| 879 × 800, strip (space 800 × 800, exactly square)        | Top                                          |
-| 880 × 800, strip                                          | Right                                        |
-| 1100 × 900, strip / full list 300 px (space 1021 / 799)   | Right / top                                  |
-| 1000 × 950, list hidden / strip (space 1000 / 921)        | Right / top                                  |
-| 700 × 600, full list 420 px narrowed to 379 (space 320)   | Top                                          |
-| 900 × 600, full list 350 px, Activity shown (list 258 px) | Right (space 641)                            |
-| 900 × 600, full list 350 px, Activity hidden              | Top (space 549)                              |
-| 600 × 300 (below 640 px), Auto or → Right fixed           | Top; no → Right offered                      |
-| 640 × 300 / 639 × 300, → Right fixed                      | Right / top                                  |
-| 900 × 1000, → Right fixed                                 | Right                                        |
-| 1280 × 800, ↑ Top fixed                                   | Top                                          |
-| Auto again, 1280 × 800                                    | Right                                        |
-| Activity shown / hidden, widget at the right              | Activity below the widget / the widget alone |
-| The window resized across the square or the 640 px limit  | Moves at once; nothing remembered changes    |
-| Reload                                                    | As remembered                                |
-| Two tabs fix different places one after the other         | The last one, in both                        |
-| Entry `"left"`, `3`, of version 2, not JSON               | Auto                                         |
-| Storage refuses writes; ↑ Top                             | Top for this page                            |
+| Case                                                           | Place                                              |
+| -------------------------------------------------------------- | -------------------------------------------------- |
+| 1280 × 800, strip (space 1201 × 800)                           | Right                                              |
+| 900 × 1000, strip                                              | Top                                                |
+| 879 × 800, strip (space 800 × 800, exactly square)             | Top                                                |
+| 880 × 800, strip                                               | Right                                              |
+| 1100 × 900, strip / full list 300 px (space 1021 / 799)        | Right / top                                        |
+| 1000 × 950, list hidden / strip (space 1000 / 921)             | Right / top                                        |
+| 700 × 600, full list 420 px narrowed to 379 (space 320)        | Top                                                |
+| 900 × 600, full list 350 px, Activity shown (list 258 px)      | Right (space 641)                                  |
+| 900 × 600, full list 350 px, Activity hidden                   | Top (space 549)                                    |
+| 600 × 300 (below 640 px), Auto or → Right fixed                | Top; no → Right offered                            |
+| 640 × 300 / 639 × 300, → Right fixed                           | Right / top                                        |
+| 900 × 1000, → Right fixed                                      | Right                                              |
+| 1280 × 800, ↑ Top fixed                                        | Top                                                |
+| Auto again, 1280 × 800                                         | Right                                              |
+| Activity shown / hidden, widget at the right                   | Activity below the widget / the widget alone       |
+| The window resized across the square or the 640 px limit       | Moves at once; nothing remembered changes          |
+| 900 × 700 → 1600 × 1000 in one resize (right before and after) | Right throughout; the same frame, not loaded again |
+| Reload                                                         | As remembered                                      |
+| Two tabs fix different places one after the other              | The last one, in both                              |
+| Entry `"left"`, `3`, of version 2, not JSON                    | Auto                                               |
+| Storage refuses writes; ↑ Top                                  | Top for this page                                  |
 
 ### Rule: the band at the top
 
@@ -2426,7 +2430,8 @@ The [pinned widget](#pinned-widgets) rules have one table each:
   against the frame fixture: a pinned widget at the top of a tall window
   (25 % of the area below the bar, its message "Pinned" without a second
   frame) and at the right of a wide one, moving when the window changes
-  shape; ↑ Top, → Right and Auto, each after a reload, below 640 px always
+  shape, and one resize across both dimensions (a maximize) that keeps the
+  place keeping the same frame; ↑ Top, → Right and Auto, each after a reload, below 640 px always
   at the top, and a second tab following the place the first fixes; Activity
   below the widget at the right, each half, and the divider widening both;
   the widget's own height (40 %), the edge dragged (remembered only on

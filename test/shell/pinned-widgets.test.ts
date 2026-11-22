@@ -230,6 +230,58 @@ test(
   },
 );
 
+test(
+  'one resize across both dimensions that keeps the place keeps the same frame (a maximize)',
+  { skip, timeout: 120_000 },
+  async (context) => {
+    const { fixture, page } = await pinnedSetup(context, {
+      placement: 'pinned',
+      width: 900,
+      height: 700,
+    });
+
+    // 900 × 700 with the strip: the space beside it is 821 × 700, at the right.
+    await shownAt(page, 'right');
+    const address = await pinnedAddress(page);
+    const loads = () => page.requests.filter((url) => url === address).length;
+    const loadsBefore = loads();
+
+    // Mark the frame element, and record every band at the top the page
+    // draws from now on (a flip to the top and back would add one).
+    await page.evaluate(`(() => {
+      ${pinnedPanel}.querySelector('iframe').dataset.marked = 'yes';
+      window.__bandsDrawn = 0;
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node.nodeType === 1 && (node.matches('.pinned-band') || node.querySelector('.pinned-band'))) {
+              window.__bandsDrawn++;
+            }
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    })()`);
+
+    // One resize, wider and taller at once: 1600 × 1000 is still wider than
+    // tall (1521 × 1000). Read with an old width and the new height it
+    // would be taller than wide (821 × 1000).
+    await setSize(page, 1600, 1000);
+    await shownAt(page, 'right');
+    await page.evaluate(
+      `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`,
+    );
+    assert.equal(await page.evaluate(`window.__bandsDrawn`), 0);
+    assert.equal(
+      await page.evaluate(`${pinnedPanel}.querySelector('iframe').dataset.marked ?? ''`),
+      'yes',
+    );
+    assert.equal(loads(), loadsBefore);
+
+    assertTwoOrigins(fixture, page);
+    await assertNoViolations(page);
+  },
+);
+
 /** The size the widget service last recorded for the widget (what an agent sees). */
 function recordedViewport(fixture: ShellFrameFixture, widgetId: string): Json | undefined {
   const service = (
