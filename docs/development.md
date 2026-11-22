@@ -133,7 +133,8 @@ repository files those name by path, and, for tests that start programs, all of
 `src/` and `bin/`; `package.json`, `package-lock.json`, `tsconfig.json` and the
 Node version are part of every key. A pass is saved as a small file under
 `~/.cache/companion-test-results/` (`COMPANION_TEST_CACHE` selects another
-directory), a failure is never saved, and passes unused for 30 days are removed.
+directory). A failure is never saved, nor a test file in which a test was skipped;
+passes unused for 30 days are removed.
 `-- --list` shows what would run and `-- --all` runs every file. A path that a
 test builds in another way than as text in the code is not seen, so run the full
 `npm test` before handing work over; it always runs everything.
