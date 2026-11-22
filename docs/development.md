@@ -150,10 +150,11 @@ on every file git lists, until its computed inputs change. Without a working
 `bwrap` the command says so and runs every test file, without using or saving
 passes. The sandbox does not cover what lies outside the checkout (system
 programs, the network, the clock), `.git`, files git does not list (they are
-absent unless they are inputs), a test that passes by chance, or two runs at the
-same time. In the sandbox, files owned by root appear to belong to nobody, so a
-test that checks ownership takes the fallback. Run the full `npm test` before
-handing work over; it always runs everything.
+absent unless they are inputs), a test that passes although it cannot read a
+file it uses (it catches the error, or only checks the size), a test that passes
+by chance, or two runs at the same time. In the sandbox, files owned by root
+appear to belong to nobody, so a test that checks ownership takes the fallback.
+Run the full `npm test` before handing work over; it always runs everything.
 
 For native-window changes, build with `npm run ui:build`, then run
 `npm run test:window`. See the native guide for Qt/WebEngine/LayerShellQt

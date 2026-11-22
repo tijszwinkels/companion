@@ -146,13 +146,14 @@ async function snapshot(tests: string[]): Promise<Snapshot> {
   const hashOf = contentHasher(root);
   // The sandbox shows every file git lists by name (run-changed-process.ts), so a test can
   // observe which files exist; adding, removing or renaming a file changes every key. A
-  // symbolic link counts with the path it leads to, as the sandbox recreates it.
+  // symbolic link counts with the path it leads to, as the sandbox recreates it. JSON keeps
+  // a name and a link apart.
   const nameList = [...repositoryFiles].sort().map((file) => {
     const path = join(root, file);
     const isLink = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() === true;
-    return isLink ? `${file} -> ${readlinkSync(path)}` : file;
+    return JSON.stringify(isLink ? [file, readlinkSync(path)] : [file]);
   });
-  const names = createHash('sha256').update(nameList.join('\0')).digest('hex');
+  const names = createHash('sha256').update(nameList.join('\n')).digest('hex');
   const everyTest = [
     FORMAT,
     process.version,
@@ -204,6 +205,16 @@ if (!sandboxWorks(root)) {
     cwd: root,
     stdio: 'inherit',
   });
+
+  // A pass saved earlier must not hide this failure once the sandbox works again. Node
+  // reports only that the run failed, so the passes of every test file that ran are removed.
+  if (fullRun.status !== 0) {
+    const current = await snapshot(tests);
+    for (const test of tests) {
+      rmSync(join(cacheDirectory, current.keys.get(test)!), { force: true });
+      rmSync(join(cacheDirectory, current.wholeRepositoryKey(test)), { force: true });
+    }
+  }
   process.exit(fullRun.status ?? 1);
 }
 

@@ -16,7 +16,7 @@
 //      program directories as well.
 // Rule 2 only sees paths written as text. A path built in another way is missed; run-changed.ts
 // runs each test file with only these inputs present, so a missed input fails the test there.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -236,7 +236,8 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
 
 /**
  * Fingerprints of files, read once per instance: the content, and whether the file may be
- * executed. A file that is gone gets a fingerprint of its own.
+ * executed. A file that is gone gets a fingerprint of its own, one that cannot be read a
+ * fingerprint that never repeats.
  */
 export function contentHasher(root: string): (file: string) => string {
   const hashes = new Map<string, string>();
@@ -252,8 +253,11 @@ export function contentHasher(root: string): (file: string) => string {
         } else {
           hash = 'not a file'; // a directory, or a pipe that reading could wait on forever
         }
-      } catch {
-        hash = 'missing';
+      } catch (error) {
+        // A file that could not be read (too large, no permission) gets a fingerprint that
+        // matches nothing, so that no pass depending on it is saved or used.
+        const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+        hash = missing ? 'missing' : `unreadable ${randomUUID()}`;
       }
       hashes.set(file, hash);
     }

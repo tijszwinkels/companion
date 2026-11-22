@@ -174,17 +174,22 @@ function copyCheckout(root: string, copy: string, sandbox: SandboxFiles): void {
     const source = join(root, file);
     const target = join(copy, file);
     const type = lstatSync(source, { throwIfNoEntry: false });
-    if (!type) {
-      continue; // gone since the files were listed, so absent in the checkout too
-    }
-    if (type.isSymbolicLink()) {
+    if (type?.isSymbolicLink()) {
       links.push(file);
       continue;
     }
-    mkdirSync(dirname(target), { recursive: true });
     if (inputs.has(file)) {
+      if (!type) {
+        continue; // gone since it was hashed; the check of the copy notices
+      }
+      if (!type.isFile()) {
+        throw new Error(`${file} is not a regular file`); // copying a pipe could wait forever
+      }
+      mkdirSync(dirname(target), { recursive: true });
       copyFileSync(source, target); // keeps the executable bit
     } else {
+      // Also when the file is gone since it was listed: the key holds the listed names.
+      mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, '', { mode: 0 });
     }
   }

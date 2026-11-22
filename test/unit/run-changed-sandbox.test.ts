@@ -133,20 +133,25 @@ test('the sandbox holds only the inputs, and a missed input takes the fallback',
   assert.match(unchanged.output, /5 already passed with these inputs, 3 to run/);
   assert.match(unchanged.output, /^ {2}test\/unit\/fails\.test\.ts /m);
 
-  // A file that only the root template reaches: that test file and the one that took the
-  // fallback run again, the others do not.
+  // A file outside the computed inputs of the others: the test file that took the fallback
+  // runs again, and the one that reads it by name.
   writeFileSync(join(root, 'data/hidden.txt'), 'changed\n');
   const afterEdit = testChanged(['--list']);
   assert.match(
     afterEdit.output,
     /^ {2}test\/unit\/hidden\.test\.ts .*every file of the repository/m,
   );
-  assert.match(afterEdit.output, /^ {2}test\/unit\/root\.test\.ts /m);
   assert.doesNotMatch(afterEdit.output, /template\.test|plain\.test/);
 
-  // A file found by the template rule runs the test that reads it.
+  // A file found by the template rules runs the test that reads it, and the test whose
+  // template starts at the checkout root, which names no file. The run first saves the
+  // passes the edit above made invalid.
+  testChanged([]);
   writeFileSync(join(root, 'widgets/host.js'), 'export const host = 2;\n');
-  assert.match(testChanged(['--list']).output, /^ {2}test\/unit\/template\.test\.ts /m);
+  const afterWidget = testChanged(['--list']);
+  assert.match(afterWidget.output, /^ {2}test\/unit\/template\.test\.ts /m);
+  assert.match(afterWidget.output, /^ {2}test\/unit\/root\.test\.ts /m);
+  assert.doesNotMatch(afterWidget.output, /plain\.test/);
 
   // A new file changes which files the sandbox shows, so every test file runs again.
   writeFileSync(join(root, 'data/new.txt'), 'new\n');
@@ -154,14 +159,31 @@ test('the sandbox holds only the inputs, and a missed input takes the fallback',
 });
 
 test('without bwrap every test file runs and no pass is used or saved', () => {
+  // A PATH with git only.
+  const gitOnly = mkdtempSync(join(tmpdir(), 'run-changed-path-'));
+  after(() => rmSync(gitOnly, { recursive: true, force: true }));
+  const git = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  symlinkSync(git, join(gitOnly, 'git'));
+
   const saved = readdirSync(cache).sort();
-  const listed = testChanged(['--list'], '');
+  const listed = testChanged(['--list'], gitOnly);
   assert.match(listed.output, /bwrap is missing or cannot start/);
   assert.match(listed.output, /^ {2}test\/unit\/plain\.test\.ts$/m);
 
-  const run = testChanged(['test/unit/plain.test.ts'], '');
+  const run = testChanged(['test/unit/plain.test.ts'], gitOnly);
   assert.equal(run.status, 0, run.output);
   assert.match(run.output, /bwrap is missing or cannot start/);
   assert.match(run.output, /pass 1/);
   assert.deepEqual(readdirSync(cache).sort(), saved);
+
+  // A failed run removes the passes of the test files it ran, so that the sandbox does not
+  // skip them later.
+  if (!skip) {
+    const plain = ['--list', 'test/unit/plain.test.ts'];
+    testChanged(['test/unit/plain.test.ts']);
+    assert.match(testChanged(plain).output, /1 already passed/);
+    const failed = testChanged(['test/unit/plain.test.ts', 'test/unit/fails.test.ts'], gitOnly);
+    assert.equal(failed.status, 1, failed.output);
+    assert.match(testChanged(plain).output, /0 already passed/);
+  }
 });
