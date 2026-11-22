@@ -619,7 +619,7 @@ protocol](../desktop/README.md#microphones-and-listening-browsers).
    `failed`, `shutdown` or `replaced` (see `AudioEndReason` in
    [`protocol.ts`](protocol.ts)). From then on binary messages are refused
    again. After `paused`, start a new stream once the state says listening.
-7. `{"type":"request","action":"set-computer-microphone","enabled":false}`
+7. `{"type":"request","requestId":"…","action":"set-computer-microphone","enabled":false}`
    switches the computer's own microphone off (or on). It is a mutating
    action with a receipt.
 
@@ -697,10 +697,19 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
 12. `audio-start` and `audio-stop` have no receipts: a stream belongs to its
     connection and is never repeated after a reconnect.
 
+Known limit (open): after the client's `audio-stop`, sound still buffered
+for a listener that has stopped reading is released only when the
+connection closes; the 15-second drain deadline applies only after
+`slow-listener`.
+
 ### Microphone permission
 
-Without `--allow-microphone` every gateway response is byte-identical to
-before: `Permissions-Policy: camera=(), microphone=(), geolocation=()`. With
+The option governs only the browser's microphone permission for the
+gateway's page. It does not switch the audio protocol off: a paired client
+can open an audio stream and send sound (for example prerecorded speech)
+whether or not the gateway runs with it, and that speech has the effects of
+speech at the computer (decision D4). Without `--allow-microphone` every HTTP
+response of the gateway is byte-identical to before: `Permissions-Policy: camera=(), microphone=(), geolocation=()`. With
 it, the gateway's own responses say `microphone=(self)`: only pages of the
 gateway's own origin may ask the browser for the microphone, and only with
 the browser's own permission prompt. Widget and application frames, served

@@ -555,11 +555,12 @@ test("a stalled stream ends, so its held attempt cannot block the other micropho
 test('a stream that delivers far too little sound ends as stalled, though pieces keep arriving', async () => {
   const listener = await setup({ maximumLagMs: 300 });
   const tiny = Buffer.alloc(320); // 10 ms of sound
-  const trickle = setInterval(() => {
-    phone.client.send(tiny);
-  }, 50);
-  const phone = await listener.browser('Phone');
+  let trickle: ReturnType<typeof setInterval> | undefined;
   try {
+    const phone = await listener.browser('Phone');
+    trickle = setInterval(() => {
+      phone.client.send(tiny);
+    }, 50);
     await waitFor(() => phone.client.ended().length === 1, 5000);
     assert.equal(phone.client.ended()[0].reason, 'stalled');
   } finally {

@@ -148,6 +148,21 @@ sentence heard twice by two microphones in one room is recognisable. The
 listener does not detect such duplicates (D8 is the answer: switch one
 microphone off).
 
+## Known limits
+
+Found in the last review round and not yet changed (each awaits a decision):
+
+- The queue bound counts waiting entries: while microphone A's utterance is
+  still in recognition, its continuation and microphone B's utterance fill
+  both waiting places, so a third microphone's utterance arriving then is
+  dropped (logged as `dropped`), although only three utterances exist.
+- The lag bound allows 1% clock drift of the stream's whole age: after hours
+  of listening, a browser whose capture stopped may stay listed (and hold its
+  open candidate) for minutes rather than seconds.
+- After Resume, the computer's microphone waits for browser speech that was
+  admitted before its own wait began (possible only while its previous
+  period is still unwinding at Resume).
+
 ## Tests
 
 - `test/unit/microphones-periods.test.ts`: the microphones-and-periods table
