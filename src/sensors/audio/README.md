@@ -29,14 +29,19 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
    is loaded when the stream starts and closed when its period has ended.
 2. **All microphones that are on feed the same pipeline at the same time**
    (D2). Recognition, intent requests and routing stay one queue in order of
-   arrival (the queue's overload rule — one job active, two waiting — is
-   shared too). A browser's speech goes where the computer's goes and may do
+   arrival (the queue's overload rule — one utterance active, two waiting —
+   is shared too; it counts distinct utterances: while a continued
+   utterance's earlier attempt still finishes its recognition, its
+   replacement waits at the front beside two other microphones' utterances). A browser's speech goes where the computer's goes and may do
    what it does (D3, D4): the conversation selected on the computer, typing
    into the window in front on the computer, the computer's screenshot.
 3. **Pause stops every period** and cancels accepted work, as it always did.
    Each browser's stream ends with `paused`; the browser opens a new stream
    when the state says listening again. **Resume** starts the computer's
-   period again (if its switch is on). `audio-start` is refused while paused.
+   period again (if its switch is on) once the work accepted before the
+   pause has settled, as before; a browser's speech accepted after Resume is
+   not waited for (`SensorPipeline.idleForComputer`), so it cannot keep the
+   computer's microphone closed. `audio-start` is refused while paused.
 4. **The computer's microphone switch** (D8) turns only the computer's
    listening off or on. Off ends its current period like Record's hand-over:
    the open candidate is discarded, accepted utterances continue. On starts a
@@ -48,11 +53,12 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
    reason: stopped by its page, replaced by a newer stream of the same
    connection, its connection closed (page closed, revocation, lost
    gateway), its queue full, its sound more than three seconds behind real
-   time (`stalled`, with 1% allowed for clock drift: a phone's capture
-   stopped, or it delivers far too little sound, while its page stays
-   connected), its period failed, or shutdown. The stream's hold and
-   "hearing speech" are released the moment it ends, even while a frame is
-   still in its voice detector. The open candidate is discarded, also when the
+   time (`stalled`, with 1% allowed for clock drift; sound sent ahead of real
+   time counts for at most two seconds: a phone's capture stopped, or it
+   delivers far too little sound, while its page stays connected), its
+   period failed, or shutdown. The stream's hold and "hearing speech" are
+   released, and its unread sound dropped, the moment it ends, even while
+   its voice detector is still loading or busy with a frame. The open candidate is discarded, also when the
    frame that would close it was still in the voice detector (the same now
    holds for Record's hand-over and for the computer's switch; before, a
    frame already in the detector at the hand-over could still close and
@@ -129,8 +135,10 @@ admitted like a file replay: once, when the listener accepts its
 storage was off stays unsaved (turning storage on applies from the
 browser's next stream, for example after Pause and Resume); turning storage
 off revokes the admission at once, as for every capture. Nothing else is
-stored for a stream: no raw stream, only the same per-utterance WAV and
-screenshot as for the computer's microphone.
+stored for a stream: no raw stream, only what the computer's microphone
+stores, under the same admission: each utterance's WAV and screenshot, and
+the empty-recognition diagnostic clips (`asr-empty/…/audio.wav` and
+`metadata.json`, see the [capture-storage guide](../../../docs/capture-storage.md)).
 
 ## Activity
 

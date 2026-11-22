@@ -243,6 +243,8 @@ export class Relay {
    * the reason the client is given when the answer arrives.
    */
   private readonly abandonedStarts = new Map<number, AudioEndReason | undefined>();
+  /** Closes the connection if a backed-up upstream does not drain (awaitUpstreamDrain). */
+  private upstreamDrainTimer?: ReturnType<typeof setTimeout>;
   /** This relay as the registry sees it; taken over by another connection of the device. */
   private readonly audioHolder: AudioStreamHolder = {
     takenOver: () => this.endAudio('taken-over'),
@@ -725,6 +727,29 @@ export class Relay {
     this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
   }
 
+  /**
+   * After `slow-listener`, sound (and the stream's stop) still wait in the
+   * upstream socket's buffer. A listener that never reads again would keep
+   * them there for as long as the connection lives, so the connection is
+   * closed as "engine unavailable" if the buffer has not drained within the
+   * request timeout, as for a request the listener never answers.
+   */
+  private awaitUpstreamDrain(): void {
+    if (this.upstreamDrainTimer || this.upstream.destroyed) {
+      return;
+    }
+    const drained = () => {
+      clearTimeout(this.upstreamDrainTimer);
+      this.upstreamDrainTimer = undefined;
+    };
+    this.upstreamDrainTimer = setTimeout(() => {
+      this.upstream.off('drain', drained);
+      this.upstreamDrainTimer = undefined;
+      this.terminate(closeCodes.engineUnavailable, 'Companion did not keep up');
+    }, requestMilliseconds);
+    this.upstream.once('drain', drained);
+  }
+
   /** The client asked to stop listening (`audio-stop`). */
   private stopAudio(requestId: string): void {
     const streaming = this.audio.phase !== 'none';
@@ -753,6 +778,7 @@ export class Relay {
     }
     if (this.upstream.writableLength > maximumUpstreamAudioBacklogBytes) {
       this.endAudio('slow-listener');
+      this.awaitUpstreamDrain();
       return;
     }
 
@@ -897,7 +923,10 @@ export class Relay {
       return;
     }
 
-    if (message.type === 'state') {
+    // Only once the remote role is confirmed: the snapshot that arrives
+    // before is held and handled again then (roleAnswered), so a start can
+    // never be admitted while requests still wait for the role.
+    if (message.type === 'state' && this.ready) {
       const microphones = message.microphones as { streams?: unknown } | undefined;
       this.audioAvailable =
         typeof microphones === 'object' && microphones !== null && microphones.streams === true;
@@ -1057,6 +1086,7 @@ export class Relay {
   private upstreamClosed(): void {
     clearTimeout(this.roleTimer);
     clearTimeout(this.drainTimer);
+    clearTimeout(this.upstreamDrainTimer);
 
     // The listener's stream ended with its connection.
     this.endAudio(this.phoneOpen ? 'failed' : undefined);

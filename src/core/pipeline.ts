@@ -68,6 +68,9 @@ interface Job {
   storage: CaptureAdmission;
   /** Set when processing has ended, before the sample buffer is cleared. */
   settled: boolean;
+  /** Resolves once its cleanup has finished (`activity.finished` was called). */
+  finished: Promise<void>;
+  markFinished(): void;
 }
 
 /**
@@ -121,6 +124,10 @@ export class SensorPipeline implements InspectableModule {
   // Per microphone, the attempt held by its open VAD candidate, until that
   // candidate resolves.
   private readonly held = new Map<string, Job>();
+
+  // Every admitted job whose cleanup has not finished yet (see
+  // `idleForComputer`).
+  private readonly unfinished = new Set<Job>();
 
   // Cleanup of superseded jobs that never reached the worker. Tracked so that
   // idle() and shutdown wait for their capture and activity callbacks.
@@ -412,6 +419,10 @@ export class SensorPipeline implements InspectableModule {
         (error) => ({ error, application }),
       );
 
+    let markFinished!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      markFinished = resolve;
+    });
     const job: Job = {
       id,
       observedAt,
@@ -425,7 +436,10 @@ export class SensorPipeline implements InspectableModule {
       microphone,
       storage,
       settled: false,
+      finished,
+      markFinished,
     };
+    this.unfinished.add(job);
     this.setNewest(microphone, job);
 
     // Replace a waiting attempt at its queue position. An active attempt was
@@ -538,6 +552,36 @@ export class SensorPipeline implements InspectableModule {
     }
   }
 
+  private jobFinished(job: Job): void {
+    this.unfinished.delete(job);
+    job.markFinished();
+  }
+
+  /**
+   * What the computer's microphone loop waits for after a pause (see
+   * microphone-loop.ts): accepted work to settle before its next period.
+   * Like `idle()`, it waits until every admitted job has finished its
+   * cleanup, including typed text admitted while it waits; but speech from a
+   * listening browser admitted after this call is not waited for. After
+   * Resume a browser may speak at once, and its new utterances must not keep
+   * the computer's microphone closed. Without browser speech the jobs waited
+   * for are exactly those `idle()` waits for.
+   */
+  async idleForComputer(): Promise<void> {
+    const firstLater = this.nextId + 1;
+    const waitedFor = (job: Job) =>
+      job.id < firstLater || job.microphone === undefined || job.microphone === computerMicrophone;
+
+    // Re-check after each round: typed text may have been admitted meanwhile.
+    while (true) {
+      const waiting = [...this.unfinished].filter(waitedFor);
+      if (!waiting.length) {
+        return;
+      }
+      await Promise.all(waiting.map((job) => job.finished));
+    }
+  }
+
   /** Used by file playback and shutdown to wait for accepted work to settle. */
   async idle(): Promise<void> {
     while (this.worker || this.retiring.size) {
@@ -557,6 +601,7 @@ export class SensorPipeline implements InspectableModule {
       this.activity.outcome?.(job.id, 'superseded');
       await job.capture;
       this.activity.finished?.(job.id);
+      this.jobFinished(job);
     })().finally(() => {
       this.retiring.delete(cleanup);
     });
@@ -856,6 +901,7 @@ export class SensorPipeline implements InspectableModule {
         }
 
         this.activity.finished?.(job.id);
+        this.jobFinished(job);
       }
     }
   }

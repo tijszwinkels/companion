@@ -600,3 +600,53 @@ test('an ended stream releases its hold at once, even while its detector is busy
     await listener.close();
   }
 });
+
+test("after Resume, a browser's new speech does not keep the computer's microphone closed", async () => {
+  const listener = await setup({ holdTranscriptions: true });
+  try {
+    // The computer's utterance is in recognition when listening is paused.
+    listener.microphones.sayOnComputer(utterance(0.3));
+    await waitFor(() => listener.microphones.transcriptions.length === 1);
+    await listener.observer.request({ action: 'toggle-pause' });
+    await waitFor(() => !listener.microphones.computerListening);
+    await listener.observer.request({ action: 'toggle-pause' });
+
+    // A browser speaks at once after Resume; its utterance waits behind.
+    const phone = await listener.browser('Phone');
+    phone.client.send(utterance(0.5));
+    await waitFor(() =>
+      listener.microphones.logs.some((log) => log.detail.startsWith('Speech ended')),
+    );
+
+    // The earlier work finishes; the browser's is still in recognition.
+    listener.microphones.transcriptions[0]();
+    await waitFor(() => listener.microphones.transcriptions.length === 2);
+    await waitFor(() => listener.microphones.computerListening);
+    listener.microphones.transcriptions[1]();
+    await listener.waitForDispatches(1);
+    assert.deepEqual(listener.microphones.dispatched, [{ utterance: 'w5' }]);
+  } finally {
+    for (const release of listener.microphones.transcriptions) {
+      release();
+    }
+    await listener.close();
+  }
+});
+
+test('sound sent ahead of real time earns at most two seconds of credit against the lag bound', async () => {
+  const listener = await setup({ maximumLagMs: 300 });
+  try {
+    const phone = await listener.browser('Phone');
+    const sent = performance.now();
+    // Four seconds of sound at once, then nothing.
+    phone.client.send(Buffer.alloc(16_000 * 2 * 4));
+    await waitFor(() => phone.client.ended().length === 1, 6000);
+    const endedAfter = performance.now() - sent;
+    assert.equal(phone.client.ended()[0].reason, 'stalled');
+    // 2 s of credit plus the 300 ms bound (and 1% drift): about 2.3 s, not
+    // the 4.3 s that full credit for the four seconds would give.
+    assert.ok(endedAfter > 2000 && endedAfter < 3500, `ended after ${Math.round(endedAfter)} ms`);
+  } finally {
+    await listener.close();
+  }
+});

@@ -501,7 +501,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
               computerActivity,
             ),
           ),
-        idle: () => sensorPipeline.idle(),
+        // After a pause: wait for earlier work, not for a browser's new speech.
+        idle: () => sensorPipeline.idleForComputer(),
         log,
       });
     }

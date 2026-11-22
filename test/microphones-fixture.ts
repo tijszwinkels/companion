@@ -114,6 +114,11 @@ export interface MicrophonesFixtureOptions {
   maximumLagMs?: number;
   /** Browser voice detectors finish loading only once this settles. */
   detectorsLoaded?: Promise<void>;
+  /**
+   * Hold every transcription until the test releases it (`transcriptions`),
+   * ignoring cancellation, as the resident ASR worker finishes a request.
+   */
+  holdTranscriptions?: boolean;
 }
 
 export function microphonesFixture(
@@ -123,6 +128,8 @@ export function microphonesFixture(
 ) {
   const controller = new AbortController();
   const dispatched: Dispatch[] = [];
+  // Releases of held transcriptions, oldest first (holdTranscriptions).
+  const transcriptions: (() => void)[] = [];
   const detectors: LevelDetector[] = [];
   const logs: { stage: string; detail: string }[] = [];
   const log = (stage: string, detail: string) => {
@@ -145,7 +152,12 @@ export function microphonesFixture(
     {
       ...testSensors({
         capture: async () => screenshot,
-        transcribe: async (samples) => transcriptFor(samples),
+        transcribe: async (samples) => {
+          if (options.holdTranscriptions) {
+            await new Promise<void>((resolve) => transcriptions.push(resolve));
+          }
+          return transcriptFor(samples);
+        },
       }),
       router,
     },
@@ -203,7 +215,7 @@ export function microphonesFixture(
           }
         });
       }),
-    idle: () => pipeline.idle(),
+    idle: () => pipeline.idleForComputer(),
     log,
   }).catch(() => {
     // The loop ends only by throwing, at shutdown.
@@ -215,6 +227,7 @@ export function microphonesFixture(
     browsers,
     detectors,
     dispatched,
+    transcriptions,
     logs,
     /** Periods the computer's microphone has started so far. */
     get computerPeriods() {

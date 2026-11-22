@@ -1140,6 +1140,7 @@ export class Gateway {
     }
     this.frames?.handles.retainDevices(current);
     this.receipts.prune(current);
+    this.audioStreams.prune(current, (deviceId) => this.deviceConnected(deviceId));
     for (const deviceId of this.screenshots.keys()) {
       if (!current.has(deviceId)) {
         this.screenshots.delete(deviceId);

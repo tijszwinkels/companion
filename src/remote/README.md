@@ -653,14 +653,19 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
    refilled at 48,000 bytes per second on the monotonic clock. Starting a new
    stream, taking one over or reconnecting does not refill it: when the
    device's last connection closes it is forgotten only if it has refilled
-   completely (otherwise it is kept, one per paired device). Every piece costs
+   completely; the periodic revocation check (every 5 seconds) drops the
+   budgets of revoked devices and of disconnected devices once refilled.
+   Every piece costs
    at least 640 bytes (20 ms), so tiny pieces cannot multiply the work per
    second of sound. A piece that does not fit ends the stream (`too-fast`).
 6. **Counted apart from the request bucket.** Pieces take no request tokens;
    `audio-start` takes one like any request, `audio-stop` none.
 7. **A slow listener**: when more than 256 KiB wait to be written to the
-   listener, the next piece ends the stream (`slow-listener`). The listener
-   itself ends a stream with more than 5 seconds of sound waiting (`slow`).
+   listener, the next piece ends the stream (`slow-listener`). If that
+   buffer has not drained 15 seconds later (the request timeout), the
+   connection closes as engine unavailable (4503), so sound never stays
+   buffered for a listener that stopped reading. The listener itself ends a
+   stream with more than 5 seconds of sound waiting (`slow`).
 8. A violation ends the **stream, not the connection**, and the client is
    told why. Text requests during a stream work as always.
 9. Pieces go to the listener as `{"action":"audio-chunk","data":"<base64>"}`
@@ -686,7 +691,9 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
     and its listening period ends with it.
 11. **An older listener** (its state has no `microphones.streams`) is never
     sent `audio-start`: the client is answered "Listening here is not
-    available on this computer" and nothing else changes.
+    available on this computer" and nothing else changes. Availability is
+    read only from states after the listener confirmed the remote role, so
+    no start waits behind the role negotiation.
 12. `audio-start` and `audio-stop` have no receipts: a stream belongs to its
     connection and is never repeated after a reconnect.
 

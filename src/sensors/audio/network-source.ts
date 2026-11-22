@@ -70,6 +70,12 @@ export class NetworkAudioSource {
     return true;
   }
 
+  /** Drop every piece not read yet (the stream has ended). */
+  clear(): void {
+    this.queue.length = 0;
+    this.queuedBytes = 0;
+  }
+
   /**
    * The frames of one listening period. May be called once: a stream feeds
    * exactly one period.

@@ -107,6 +107,12 @@ export const maximumQueuedSoundMs = 5000;
  */
 export const maximumSoundLagMs = 3000;
 
+/**
+ * How far ahead of real time a stream's sound counts for the lag bound: the
+ * gateway's burst (`audioBurstSeconds` in src/remote/protocol.ts).
+ */
+const maximumAheadMs = 2000;
+
 /** Clock drift allowed between a browser's sound and the listener's clock: 1%. */
 const allowedDrift = 0.01;
 
@@ -234,7 +240,12 @@ export class BrowserMicrophones {
       this.finish(stream, 'slow');
       return;
     }
-    stream.receivedMs += (bytes.length / 2 / SAMPLE_RATE) * 1000;
+    // Sound ahead of real time earns credit only up to the gateway's burst
+    // (two seconds): a stream cannot bank early sound and then hold the
+    // shared queue silently for longer than the bound.
+    const elapsedMs = performance.now() - stream.startedAt;
+    const pieceMs = (bytes.length / 2 / SAMPLE_RATE) * 1000;
+    stream.receivedMs = Math.min(stream.receivedMs + pieceMs, elapsedMs + maximumAheadMs);
     this.watchLag(stream);
   }
 
@@ -319,6 +330,9 @@ export class BrowserMicrophones {
     this.streams.delete(stream.owner);
     clearTimeout(stream.lagTimer);
     stream.end.abort();
+    // Nothing will listen to its unread sound: drop it now, not only when
+    // the period's detector has finished loading or its current frame.
+    stream.source.clear();
 
     // Release the stream's hold and "hearing speech" now, not only when its
     // period has unwound: a frame may still be in the voice detector, and

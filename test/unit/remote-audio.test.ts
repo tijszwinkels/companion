@@ -21,12 +21,19 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { microphonesFixture, pieces, utterance } from '../microphones-fixture.ts';
-import { connectPhone, remoteFixture, waitFor, type PhoneClient } from '../remote-fixture.ts';
+import {
+  connectPhone,
+  remoteFixture,
+  waitFor,
+  within,
+  type PhoneClient,
+} from '../remote-fixture.ts';
 import {
   audioBytesPerSecond,
   maximumAudioChunkBytes,
   minimumAudioPieceBytes,
 } from '../../src/remote/protocol.ts';
+import { AudioStreamRegistry } from '../../src/remote/audio-streams.ts';
 
 type Json = Record<string, any>;
 
@@ -437,7 +444,11 @@ test('a listener that stops reading ends the stream as slow-listener', async () 
       (message) => message.type === 'audio-ended',
     )!;
     assert.equal(endedMessage.reason, 'slow-listener');
-    assert.equal(phone.socket.readyState, phone.socket.OPEN);
+
+    // The listener never reads again: the sound still buffered for it must
+    // not stay forever, so the connection closes after the request timeout.
+    const closed = await within(phone.closed, 20_000, 'the stuck connection to close');
+    assert.equal(closed.code, 4503);
   } finally {
     await fixture.close();
     await listener.close();
@@ -645,3 +656,20 @@ async function fakeListenerPhone(fixture: Awaited<ReturnType<typeof remoteFixtur
   await phone.engine('state');
   return phone;
 }
+
+test('audio budgets are pruned: revoked devices at once, disconnected ones once refilled', () => {
+  let now = 0;
+  const registry = new AudioStreamRegistry(() => now);
+  registry.rate('kept').take(64_000);
+  registry.rate('refilled').take(64_000);
+  registry.rate('revoked').take(64_000);
+  const budgets = (registry as unknown as { rates: Map<string, unknown> }).rates;
+
+  // Closed right after sending: not refilled yet, so kept.
+  registry.forget('refilled');
+  assert.equal(budgets.has('refilled'), true);
+
+  now = 10_000;
+  registry.prune(new Set(['kept', 'refilled']), (deviceId) => deviceId === 'kept');
+  assert.deepEqual([...budgets.keys()], ['kept'], 'Connected devices keep theirs');
+});

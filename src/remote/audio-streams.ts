@@ -68,6 +68,19 @@ export class AudioStreamRegistry {
   }
 
   /**
+   * Drop the budgets of devices that are no longer paired, and of devices
+   * without a connection whose budget has refilled. Called by the gateway's
+   * periodic revocation check, so no budget outlives its use.
+   */
+  prune(paired: ReadonlySet<string>, connected: (deviceId: string) => boolean): void {
+    for (const [deviceId, rate] of this.rates) {
+      if (!paired.has(deviceId) || (!connected(deviceId) && rate.full())) {
+        this.rates.delete(deviceId);
+      }
+    }
+  }
+
+  /**
    * The device's last connection has closed: forget its budget, but only if
    * it has refilled completely, so that reconnecting never restores a spent
    * budget early. A budget that is not full yet is kept (at most one per
