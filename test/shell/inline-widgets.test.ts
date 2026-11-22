@@ -844,6 +844,11 @@ test(
     await attachFrames(browser, page);
     await openConversation(page, 'Wheel fixture');
     await page.waitFor(`${panelExpression('probe')}?.dataset.phase === 'shown'`, 15_000);
+    // Its content's height (380 + 24 px): the first report can be the empty
+    // widget's, so "shown" alone may come before the frame has its height,
+    // and the chat would then follow the growth after the scroll position
+    // below was read.
+    await page.waitFor(`${frameHeight('probe')} === 404`);
     const transcript = `document.querySelector('.transcript')`;
     const atEnd = `(${transcript}.scrollTop + ${transcript}.clientHeight >= ${transcript}.scrollHeight - 4)`;
     await page.waitFor(atEnd);
