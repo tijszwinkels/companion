@@ -425,24 +425,61 @@ test('visibility rule table', () => {
   // "A different conversation shown" has no frame at all (inline-widgets.test.ts).
 });
 
-test('scrolling through a frame: toward the start with unchanged sizes is the reader', () => {
+test('scrolling through a frame: toward the start with unchanged sizes, or away from the end, is the reader', () => {
   const before = { top: 1000, scrollHeight: 3000, clientHeight: 600 };
-  const cases: [string, typeof before | null, typeof before, boolean][] = [
-    ['toward the start, sizes unchanged', before, { ...before, top: 700 }, true],
-    ['toward the end, sizes unchanged', before, { ...before, top: 1200 }, false],
-    ['not moved', before, before, false],
+  // The previous scroll event left the view at the end.
+  const atTheEnd = { top: 2400, scrollHeight: 3000, clientHeight: 600 };
+  const cases: [string, typeof before | null, typeof before, boolean, boolean][] = [
+    ['toward the start, sizes unchanged', before, { ...before, top: 700 }, false, true],
+    ['toward the end, sizes unchanged', before, { ...before, top: 1200 }, false, false],
+    ['not moved', before, before, false, false],
     [
       'content shrank (the browser pulled the view back)',
       before,
       { top: 900, scrollHeight: 1500, clientHeight: 600 },
       false,
+      false,
     ],
-    ['content grew', before, { top: 900, scrollHeight: 3200, clientHeight: 600 }, false],
-    ['the window was resized', before, { top: 900, scrollHeight: 3000, clientHeight: 500 }, false],
-    ['no earlier scroll known', null, { ...before, top: 700 }, false],
+    ['content grew', before, { top: 900, scrollHeight: 3200, clientHeight: 600 }, false, false],
+    [
+      'the window was resized',
+      before,
+      { top: 900, scrollHeight: 3000, clientHeight: 500 },
+      false,
+      false,
+    ],
+    ['no earlier scroll known', null, { ...before, top: 700 }, false, false],
+    [
+      'from the live end toward the start while the content grew',
+      atTheEnd,
+      { top: 2100, scrollHeight: 3304, clientHeight: 600 },
+      true,
+      true,
+    ],
+    [
+      'from the live end, content shrank, view pulled back to the new end',
+      atTheEnd,
+      { top: 1900, scrollHeight: 2500, clientHeight: 600 },
+      true,
+      false,
+    ],
+    [
+      'at the live end, content grew, view did not move',
+      atTheEnd,
+      { top: 2400, scrollHeight: 3304, clientHeight: 600 },
+      true,
+      false,
+    ],
+    [
+      "away from the end, toward the start while the content changed (the reader's row kept)",
+      before,
+      { top: 900, scrollHeight: 2800, clientHeight: 600 },
+      false,
+      false,
+    ],
   ];
-  for (const [name, previous, current, expected] of cases) {
-    assert.equal(readerScrollThroughFrame(previous, current), expected, name);
+  for (const [name, previous, current, wasAtEnd, expected] of cases) {
+    assert.equal(readerScrollThroughFrame(previous, current, wasAtEnd), expected, name);
   }
 });
 
