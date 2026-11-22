@@ -63,7 +63,12 @@ import {
 import type { ActivityOverlay } from '../layout/activity-overlay.ts';
 import { Divider } from '../layout/Divider.tsx';
 import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width.ts';
-import { bandPercent, pinnedPlace, type PinnedPlace } from '../layout/pinned-place.ts';
+import {
+  bandPercent,
+  pinnedPlace,
+  type PinnedPlace,
+  type PinnedPlacePreference,
+} from '../layout/pinned-place.ts';
 import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
 import { usePinnedLayout } from '../layout/usePinnedLayout.ts';
@@ -333,6 +338,31 @@ export function Workspace(props: {
     }
   }
 
+  // A place button of the pinned widget pressed: its panel is drawn anew,
+  // elsewhere or without that button, and the focus it had would fall to
+  // the page. It goes to a place button of the new header instead (the way
+  // back), else its first control, once, right after that drawing.
+  const focusPinnedControls = useRef(false);
+  function placePinned(preference: PinnedPlacePreference) {
+    focusPinnedControls.current = true;
+    pinnedLayout.setPreference(preference);
+  }
+  useLayoutEffect(() => {
+    if (!focusPinnedControls.current) {
+      return;
+    }
+    focusPinnedControls.current = false;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body) {
+      return;
+    }
+    const actions = `#${pinnedWidgetId} .inline-widget-actions`;
+    const target =
+      document.querySelector<HTMLElement>(`${actions} [data-place]`) ??
+      document.querySelector<HTMLElement>(`${actions} button`);
+    target?.focus();
+  });
+
   let pinnedPanel = null;
   if (pinned) {
     pinnedPanel = (
@@ -341,7 +371,7 @@ export function Workspace(props: {
         place={place}
         preference={pinnedLayout.preference}
         windowWidth={windowWidth}
-        onPlace={pinnedLayout.setPreference}
+        onPlace={placePinned}
         percent={bandPercent(pinnedLayout.heightPercent, pinned.heightPercent)}
         onPercent={pinnedLayout.setHeight}
         onRememberPercent={pinnedLayout.remember}

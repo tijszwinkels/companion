@@ -86,6 +86,7 @@ export function PinnedWidgetPanel(props: {
       <button
         key={choice}
         class="panel-action small inline-widget-action"
+        data-place={choice}
         title={button.title}
         onClick={() => props.onPlace(choice)}
       >

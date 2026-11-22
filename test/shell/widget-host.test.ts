@@ -72,6 +72,8 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   const presentRefused = { loopback: '', socket: '' };
   // While set, `viewport` answers 503, as a gateway that is briefly busy.
   const viewportFailing = { loopback: false, socket: false };
+  // While set, `viewport` gets no answer until `release()`.
+  const viewportHolding = { loopback: false, socket: false };
   const held: (() => void)[] = [];
   function release(): void {
     for (const answer of held.splice(0)) {
@@ -135,6 +137,13 @@ async function documentServer(documents: { loopback: string; socket: string }, s
           response.end(JSON.stringify({ error: presentRefused[route] }));
           return;
         }
+        if (operation[1] === 'viewport' && viewportHolding[route]) {
+          held.push(() => {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ recorded: true }));
+          });
+          return;
+        }
         if (operation[1] === 'viewport' && viewportFailing[route]) {
           response.writeHead(503, { 'Content-Type': 'application/json' });
           response.end(JSON.stringify({ error: 'Busy' }));
@@ -171,6 +180,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     posted,
     presentRefused,
     viewportFailing,
+    viewportHolding,
     release,
     server,
   };
@@ -618,6 +628,24 @@ test(
     await waitFor(() => viewports().length === 5, 5000);
     assert.deepEqual(viewports()[4].body, viewports()[3].body);
     assert.equal(await quiet(() => viewports().length, 1000), 5);
+
+    // One report on its way at a time: sizes reached while it is unanswered
+    // are not sent until it settles; then only the latest.
+    documents.viewportHolding.socket = true;
+    await resize(shell, 560, 380);
+    await waitFor(() => viewports().length === 6, 5000);
+    await resize(shell, 580, 390);
+    await resize(shell, 600, 400);
+    assert.equal(await quiet(() => viewports().length, 500), 6);
+    documents.viewportHolding.socket = false;
+    documents.release();
+    await waitFor(() => viewports().length === 7, 5000);
+    assert.deepEqual(viewports()[6].body, {
+      widthCssPixels: 600,
+      heightCssPixels: 400,
+      textScale: 1,
+    });
+    assert.equal(await quiet(() => viewports().length, 500), 7);
 
     // Pin and Unpin: the desktop Unpin's request, with the view's current
     // presentation (from its state) and only the placement changed.

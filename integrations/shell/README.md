@@ -1781,7 +1781,9 @@ and `src/layout/usePinnedLayout.ts`):
    or exactly square, at the top. A resize across a limit moves it at once.
 5. The header offers, at the top: **Fold**, **→ Right** (in a window of at
    least 640 px), **Auto** (while a place is fixed) and **Unpin**; at the
-   right: **↑ Top**, **Auto** (while fixed) and **Unpin**.
+   right: **↑ Top**, **Auto** (while fixed) and **Unpin**. The pressed
+   button goes away with its place, so keyboard focus moves to a place
+   button of the new header (else its first control).
 6. **At the right** it is the right column, as wide as the Activity column's
    rule makes it, resized by the same divider (named "Right column width"
    while Activity is hidden). With Activity hidden the widget has the whole
@@ -1859,16 +1861,21 @@ Rule (`src/layout/pinned-place.ts`, `src/workspace/PinnedWidget.tsx`):
 
 ### Known limits and what is left out
 
+- Pin, Unpin and the size report are host.js's, which the listener's widget
+  service serves: after updating from the previous step, restart the
+  listener from the updated checkout (and reload the browser). A listener
+  still running the previous host.js ignores `present`, so Pin and Unpin
+  do nothing there.
 - Unpin needs the pinned widget's frame shown and the page connected. A
   pinned widget whose frame failed can be unpinned here only after Try
   again loads it, or on the desktop or by the agent.
 - Fold, the dragged height and the fixed place are one setting of this
   browser for every pinned widget; a dragged height also overrides a
   widget's own `heightPercent` from then on.
-- Moving between the top and the right (a place button, or a resize across
-  the shape's limit under Auto, for example a tiling window manager
-  halving the window), and leaving the settings screen, loads the widget's
-  page again: text typed in the widget and not yet saved is lost. Keeping
+- Pin and Unpin, moving between the top and the right (a place button, or
+  a resize across the shape's limit under Auto, for example a tiling window
+  manager halving the window), and leaving the settings screen load the
+  widget's page again: text typed in the widget and not yet saved is lost. Keeping
   the page would need the frame drawn in one place and positioned over the
   other by measuring it, a second layout mechanism; left out until asked
   for.

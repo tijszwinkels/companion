@@ -869,8 +869,11 @@ function presentFromShell(placement) {
 // The text scale is the one the shell's theme gives. A report the gateway or
 // the service could not take for now (a 5xx or 429, or no answer) is made
 // again after the next successful poll; a refusal (another 4xx) is not.
+// One report is on its way at a time, so an older size can never arrive
+// after a newer one: a change meanwhile is reported when it has settled.
 let viewportTimer = null;
 let reportedViewport = '';
+let viewportInFlight = false;
 
 function scheduleViewportReport() {
   if (viewportTimer !== null) {
@@ -885,7 +888,7 @@ function scheduleViewportReport() {
 function reportViewport() {
   const width = Math.round(window.innerWidth);
   const height = Math.round(window.innerHeight);
-  if (!api || !shellVisible || width < 1 || height < 1) {
+  if (!api || !shellVisible || viewportInFlight || width < 1 || height < 1) {
     return;
   }
   const body = { widthCssPixels: width, heightCssPixels: height, textScale: theme.scale };
@@ -894,6 +897,7 @@ function reportViewport() {
     return;
   }
   reportedViewport = key;
+  viewportInFlight = true;
   void fetch(api + '/viewport', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -906,6 +910,14 @@ function reportViewport() {
     })
     .catch(() => {
       reportedViewport = '';
+    })
+    .finally(() => {
+      viewportInFlight = false;
+      // The size may have changed while this report was on its way. (A
+      // report that failed waits for the next successful poll instead.)
+      if (reportedViewport !== '') {
+        reportViewport();
+      }
     });
 }
 

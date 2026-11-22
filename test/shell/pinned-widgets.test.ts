@@ -269,9 +269,18 @@ test(
       );
     assert.deepEqual(await offered(), ['↑ Top', 'Unpin']);
 
-    // ↑ Top fixes the top for this browser, also after a reload.
-    await press(page, '↑ Top');
+    // ↑ Top fixes the top for this browser, also after a reload. Pressed
+    // with the keyboard, the focus goes to the way back (→ Right).
+    await page.evaluate(
+      `[...${pinnedPanel}.querySelectorAll('button')].find((button) => button.textContent.trim() === '↑ Top').focus()`,
+    );
+    // Enter activates a button through its character, as a real key does.
+    const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 };
+    await page.call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...enter });
+    await page.call('Input.dispatchKeyEvent', { type: 'char', ...enter, text: '\r' });
+    await page.call('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
     await shownAt(page, 'top');
+    assert.equal(await page.evaluate(`document.activeElement.textContent.trim()`), '→ Right');
     assert.equal(await storedEntry(page, 'pinnedPlace'), 'top');
     assert.deepEqual(await offered(), ['▾ Fold', '→ Right', 'Auto', 'Unpin']);
     await reload(page, fixture.origin, title);
