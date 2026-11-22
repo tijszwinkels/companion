@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { Activity } from '../../core/activity.ts';
+import { notAdmitted, type CaptureAdmission } from '../../capture-storage/policy.ts';
 import type { Log } from '../../core/frame.ts';
 import type { PauseControl } from '../../core/pause-control.ts';
 import type { SensorPipeline } from '../../core/pipeline.ts';
@@ -34,7 +35,12 @@ import type { VoiceActivityDetector } from './vad.ts';
  *
  * Lifetime and resources: a stream's period holds one voice detector, created
  * when the stream starts and closed when its period has ended; queued sound
- * is bounded by `maximumQueuedMs` (beyond it the stream ends as `slow`).
+ * is bounded by `maximumQueuedMs` (beyond it the stream ends as `slow`). At
+ * most `maximumPeriods` periods exist at once, counting those of ended
+ * streams whose detector is still loading or closing, so restarts can never
+ * pile up detectors. A stream that receives no piece for `maximumGapMs` (a
+ * phone whose capture stopped while its page stays connected) ends as
+ * `stalled`, so its open candidate cannot hold the shared queue.
  * Pause ends every stream (`paused`); the browser opens a new one when the
  * listener is listening again. Shutdown ends them all; `idle()` waits until
  * every period has ended and its detector is closed.
@@ -46,7 +52,7 @@ import type { VoiceActivityDetector } from './vad.ts';
 
 /** Why a stream ended. `stopped`: its owner asked; the others are reported to it. */
 export type BrowserStreamEnd =
-  'stopped' | 'replaced' | 'paused' | 'slow' | 'failed' | 'disconnected' | 'shutdown';
+  'stopped' | 'replaced' | 'paused' | 'slow' | 'stalled' | 'failed' | 'disconnected' | 'shutdown';
 
 /** A listening browser as the listener's state shows it. */
 export interface BrowserMicrophone {
@@ -68,17 +74,31 @@ export interface BrowserMicrophonesOptions {
   /** Joins every microphone's speech into "hearing speech". */
   speech: SpeechIndicator;
   log: Log;
-  /** Streams at once, for every connection together; 4 by default. */
-  maximumStreams?: number;
+  /** Listening periods at once, of open and of ending streams; 8 by default. */
+  maximumPeriods?: number;
   /** Sound that may wait for a stream's voice detector; 5 seconds by default. */
   maximumQueuedMs?: number;
+  /** Longest time without a piece before a stream ends as `stalled`; 3 seconds by default. */
+  maximumGapMs?: number;
 }
 
-/** Streams at once by default: the gateway's own limit (src/remote/protocol.ts). */
-export const maximumBrowserStreams = 4;
+/**
+ * Listening periods at once by default: the gateway's connection limit
+ * (`maximumRemoteConnections`, src/remote/protocol.ts), one stream each. The
+ * gateway's own limit of four streams applies first; the listener's bound is
+ * higher so that a takeover (the new stream's start and the old stream's stop
+ * arrive on different connections) is never refused at four.
+ */
+export const maximumBrowserPeriods = 8;
 
 /** Sound that may wait for a stream's voice detector by default, in milliseconds. */
 export const maximumQueuedSoundMs = 5000;
+
+/**
+ * Longest time without a piece by default, in milliseconds. A browser sends
+ * a piece every 100 ms; three seconds without one means its capture stopped.
+ */
+export const maximumPieceGapMs = 3000;
 
 /** Names of ended streams kept for Activity entries still being processed. */
 const rememberedNames = 64;
@@ -86,8 +106,12 @@ const rememberedNames = 64;
 interface Stream extends BrowserMicrophone {
   owner: number;
   source: NetworkAudioSource;
+  /** Capture-storage admission, taken when the stream was accepted. */
+  admission: CaptureAdmission;
   /** Aborted when the stream ends for any reason; ends the period's frames. */
   end: AbortController;
+  /** Ends the stream as `stalled` when no piece arrives in time. */
+  gapTimer?: ReturnType<typeof setTimeout>;
   /** Settles when the period has ended and its voice detector is closed. */
   period?: Promise<void>;
 }
@@ -97,8 +121,9 @@ export class BrowserMicrophones {
   private readonly periods = new Set<Promise<void>>();
   /** Stream ID → device name, for streams that are open or ended recently. */
   private readonly names = new Map<string, string>();
-  private readonly maximumStreams: number;
+  private readonly maximumPeriods: number;
   private readonly maximumQueuedMs: number;
+  private readonly maximumGapMs: number;
 
   /** Called for every end of a stream; set by the owner of the control socket. */
   ended: (owner: number, id: string, reason: BrowserStreamEnd) => void = () => {};
@@ -106,8 +131,9 @@ export class BrowserMicrophones {
   changed: () => void = () => {};
 
   constructor(private readonly options: BrowserMicrophonesOptions) {
-    this.maximumStreams = options.maximumStreams ?? maximumBrowserStreams;
+    this.maximumPeriods = options.maximumPeriods ?? maximumBrowserPeriods;
     this.maximumQueuedMs = options.maximumQueuedMs ?? maximumQueuedSoundMs;
+    this.maximumGapMs = options.maximumGapMs ?? maximumPieceGapMs;
     options.pause.on('change', this.pauseChanged);
     options.signal.addEventListener('abort', this.shutdown, { once: true });
   }
@@ -119,14 +145,22 @@ export class BrowserMicrophones {
 
   /** The device name of a stream that is open or ended recently. */
   nameOf(id: string): string | undefined {
+    for (const stream of this.streams.values()) {
+      if (stream.id === id) {
+        return stream.name;
+      }
+    }
     return this.names.get(id);
   }
 
   /**
    * Start a stream for connection `owner`, named after its device. Ends the
    * connection's earlier stream first (`replaced`). Throws, starting
-   * nothing, while paused, at shutdown, or when `maximumStreams` other
-   * connections already stream. Returns the new stream's ID.
+   * nothing, while paused, at shutdown, or when `maximumPeriods` periods
+   * (of open or ending streams) exist. Returns the new stream's ID.
+   *
+   * The stream's capture-storage admission is taken now, before any of its
+   * sound can be queued (src/sensors/audio/README.md, "Stored audio").
    */
   start(owner: number, name: string): string {
     this.options.signal.throwIfAborted();
@@ -135,7 +169,7 @@ export class BrowserMicrophones {
     }
 
     this.stop(owner, 'replaced');
-    if (this.streams.size >= this.maximumStreams) {
+    if (this.periods.size >= this.maximumPeriods) {
       throw Error('Too many browsers are listening');
     }
 
@@ -144,10 +178,12 @@ export class BrowserMicrophones {
       name,
       owner,
       source: new NetworkAudioSource(this.maximumQueuedMs),
+      admission: this.options.activity.admitCapture?.() ?? notAdmitted,
       end: new AbortController(),
     };
     this.streams.set(owner, stream);
     this.remember(stream);
+    this.watchGap(stream);
 
     const period = this.run(stream).finally(() => {
       this.periods.delete(period);
@@ -177,7 +213,23 @@ export class BrowserMicrophones {
         `Browser stream ${stream.name}: more than ${this.maximumQueuedMs} ms of sound waiting; ending it`,
       );
       this.finish(stream, 'slow');
+      return;
     }
+    this.watchGap(stream);
+  }
+
+  /** (Re)start the stream's gap timer: it ends the stream if no piece follows in time. */
+  private watchGap(stream: Stream): void {
+    clearTimeout(stream.gapTimer);
+    stream.gapTimer = setTimeout(() => {
+      this.options.log(
+        'microphone',
+        `Browser stream ${stream.name}: no sound for ${this.maximumGapMs} ms; ending it`,
+      );
+      this.finish(stream, 'stalled');
+    }, this.maximumGapMs);
+    // A timer never keeps the listener process alive on its own.
+    stream.gapTimer.unref();
   }
 
   /**
@@ -234,6 +286,7 @@ export class BrowserMicrophones {
     }
 
     this.streams.delete(stream.owner);
+    clearTimeout(stream.gapTimer);
     stream.end.abort();
     this.options.log('microphone', `Browser stream ended (${reason}): ${stream.name}`);
     this.ended(stream.owner, stream.id, reason);
@@ -279,6 +332,7 @@ export class BrowserMicrophones {
           source: (signal) => stream.source.frames(signal),
           handoff: stream.end.signal,
           microphone: stream.id,
+          captureAdmission: stream.admission,
         },
         activity,
       );

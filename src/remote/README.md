@@ -615,8 +615,8 @@ protocol](../desktop/README.md#microphones-and-listening-browsers).
    request rate.
 6. The gateway sends `{"type":"audio-ended","streamId","reason","message"}`
    when the stream ended without the client asking: `taken-over`,
-   `too-large`, `too-fast`, `slow-listener`, `paused`, `slow`, `failed`,
-   `shutdown` or `replaced` (see `AudioEndReason` in
+   `too-large`, `too-fast`, `slow-listener`, `paused`, `stalled`, `slow`,
+   `failed`, `shutdown` or `replaced` (see `AudioEndReason` in
    [`protocol.ts`](protocol.ts)). From then on binary messages are refused
    again. After `paused`, start a new stream once the state says listening.
 7. `{"type":"request","action":"set-computer-microphone","enabled":false}`
@@ -645,11 +645,16 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
    A fifth device is refused (`Too many browsers are listening`); no stream is
    taken from another device.
 4. **Pieces of at most 8 KiB**, nonempty, of whole 16-bit samples. A piece
-   over that ends the stream (`too-large`).
-5. **At most 1.5 times real time**: a token bucket in bytes per stream, two
-   seconds of sound deep (64,000 bytes, full at the start), refilled at
-   48,000 bytes per second on the monotonic clock. A piece that does not fit
-   ends the stream (`too-fast`).
+   over that ends the stream (`too-large`). The connection's existing
+   message bound still applies first: a message over 128 KiB closes the
+   connection, as before.
+5. **At most 1.5 times real time**: a token bucket in bytes per device, two
+   seconds of sound deep (64,000 bytes, full when the device first streams),
+   refilled at 48,000 bytes per second on the monotonic clock. Starting a new
+   stream or taking one over does not refill it; it is forgotten with the
+   device's last connection, as the request buckets are. Every piece costs
+   at least 640 bytes (20 ms), so tiny pieces cannot multiply the work per
+   second of sound. A piece that does not fit ends the stream (`too-fast`).
 6. **Counted apart from the request bucket.** Pieces take no request tokens;
    `audio-start` takes one like any request, `audio-stop` none.
 7. **A slow listener**: when more than 256 KiB wait to be written to the
@@ -661,7 +666,12 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
    lines on the connection's existing remote-role socket; `audio-start`
    carries `deviceName`, which only the gateway sets. The gateway's own
    `audio-stop` names the stream it ends, so a late stop never ends a newer
-   stream of the same connection.
+   stream of the same connection. The listener admits `audio-stop` even
+   while the connection's other requests fill its slots. An `audio-ended`
+   from the listener that arrives before the answer to `audio-start` is kept:
+   the client then gets the result and the `audio-ended`, and nothing stays
+   open. A takeover or stop while a start is still on its way answers that
+   start with the reason.
 10. **Revocation, a closed page and a lost connection end the stream**: the
     slot is freed at once, the listener ends the stream with its connection
     (revocation closes it within 5 seconds) or on the gateway's `audio-stop`,
@@ -688,14 +698,18 @@ Accepted by the user (decision D4): a listening device's speech is treated as
 the user's speech at the computer. By speaking, a paired device can therefore
 do what its typed requests cannot: type into the application in front on the
 computer, change the computer's selected conversation by voice navigation, and
-start conversations carrying the computer's screenshot (desktop-only actions
-for typed requests, see `desktopOnlyActions` in
-[`src/desktop/runtime.ts`](../desktop/runtime.ts)). It can switch the
-computer's microphone off and on. The intent switches on the Activity page
-still turn typing and the other intents off for all microphones.
+start conversations and quick questions carrying a fresh screenshot of the
+computer's window (desktop-only actions for typed requests, see
+`desktopOnlyActions` in [`src/desktop/runtime.ts`](../desktop/runtime.ts)).
+Because a device may open the saved screenshot of every conversation it is
+shown ([Security model](#security-model)), it can therefore obtain a new
+screenshot of the computer's window by speaking (with capture storage on);
+typed requests never capture one. It can switch the computer's microphone off
+and on. The intent switches on the Activity page still turn typing and the
+other intents off for all microphones.
 
 It still cannot hear any microphone (the computer's or another browser's),
-receive the computer's screenshots, record into a text box, or reach
+fetch a screenshot by any other route, record into a text box, or reach
 anything new through text requests. All sound near a listening browser
 leaves that device continuously over TLS to the gateway and over the private
 socket to the listener; it is stored only as the capture-storage switch

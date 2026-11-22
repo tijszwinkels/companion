@@ -525,6 +525,19 @@ export class SensorPipeline implements InspectableModule {
     }
   }
 
+  /**
+   * A settled job can never be continued (see `continuable` and
+   * `speechResumed`), so its microphone no longer needs to remember it.
+   * Forgetting it releases its buffers and screenshot at once, also for a
+   * browser stream that has ended: every stream is a microphone of its own
+   * and would otherwise keep its last job for the rest of the run.
+   */
+  private forgetNewest(job: Job): void {
+    if (job.microphone !== undefined && this.newest.get(job.microphone) === job) {
+      this.newest.delete(job.microphone);
+    }
+  }
+
   /** Used by file playback and shutdown to wait for accepted work to settle. */
   async idle(): Promise<void> {
     while (this.worker || this.retiring.size) {
@@ -830,6 +843,7 @@ export class SensorPipeline implements InspectableModule {
         // samples, and this job owns the audio buffer, which is cleared now.
         job.settled = true;
         job.samples?.fill(0);
+        this.forgetNewest(job);
 
         await job.capture; // Settle capture before shutdown releases the job.
 

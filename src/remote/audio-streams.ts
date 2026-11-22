@@ -14,12 +14,16 @@
  * - At most `maximumAudioStreams` streams in total, starting ones included.
  *   A new device over the limit is refused; nothing is taken from another
  *   device.
- * - Each stream may send at most `audioRealTimeFactor` times real time on
- *   average, with bursts of up to `audioBurstSeconds` of sound. This is
- *   counted apart from the request rate limit (request-rate.ts): ten pieces
- *   a second would exhaust that bucket.
+ * - Each device may send at most `audioRealTimeFactor` times real time on
+ *   average, with bursts of up to `audioBurstSeconds` of sound. The budget
+ *   is the device's (`rate`), so starting a new stream or taking one over
+ *   does not refill it; the gateway forgets it with the device's last
+ *   connection, as it does the request buckets. Every message costs at least
+ *   `minimumAudioPieceBytes`. This is counted apart from the request rate
+ *   limit (request-rate.ts): ten pieces a second would exhaust that bucket.
  *
- * Memory: one entry per stream, removed when it ends.
+ * Memory: one entry per stream, removed when it ends; one budget per
+ * connected device that has streamed.
  */
 
 import {
@@ -27,6 +31,7 @@ import {
   audioBytesPerSecond,
   audioRealTimeFactor,
   maximumAudioStreams,
+  minimumAudioPieceBytes,
 } from './protocol.ts';
 
 /** A connection that holds (or is starting) a stream. */
@@ -43,8 +48,29 @@ export class AudioStreamRegistry {
   private readonly holders = new Map<string, AudioStreamHolder>();
   /** The device of each holder. */
   private readonly devices = new Map<AudioStreamHolder, string>();
+  /** Each device's rate budget, shared by its streams one after another. */
+  private readonly rates = new Map<string, AudioRate>();
 
-  constructor(private readonly maximumStreams = maximumAudioStreams) {}
+  /** `now`: monotonic clock in milliseconds for the rate budgets; tests inject their own. */
+  constructor(
+    private readonly now: () => number = () => performance.now(),
+    private readonly maximumStreams = maximumAudioStreams,
+  ) {}
+
+  /** The device's rate budget; created full the first time the device streams. */
+  rate(deviceId: string): AudioRate {
+    let rate = this.rates.get(deviceId);
+    if (!rate) {
+      rate = new AudioRate(this.now);
+      this.rates.set(deviceId, rate);
+    }
+    return rate;
+  }
+
+  /** Forget a device's budget once its last connection has closed. */
+  forget(deviceId: string): void {
+    this.rates.delete(deviceId);
+  }
 
   /** Streams held or starting now. */
   get size(): number {
@@ -92,10 +118,10 @@ export class AudioStreamRegistry {
 }
 
 /**
- * The rate bound of one stream: a token bucket in bytes of sound. It holds
- * `audioBurstSeconds` of real-time sound, starts full, and refills at
- * `audioRealTimeFactor` times real time. `now` is a monotonic clock in
- * milliseconds; tests inject their own.
+ * The rate bound of one device's audio: a token bucket in bytes of sound. It
+ * holds `audioBurstSeconds` of real-time sound, starts full, and refills at
+ * `audioRealTimeFactor` times real time. A message costs its size, but at
+ * least `minimumAudioPieceBytes`. `now` is a monotonic clock in milliseconds.
  */
 export class AudioRate {
   private readonly capacityBytes = audioBytesPerSecond * audioBurstSeconds;
@@ -107,8 +133,9 @@ export class AudioRate {
     this.updatedAt = now();
   }
 
-  /** Take `bytes`; false (taking nothing) when the stream is over its rate. */
+  /** Take one message of `bytes`; false (taking nothing) when it is over the rate. */
   take(bytes: number): boolean {
+    const cost = Math.max(bytes, minimumAudioPieceBytes);
     const now = this.now();
     // A clock that goes back must not drain the bucket.
     const elapsed = Math.max(0, now - this.updatedAt);
@@ -118,10 +145,10 @@ export class AudioRate {
     );
     this.updatedAt = now;
 
-    if (bytes > this.tokens) {
+    if (cost > this.tokens) {
       return false;
     }
-    this.tokens -= bytes;
+    this.tokens -= cost;
     return true;
   }
 }

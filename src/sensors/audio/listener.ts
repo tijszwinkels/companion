@@ -5,7 +5,7 @@ import { audioFrames } from './capture.ts';
 import { FRAME_SAMPLES, SAMPLE_RATE, Segmenter, type Segment } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
 import { CaptureDiagnostics } from './capture-diagnostics.ts';
-import { notAdmitted } from '../../capture-storage/policy.ts';
+import { notAdmitted, type CaptureAdmission } from '../../capture-storage/policy.ts';
 
 /**
  * The fastest rate, in samples per millisecond, at which the microphone
@@ -40,6 +40,12 @@ export interface ListenOptions {
   handoff?: AbortSignal;
   /** The microphone this period listens to; `computerMicrophone` by default. */
   microphone?: string;
+  /**
+   * A browser stream's capture-storage admission, taken when the stream was
+   * accepted (before any of its sound was queued). Without it, a `source`
+   * period takes its admission when the period starts.
+   */
+  captureAdmission?: CaptureAdmission;
 }
 
 /**
@@ -101,8 +107,10 @@ export async function listen(
   // the stream's period started. A stream begun while storage was off stays
   // unsaved; turning storage off revokes the admission as for any capture.
   const recorderStarted = activity.captureClock?.() ?? 0;
-  const replayAdmission =
-    options.file || options.source ? (activity.admitCapture?.() ?? notAdmitted) : undefined;
+  let replayAdmission: CaptureAdmission | undefined = options.captureAdmission;
+  if (!replayAdmission && (options.file || options.source)) {
+    replayAdmission = activity.admitCapture?.() ?? notAdmitted;
+  }
   let received = 0;
   const capturedFrom = (segment: Segment) => {
     const firstSample = Math.max(0, received - segment.samples.length - FRAME_SAMPLES);
@@ -188,6 +196,12 @@ export async function listen(
       const wasCollecting = segmenter.collecting;
       const probability = await vad.probability(frame);
       signal.throwIfAborted();
+      // The period may have ended while this frame was in the voice
+      // detector (a hand-over, the computer switched off, a browser stream
+      // ended). Its candidate was still open then: nothing more is decided.
+      if (handoff?.aborted) {
+        break;
+      }
       captureDiagnostics.push(frame, probability);
       const segment = segmenter.push(probability, frame);
 

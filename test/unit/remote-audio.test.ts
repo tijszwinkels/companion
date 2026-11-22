@@ -22,7 +22,11 @@ import test from 'node:test';
 
 import { microphonesFixture, pieces, utterance } from '../microphones-fixture.ts';
 import { connectPhone, remoteFixture, waitFor, type PhoneClient } from '../remote-fixture.ts';
-import { audioBytesPerSecond, maximumAudioChunkBytes } from '../../src/remote/protocol.ts';
+import {
+  audioBytesPerSecond,
+  maximumAudioChunkBytes,
+  minimumAudioPieceBytes,
+} from '../../src/remote/protocol.ts';
 
 type Json = Record<string, any>;
 
@@ -322,7 +326,13 @@ test('text requests during a stream work as always, including the computer micro
     phone.socket.send(Buffer.alloc(3200));
     const off = await gateway.request(phone, { action: 'set-computer-microphone', enabled: false });
     assert.equal(off.result, 'computer-microphone-off');
-    const state = await phone.engine('state', (message) => message.microphones?.computer === false);
+    // The switch is off at once; the computer leaves `listening` when its
+    // period has actually ended.
+    const state = await phone.engine(
+      'state',
+      (message) =>
+        message.microphones?.computer === false && message.microphones.listening.length === 1,
+    );
     assert.deepEqual(
       state.microphones.listening.map((entry: Json) => entry.id),
       [streamId],
@@ -470,6 +480,120 @@ test('a listener that stops reading ends the stream as slow-listener', async () 
     )!;
     assert.equal(endedMessage.reason, 'slow-listener');
     assert.equal(phone.socket.readyState, phone.socket.OPEN);
+  } finally {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await fixture.close();
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restarting a stream does not refill the device's audio budget", async () => {
+  const gateway = await setup();
+  try {
+    const phone = await gateway.device('Phone');
+    await gateway.listen(phone);
+    for (let sent = 0; sent < audioBytesPerSecond * 2; sent += 8000) {
+      phone.socket.send(Buffer.alloc(8000));
+    }
+    await gateway.handled(phone);
+    assert.deepEqual(gateway.ended(phone), []);
+    await gateway.request(phone, { action: 'audio-stop' });
+
+    // A new stream, at the same moment, from the same device: no budget left.
+    const streamId = await gateway.listen(phone);
+    phone.socket.send(Buffer.alloc(2));
+    await waitFor(() => gateway.ended(phone).length === 1);
+    assert.deepEqual(
+      [gateway.ended(phone)[0].streamId, gateway.ended(phone)[0].reason],
+      [streamId, 'too-fast'],
+    );
+  } finally {
+    await gateway.close();
+  }
+});
+
+test('every piece costs at least 20 ms of sound: tiny pieces cannot multiply the work', async () => {
+  const gateway = await setup();
+  try {
+    const phone = await gateway.device('Phone');
+    await gateway.listen(phone);
+    const allowed = (audioBytesPerSecond * 2) / minimumAudioPieceBytes;
+    for (let index = 0; index < allowed; index++) {
+      phone.socket.send(Buffer.alloc(2));
+    }
+    await gateway.handled(phone);
+    assert.deepEqual(gateway.ended(phone), [], `${allowed} tiny pieces fit the burst`);
+    phone.socket.send(Buffer.alloc(2));
+    await waitFor(() => gateway.ended(phone).length === 1);
+    assert.equal(gateway.ended(phone)[0].reason, 'too-fast');
+  } finally {
+    await gateway.close();
+  }
+});
+
+test('a stream the listener ended before answering its start is reported ended, not open', async () => {
+  // A fake listener that, like a Pause in the same moment, sends the end of
+  // the new stream before the answer to its start.
+  const directory = await mkdtemp(join(tmpdir(), 'companion-early-end-'));
+  const socketPath = join(directory, 'control.sock');
+  const sockets: Socket[] = [];
+  const received: Json[] = [];
+  const server = createServer((socket) => {
+    sockets.push(socket);
+    socket.setEncoding('utf8');
+    let buffered = '';
+    socket.on('data', (chunk: string) => {
+      buffered += chunk;
+      let newline: number;
+      while ((newline = buffered.indexOf('\n')) >= 0) {
+        const request = JSON.parse(buffered.slice(0, newline));
+        buffered = buffered.slice(newline + 1);
+        received.push(request);
+        const reply = (value: Json) => socket.write(JSON.stringify(value) + '\n');
+        if (request.action === 'client-role') {
+          reply({ type: 'result', requestId: request.requestId, result: 'role-recorded' });
+          reply({
+            type: 'state',
+            paused: false,
+            microphones: { computer: true, listening: [], streams: true },
+          });
+        }
+        if (request.action === 'audio-start') {
+          const streamId = randomUUID();
+          reply({ type: 'audio-ended', streamId, reason: 'paused' });
+          reply({ type: 'result', requestId: request.requestId, result: { streamId } });
+        }
+      }
+    });
+  });
+  server.listen(socketPath);
+  await once(server, 'listening');
+
+  const fixture = await remoteFixture({ gateway: { controlSocket: socketPath } });
+  try {
+    const { token } = await fixture.pair('Phone');
+    const phone = await fixture.phone(token, fixture.origin, true);
+    await phone.engine('state');
+    phone.send({ requestId: 'start', action: 'audio-start' });
+    const started = (await phone.reply('start')) as Json;
+    assert.equal(started.type, 'result');
+    await waitFor(() =>
+      (phone.messages as Json[]).some((message) => message.type === 'audio-ended'),
+    );
+    const ended = (phone.messages as Json[]).find((message) => message.type === 'audio-ended')!;
+    assert.deepEqual([ended.streamId, ended.reason], [started.result.streamId, 'paused']);
+
+    // Nothing is open: binary is refused again and reaches nothing.
+    phone.socket.send(Buffer.alloc(3200));
+    await waitFor(() =>
+      (phone.messages as Json[]).some(
+        (message) => message.type === 'error' && message.message === 'Expected a text message',
+      ),
+    );
+    assert.equal(received.filter((request) => request.action === 'audio-chunk').length, 0);
   } finally {
     for (const socket of sockets) {
       socket.destroy();

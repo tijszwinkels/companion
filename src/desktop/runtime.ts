@@ -1145,7 +1145,10 @@ export class DesktopRuntime {
 
     const listening: MicrophonesState['listening'] = [];
     if (!this.pause.paused) {
-      if (microphones.computer.enabled) {
+      // Listed only while its ordinary listening period actually runs: not
+      // while switched off, between a lost recorder and its retry, or while
+      // Record has the microphone.
+      if (microphones.computer.listening) {
         listening.push({ ...computerMicrophoneEntry });
       }
       for (const browser of microphones.browsers.list) {
@@ -1861,6 +1864,7 @@ export class DesktopRuntime {
       try {
         await this.history.retireSuperseded(entry.id);
         this.history.releaseRetirement(entry.id);
+        this.entryMicrophones.delete(entry.id);
         this.log('retired', `Superseded attempt ${entry.id}; its continuation keeps the utterance`);
         this.server.publish({
           type: 'history-deleted',
@@ -2458,6 +2462,7 @@ export class DesktopRuntime {
         return 'preview';
       }
       await this.history.delete(request.id);
+      this.entryMicrophones.delete(request.id);
       const removed = this.activityHistory.remove(request.id);
       this.server.publish({
         type: 'history-deleted',

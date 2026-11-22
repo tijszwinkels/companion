@@ -17,9 +17,10 @@ import { SAMPLE_RATE } from './segmenter.ts';
  *         without gaps or padding between pieces.
  *
  * Bound: pieces wait here only while the period's voice detector is behind.
- * If more than `maximumQueuedMs` of sound waits, `push` refuses the piece
- * and returns false; the owner ends the stream (the listener is too slow).
- * Sound is never dropped silently inside a stream.
+ * If more than `maximumQueuedMs` of sound waits, or more pieces than one per
+ * 20 ms of that (tiny pieces cost memory beyond their sound), `push` refuses
+ * the piece and returns false; the owner ends the stream (the listener is
+ * too slow). Sound is never dropped silently inside a stream.
  *
  * Ending: the frames end only when `signal` aborts (the stream ended, pause
  * or shutdown); the iterator then throws the abort reason, as the computer's
@@ -35,9 +36,12 @@ export class NetworkAudioSource {
 
   /** Most bytes that may wait: `maximumQueuedMs` of 16-bit samples. */
   private readonly maximumQueuedBytes: number;
+  /** Most pieces that may wait: one per 20 ms of `maximumQueuedMs`. */
+  private readonly maximumQueuedPieces: number;
 
   constructor(maximumQueuedMs: number) {
     this.maximumQueuedBytes = Math.round((SAMPLE_RATE * 2 * maximumQueuedMs) / 1000);
+    this.maximumQueuedPieces = Math.max(1, Math.floor(maximumQueuedMs / 20));
   }
 
   /** Sound waiting for the voice detector, in milliseconds. */
@@ -50,7 +54,10 @@ export class NetworkAudioSource {
    * would make more than the bound wait: the caller ends the stream.
    */
   push(bytes: Buffer): boolean {
-    if (this.queuedBytes + bytes.length > this.maximumQueuedBytes) {
+    if (
+      this.queuedBytes + bytes.length > this.maximumQueuedBytes ||
+      this.queue.length >= this.maximumQueuedPieces
+    ) {
       return false;
     }
 

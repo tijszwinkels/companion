@@ -103,7 +103,18 @@ export interface Dispatch {
   utterance: string;
 }
 
-export function microphonesFixture(runtime: DesktopRuntime, pause: PauseControl) {
+export interface MicrophonesFixtureOptions {
+  /** Longest gap between a stream's pieces before it ends as `stalled`. */
+  maximumGapMs?: number;
+  /** Browser voice detectors finish loading only once this settles. */
+  detectorsLoaded?: Promise<void>;
+}
+
+export function microphonesFixture(
+  runtime: DesktopRuntime,
+  pause: PauseControl,
+  options: MicrophonesFixtureOptions = {},
+) {
   const controller = new AbortController();
   const dispatched: Dispatch[] = [];
   const detectors: LevelDetector[] = [];
@@ -138,6 +149,7 @@ export function microphonesFixture(runtime: DesktopRuntime, pause: PauseControl)
   );
 
   const createDetector = async () => {
+    await options.detectorsLoaded;
     const detector = new LevelDetector();
     detectors.push(detector);
     return detector as unknown as VoiceActivityDetector;
@@ -154,6 +166,7 @@ export function microphonesFixture(runtime: DesktopRuntime, pause: PauseControl)
     activity,
     speech,
     log,
+    maximumGapMs: options.maximumGapMs,
   });
   runtime.connectMicrophones({ computer, browsers });
 

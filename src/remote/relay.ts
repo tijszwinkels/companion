@@ -38,7 +38,7 @@ import {
   type GatewayMessage,
   type RemoteRequest,
 } from './protocol.ts';
-import { AudioRate, type AudioStreamHolder, type AudioStreamRegistry } from './audio-streams.ts';
+import type { AudioRate, AudioStreamHolder, AudioStreamRegistry } from './audio-streams.ts';
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
 import { PhoneOutput } from './outbound.ts';
 import { draftEditBurst } from './request-rate.ts';
@@ -107,6 +107,7 @@ const audioEndMessages: Record<AudioEndReason, string> = {
   'too-fast': 'Sound arrived faster than real time allows',
   'slow-listener': 'Companion did not keep up with the sound',
   paused: 'Listening is paused',
+  stalled: 'No sound arrived from this browser for three seconds',
   slow: 'Companion did not keep up with the sound',
   failed: 'Listening here failed on the computer',
   shutdown: 'Companion is stopping',
@@ -116,6 +117,7 @@ const audioEndMessages: Record<AudioEndReason, string> = {
 /** Reasons the listener may give in its `audio-ended` event (src/desktop/runtime.ts). */
 const listenerAudioEndReasons = new Set<AudioEndReason>([
   'paused',
+  'stalled',
   'slow',
   'failed',
   'shutdown',
@@ -126,12 +128,13 @@ const streamIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 
 /**
  * This connection's audio stream: none; starting (its `audio-start` waits
- * for the listener; `token` tells a stale answer from the current one); or
- * open, with the listener's stream ID and the stream's rate bound.
+ * for the listener; `token` tells a stale answer from the current one, and
+ * `ended` keeps an `audio-ended` event the listener sent before its answer);
+ * or open, with the listener's stream ID and the device's rate budget.
  */
 type AudioState =
   | { phase: 'none' }
-  | { phase: 'starting'; token: number }
+  | { phase: 'starting'; token: number; ended?: { streamId: string; reason: AudioEndReason } }
   | { phase: 'open'; streamId: string; rate: AudioRate };
 
 /** Listener lines larger than this are refused (a full snapshot is far below). */
@@ -181,8 +184,6 @@ export interface RelayOptions {
    * total. Without it this connection is never offered an audio stream.
    */
   audioStreams?: AudioStreamRegistry;
-  /** Monotonic clock for the audio rate bound, in milliseconds; tests inject their own. */
-  audioClock?: () => number;
   /** The gateway retains draining relays until their upstream is really closed. */
   onClosed(): void;
   log(message: string): void;
@@ -236,6 +237,12 @@ export class Relay {
   private audioAvailable = false;
   private audio: AudioState = { phase: 'none' };
   private audioStarts = 0;
+  /**
+   * Starts abandoned while their answer was still on its way (the client
+   * stopped, or another connection of the device took over), by token, with
+   * the reason the client is given when the answer arrives.
+   */
+  private readonly abandonedStarts = new Map<number, AudioEndReason | undefined>();
   /** This relay as the registry sees it; taken over by another connection of the device. */
   private readonly audioHolder: AudioStreamHolder = {
     takenOver: () => this.endAudio('taken-over'),
@@ -672,6 +679,8 @@ export class Relay {
     if (!current) {
       // Stopped or taken over while starting: the listener's new stream
       // must not stay open with nobody sending to it.
+      const reason = this.abandonedStarts.get(token);
+      this.abandonedStarts.delete(token);
       if (streamId) {
         this.writeUpstream({ action: 'audio-stop', streamId, requestId: audioStopRequestId });
       }
@@ -679,7 +688,7 @@ export class Relay {
         type: 'error',
         requestId,
         action: 'audio-start',
-        message: 'The audio stream ended before it started',
+        message: reason ? audioEndMessages[reason] : 'The audio stream ended before it started',
       });
       return;
     }
@@ -693,7 +702,20 @@ export class Relay {
       return;
     }
 
-    this.audio = { phase: 'open', streamId, rate: new AudioRate(this.options.audioClock) };
+    // The listener may already have ended this stream (for example Pause in
+    // the same moment) and said so before its answer: report both, in order,
+    // and keep nothing open.
+    const endedEarly = this.audio.phase === 'starting' ? this.audio.ended : undefined;
+    if (endedEarly && endedEarly.streamId === streamId) {
+      this.audio = { phase: 'none' };
+      this.options.audioStreams?.release(this.audioHolder);
+      this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
+      this.sendAudioEnded(streamId, endedEarly.reason);
+      return;
+    }
+
+    const rate = this.options.audioStreams!.rate(this.options.deviceId);
+    this.audio = { phase: 'open', streamId, rate };
     this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
   }
 
@@ -746,7 +768,9 @@ export class Relay {
     this.audio = { phase: 'none' };
     this.options.audioStreams?.release(this.audioHolder);
 
-    if (audio.phase !== 'open') {
+    if (audio.phase === 'starting') {
+      // Its answer will stop the listener's stream (audioStartAnswered).
+      this.abandonedStarts.set(audio.token, reason);
       return;
     }
 
@@ -763,6 +787,16 @@ export class Relay {
   /** The listener ended this connection's stream (`audio-ended` event). */
   private listenerEndedAudio(message: Record<string, unknown>): void {
     const audio = this.audio;
+    const reason = listenerAudioEndReasons.has(message.reason as AudioEndReason)
+      ? (message.reason as AudioEndReason)
+      : 'failed';
+
+    if (audio.phase === 'starting' && typeof message.streamId === 'string') {
+      // Before the answer to this connection's start: it may be about the
+      // stream that answer will name (audioStartAnswered decides).
+      audio.ended = { streamId: message.streamId, reason };
+      return;
+    }
     if (audio.phase !== 'open' || message.streamId !== audio.streamId) {
       // An earlier stream of this connection; already ended here.
       return;
@@ -770,9 +804,6 @@ export class Relay {
 
     this.audio = { phase: 'none' };
     this.options.audioStreams?.release(this.audioHolder);
-    const reason = listenerAudioEndReasons.has(message.reason as AudioEndReason)
-      ? (message.reason as AudioEndReason)
-      : 'failed';
     this.sendAudioEnded(audio.streamId, reason);
   }
 

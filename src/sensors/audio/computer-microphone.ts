@@ -17,15 +17,34 @@ import { EventEmitter } from 'node:events';
  * computer's microphone while the switch is off: Record is an explicit
  * request for that microphone.
  *
- * Events: `change` after every change of `enabled`.
+ * `listening` says whether an ordinary listening period of the computer's
+ * microphone runs right now (set by `listenWhileSwitchedOn`): false while
+ * switched off, while paused, between a lost recorder and its retry, and
+ * while Record has the microphone.
+ *
+ * Events: `change` after every change of `enabled` or `listening`.
  */
 export class ComputerMicrophoneSwitch extends EventEmitter {
   private switchedOn = true;
+  private periodRunning = false;
   // Aborted when the switch turns off; replaced when it turns on again.
   private controller = new AbortController();
 
   get enabled(): boolean {
     return this.switchedOn;
+  }
+
+  /** An ordinary listening period of the computer's microphone runs now. */
+  get listening(): boolean {
+    return this.periodRunning;
+  }
+
+  /** Set by `listenWhileSwitchedOn` around each period. */
+  setListening(listening: boolean): void {
+    if (listening !== this.periodRunning) {
+      this.periodRunning = listening;
+      this.emit('change');
+    }
   }
 
   /** Aborts when the switch turns off; a fresh signal after it turned on again. */
@@ -131,7 +150,12 @@ export async function listenWhileSwitchedOn(
     const switchedOff = microphoneSwitch.offSignal;
     const periodEnd = handoff ? AbortSignal.any([handoff, switchedOff]) : switchedOff;
 
-    await listenOnce(periodEnd);
+    microphoneSwitch.setListening(true);
+    try {
+      await listenOnce(periodEnd);
+    } finally {
+      microphoneSwitch.setListening(false);
+    }
 
     // Ended for Record, or the recorder ended by itself (lost capture): the
     // loop decides, exactly as without the switch.

@@ -306,7 +306,7 @@ export class Gateway {
   /** Draft edits have their own per-device bucket (see request-rate.ts). */
   private readonly draftEditRate = new DeviceRequestRate(undefined, draftEditRateLimit);
   /** Listening browsers' audio streams: one per device, four in total (audio-streams.ts). */
-  private readonly audioStreams = new AudioStreamRegistry();
+  private readonly audioStreams: AudioStreamRegistry;
   /** Every relay that still holds a listener connection, with its device ID. */
   private readonly relays = new Map<Relay, string>();
   private readonly screenshots = new Map<string, Set<string>>();
@@ -325,6 +325,7 @@ export class Gateway {
   constructor(private readonly options: GatewayOptions) {
     checkGatewayOptions(options);
     this.devices = new DeviceStore(options.stateDirectory);
+    this.audioStreams = new AudioStreamRegistry(options.audioClock);
     this.allowedHosts = new Set(options.origins.map((origin) => new URL(origin).host));
 
     if (options.apps) {
@@ -1101,13 +1102,13 @@ export class Gateway {
       frames,
       deviceName: device.name,
       audioStreams: this.audioStreams,
-      audioClock: this.options.audioClock,
       onClosed: () => {
         this.relays.delete(relay);
         // The rate buckets live as long as one of the device's connections.
         if (!this.deviceConnected(device.id)) {
           this.requestRate.forget(device.id);
           this.draftEditRate.forget(device.id);
+          this.audioStreams.forget(device.id);
         }
       },
       log: this.options.log,

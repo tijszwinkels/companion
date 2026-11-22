@@ -450,16 +450,17 @@ export class DesktopServer {
           action === 'close-agent' ||
           action === 'client-role' ||
           action === 'start-agent' ||
-          // A listening browser's stream and the computer's microphone
-          // switch are listening controls, like Pause.
+          // Opening a listening browser's stream and the computer's
+          // microphone switch are listening controls, like Pause.
           action === 'audio-start' ||
-          action === 'audio-stop' ||
           action === 'set-computer-microphone';
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
         // Panel reports, visibility withdrawals, refused-report notices
-        // (`report-refused`), draft edits and audio pieces (`audio-chunk`) are the exception: their handlers never wait, so each finishes in the
+        // (`report-refused`), draft edits, audio pieces (`audio-chunk`) and
+        // the end of a stream (`audio-stop`, which must never be refused:
+        // the gateway has already freed its place) are the exception: their handlers never wait, so each finishes in the
         // microtask right after this read (in arrival order, like every
         // request), and they neither need nor take a slot. A report therefore
         // never makes a following request in the same read look busy, the
@@ -471,7 +472,8 @@ export class DesktopServer {
           action === 'withdraw-visibility' ||
           action === 'report-refused' ||
           action === 'draft-set' ||
-          action === 'audio-chunk';
+          action === 'audio-chunk' ||
+          action === 'audio-stop';
         if (!neverWaits && ((control && controlsInFlight >= 16) || (!control && handling))) {
           this.send(connection, {
             type: 'error',

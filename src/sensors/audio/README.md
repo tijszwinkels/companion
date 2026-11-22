@@ -47,18 +47,34 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
 5. **A browser stream that ends simply ends its period**, whatever the
    reason: stopped by its page, replaced by a newer stream of the same
    connection, its connection closed (page closed, revocation, lost
-   gateway), its queue full, its period failed, or shutdown. The open
-   candidate is discarded; accepted utterances continue (only pause and
-   shutdown cancel them). Ending one microphone's period never touches
-   another microphone's candidate, hold or queue position.
-6. **Limits on the listener's side** (the gateway enforces its own first):
-   one stream per control connection (a second `audio-start` on it replaces
-   the first), four streams in all, pieces of 2–8192 bytes of whole 16-bit
-   samples, at most 5 seconds of sound waiting for a stream's voice detector
-   (beyond that the stream ends as `slow`; sound is never dropped silently
-   inside a stream).
+   gateway), its queue full, no sound for three seconds (`stalled`: a
+   phone's capture stopped while its page stays connected), its period
+   failed, or shutdown. The open candidate is discarded, also when the
+   frame that would close it was still in the voice detector (the same now
+   holds for Record's hand-over and for the computer's switch; before, a
+   frame already in the detector at the hand-over could still close and
+   submit its candidate); accepted
+   utterances continue (only pause and shutdown cancel them). Ending one
+   microphone's period never touches another microphone's candidate, hold or
+   queue position. The three-second bound matters because one queue serves
+   every microphone: an open candidate holds its microphone's attempt, and a
+   stream that stopped sending would otherwise hold it, and everything queued
+   behind it, forever.
+6. **Limits on the listener's side** (the gateway enforces its own first,
+   four streams): one stream per control connection (a second `audio-start`
+   on it replaces the first); at most eight listening periods, counting
+   those of ended streams whose voice detector is still loading or closing
+   (so restarts never pile up detectors, and a takeover's new start never
+   meets the old stream's stop still on its way); pieces of 2–8192 bytes of
+   whole 16-bit samples; at most 5 seconds of sound, and one piece per 20 ms
+   of that, waiting for a stream's voice detector (beyond that the stream
+   ends as `slow`; sound is never dropped silently inside a stream).
 7. **With the computer's microphone off and no browser listening, Companion
    hears nothing** and says so: the state's `microphones.listening` is empty.
+   The computer is listed there only while its ordinary listening period
+   actually runs: not while switched off, between a lost recorder and its
+   retry, or while Record has the microphone. `microphones.computer` is the
+   switch itself.
 8. **"Hearing speech"** (`speaking`) is on while any microphone hears speech.
    With one microphone it is exactly that microphone's state, as before.
 9. **The listener restarts**: every stream ends with its connection; the
@@ -91,7 +107,10 @@ kept per microphone; everything else stays one queue.
 7. A continuation replaces its attempt at its queue position, or runs next
    if the attempt is already being processed. With several microphones,
    another microphone's later utterances wait behind it.
-8. **With one microphone the behavior is exactly what it was**: the existing
+8. A microphone forgets its newest attempt once that attempt has settled
+   (it can no longer be continued), so an ended stream keeps no audio or
+   screenshot in memory.
+9. **With one microphone the behavior is exactly what it was**: the existing
    pipeline, continuation and listener tests run unchanged, and
    `test/unit/pipeline-one-microphone-reference.test.ts` compares twelve
    scripted sessions with a trace recorded on the base revision.
@@ -102,8 +121,9 @@ Stored audio follows the existing capture-storage switch
 ([guide](../../../docs/capture-storage.md)), with one rule for streams: a
 browser's sound may have been captured and buffered in the browser before it
 arrives, and no recorder clock bounds that on the computer. So a stream is
-admitted like a file replay: once, when its period starts. A stream begun
-while storage was off stays unsaved (turning storage on applies from the
+admitted like a file replay: once, when the listener accepts its
+`audio-start`, before any of its sound is queued. A stream begun while
+storage was off stays unsaved (turning storage on applies from the
 browser's next stream, for example after Pause and Resume); turning storage
 off revokes the admission at once, as for every capture. Nothing else is
 stored for a stream: no raw stream, only the same per-utterance WAV and

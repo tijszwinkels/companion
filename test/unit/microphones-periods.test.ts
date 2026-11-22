@@ -4,7 +4,14 @@ import { createConnection, type Socket } from 'node:net';
 import test from 'node:test';
 
 import { desktopFixture, waitFor } from '../desktop-fixture.ts';
-import { microphonesFixture, pieces, utterance } from '../microphones-fixture.ts';
+import {
+  microphonesFixture,
+  pieces,
+  utterance,
+  type MicrophonesFixtureOptions,
+} from '../microphones-fixture.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
+import { deferred } from '../helpers.ts';
 import { ComputerMicrophoneSwitch } from '../../src/sensors/audio/computer-microphone.ts';
 
 /**
@@ -88,11 +95,17 @@ class ControlClient {
 }
 
 /** A listener with microphones, a desktop observer and helpers to speak. */
-async function setup() {
-  const desktop = await desktopFixture(async () => {
-    throw Error('No desktop command expected');
-  });
-  const microphones = microphonesFixture(desktop.runtime, desktop.pause);
+async function setup(
+  options: MicrophonesFixtureOptions & { captureStorage?: CaptureStoragePolicy } = {},
+) {
+  const desktop = await desktopFixture(
+    async () => {
+      throw Error('No desktop command expected');
+    },
+    undefined,
+    { captureStorage: options.captureStorage },
+  );
+  const microphones = microphonesFixture(desktop.runtime, desktop.pause, options);
   const observer = await ControlClient.connect(desktop.socketPath, false);
   const clients: ControlClient[] = [observer];
 
@@ -377,15 +390,17 @@ test('the listener restarts: every stream and detector ends, and the computer sw
   assert.equal(new ComputerMicrophoneSwitch().enabled, true, 'The switch is not stored');
 });
 
-test('limits: four streams, whole samples of at most 8 KiB, a stream per remote connection only', async () => {
+test('limits: eight periods, whole samples of at most 8 KiB, a stream per remote connection only', async () => {
   const listener = await setup();
   try {
     const streams = [];
-    for (const name of ['One', 'Two', 'Three', 'Four']) {
+    // The gateway allows four streams; the listener's own bound is eight
+    // periods, so a takeover's start never meets a stop still on its way.
+    for (const name of ['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight']) {
       streams.push(await listener.browser(name));
     }
     const fifth = await ControlClient.connect(listener.desktop.socketPath, true);
-    const refused = await fifth.request({ action: 'audio-start', deviceName: 'Five' });
+    const refused = await fifth.request({ action: 'audio-start', deviceName: 'Nine' });
     assert.equal(refused.type, 'error');
     assert.match(refused.message, /Too many/);
 
@@ -427,7 +442,7 @@ test('limits: four streams, whole samples of at most 8 KiB, a stream per remote 
       false,
       'The piece at the bound is accepted without an answer',
     );
-    assert.equal(listener.listening().length, 5);
+    assert.equal(listener.listening().length, 9);
     assert.equal(one.ended().length, 0);
   } finally {
     await listener.close();
@@ -469,6 +484,63 @@ test('"hearing speech" is on while any microphone hears speech', async () => {
 
     phone.client.send(utterance(0.5, 160, 480));
     await waitFor(() => listener.observer.state.speaking === false);
+  } finally {
+    await listener.close();
+  }
+});
+
+test('a stream begun with storage off stays unsaved, even if storage turns on before its detector is ready', async () => {
+  const captureStorage = new CaptureStoragePolicy();
+  const loaded = deferred<void>();
+  const listener = await setup({ captureStorage, detectorsLoaded: loaded.promise });
+  try {
+    const phone = await listener.browser('Phone');
+    phone.client.send(utterance(0.5));
+    await captureStorage.setEnabled(true);
+    loaded.resolve();
+    await listener.waitForDispatches(1);
+    await waitFor(() => listener.entries().length === 1);
+
+    // A stream started now, with storage on, is saved.
+    await phone.client.request({ action: 'audio-stop' });
+    const again = await phone.client.request({ action: 'audio-start', deviceName: 'Phone' });
+    assert.equal(again.type, 'result');
+    phone.client.send(utterance(0.6));
+    await listener.waitForDispatches(2);
+    await waitFor(() => listener.entries().length === 2);
+
+    const rows = listener.desktop.database
+      .prepare('SELECT transcript, capture_storage, audio_saved FROM utterances ORDER BY rowid')
+      .all();
+    assert.deepEqual(
+      rows.map((row) => [row.transcript, row.capture_storage, row.audio_saved]),
+      [
+        ['w5', 'off', 0],
+        ['w6', 'on', 1],
+      ],
+    );
+  } finally {
+    await listener.close();
+  }
+});
+
+test("a stalled stream ends, so its held attempt cannot block the other microphones' speech", async () => {
+  const listener = await setup({ maximumGapMs: 300 });
+  try {
+    const phone = await listener.browser('Phone');
+    // A whole utterance, then speech that resumes (holding it) and stops
+    // arriving: the phone's capture stopped while its page stays connected.
+    phone.client.send(Buffer.concat([utterance(0.5), utterance(0.5, 320, 0)]));
+    await waitFor(() => listener.microphones.logs.some((log) => log.stage === 'utterance'));
+    listener.microphones.sayOnComputer(utterance(0.3));
+
+    await waitFor(() => phone.client.ended().length === 1);
+    assert.equal(phone.client.ended()[0].reason, 'stalled');
+    await listener.waitForDispatches(2);
+    assert.deepEqual(
+      listener.microphones.dispatched.map((dispatch) => dispatch.utterance),
+      ['w5', 'w3'],
+    );
   } finally {
     await listener.close();
   }

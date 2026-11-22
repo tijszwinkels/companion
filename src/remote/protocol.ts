@@ -74,7 +74,10 @@ export const maximumConnectionsPerDevice = 4;
  *   that starts one takes it over).
  * - `audioRealTimeFactor`: sound may arrive at most this much faster than
  *   real time, on average, with up to `audioBurstSeconds` of sound at once
- *   (a short network stall delivers what it held back together).
+ *   (a short network stall delivers what it held back together). The
+ *   budget belongs to the device, so restarting a stream does not refill
+ *   it, and every message costs at least `minimumAudioPieceBytes` (20 ms),
+ *   so tiny messages cannot multiply the work per second of sound.
  *
  * Audio is counted apart from the request rate limit. A violation ends the
  * stream, not the connection.
@@ -84,6 +87,7 @@ export const maximumAudioStreams = 4;
 export const audioBytesPerSecond = 32_000;
 export const audioRealTimeFactor = 1.5;
 export const audioBurstSeconds = 2;
+export const minimumAudioPieceBytes = 640;
 
 /**
  * Why the gateway ended a connection's audio stream without the client
@@ -96,6 +100,8 @@ export const audioBurstSeconds = 2;
  * - `slow-listener`: the listener did not keep up with the sound;
  * - `paused`: listening was paused; open a new stream once the state says
  *   listening again;
+ * - `stalled`: no sound arrived for three seconds (the browser's capture
+ *   stopped, for example a locked phone);
  * - `slow`, `failed`, `shutdown`, `replaced`: the listener ended it (its
  *   own queue was full, its listening period failed, it is stopping, or
  *   this connection's newer stream replaced it).
@@ -106,6 +112,7 @@ export type AudioEndReason =
   | 'too-fast'
   | 'slow-listener'
   | 'paused'
+  | 'stalled'
   | 'slow'
   | 'failed'
   | 'shutdown'
