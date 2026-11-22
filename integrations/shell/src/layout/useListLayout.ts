@@ -37,6 +37,8 @@ export interface ListLayoutView {
   shown: boolean;
   /** The width it is shown at now, in CSS pixels. */
   width: number;
+  /** The preferred width (what the window allows is `width`). */
+  preference: number;
   /** Its appearance at that width. */
   appearance: ListAppearance;
   /** The widest width this window allows now (for the divider's range). */
@@ -65,11 +67,12 @@ function windowWidth(): number {
 
 /**
  * `reservedFor` gives the width something beside the list and the chat
- * takes from the window (the Activity column in a wide window), for
- * whether the list is shown; the list's width rules apply to what remains.
+ * takes from the window (the right column in a wide window), for whether
+ * the list is shown and its preferred width; the list's width rules apply
+ * to what remains.
  */
 export function useListLayout(
-  reservedFor: (listShown: boolean) => number = () => 0,
+  reservedFor: (listShown: boolean, listPreference: number) => number = () => 0,
 ): ListLayoutView {
   const [layout, setLayout] = useState<ListLayout>(() => {
     const storage = pageStorage();
@@ -148,12 +151,13 @@ export function useListLayout(
     }
   }
 
-  const roomWidth = width - reservedFor(layout.listShown);
+  const roomWidth = width - reservedFor(layout.listShown, layout.listWidth);
   const shownWidth = shownListWidth(layout.listWidth, roomWidth);
 
   return {
     shown: layout.listShown,
     width: shownWidth,
+    preference: layout.listWidth,
     appearance: appearanceOf(shownWidth),
     widest: widestShownListWidth(roomWidth),
     setWidth(listWidth, remember) {

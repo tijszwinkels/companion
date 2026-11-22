@@ -1,6 +1,6 @@
 # Companion browser shell
 
-Status: fifth slice, with inline widgets (2026-11). The desktop chat page in an ordinary browser,
+Status: fifth slice, with inline and pinned widgets (2026-11). The desktop chat page in an ordinary browser,
 against the existing remote gateway, with the conversation list on its left
 and the Activity column on its right.
 The goal of the larger project is the whole sidebar in a browser, so the
@@ -36,10 +36,12 @@ A paired browser can:
    screenshot over the page, and see and change the conversation's model
    (see [Tool details, screenshots and the model picker](#tool-details-screenshots-and-the-model-picker)).
 10. show an agent's **inline widgets** in the chat and use them, when the
-    gateway has a frame origin (see [Inline widgets](#inline-widgets)).
+    gateway has a frame origin (see [Inline widgets](#inline-widgets));
+11. show a conversation's **pinned widget** above the chat or at the right,
+    and pin and unpin widgets (see [Pinned widgets](#pinned-widgets)).
 
 Not yet in the browser: Activity history of earlier listener runs, inserting
-text into desktop applications, pinned widgets and session applications.
+text into desktop applications and session applications.
 
 ## Conversation list and layout
 
@@ -1321,9 +1323,9 @@ gateway serves each widget's page to a paired browser on its own origin, the
 **frame origin**, and sends the browser that page's address as
 `widget.frameUrl` (`<frame origin>/f/<handle>/`) when it is configured with
 one ([gateway README](../../src/remote/README.md#widget-and-application-frames));
-without it the browser receives no address. Pinned widgets, session
-applications, permission controls and a Settings → Widgets page are not part
-of this step. The phone panel (`integrations/mobile`) keeps its placeholder
+without it the browser receives no address. Pinned widgets are described in
+[their own section](#pinned-widgets); session applications, permission
+controls and a Settings → Widgets page are not part of these steps. The phone panel (`integrations/mobile`) keeps its placeholder
 card.
 
 A message with a widget is drawn by the shell's own component
@@ -1454,8 +1456,10 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    (its first state could not be drawn, or later: its address has ended,
    its state answered 404).
 2. Shell → frame, exactly these fields:
-   `{"type":"theme","theme":{"foreground":"#rrggbb","background":"#rrggbb","accent":"#rrggbb","muted":"#rrggbb","scale":1}}`
-   and `{"type":"visible","visible":true|false}`. Nothing else is ever
+   `{"type":"theme","theme":{"foreground":"#rrggbb","background":"#rrggbb","accent":"#rrggbb","muted":"#rrggbb","scale":1}}`,
+   `{"type":"visible","visible":true|false}` and, for Pin and Unpin
+   ([pinned widgets](#pinned-widgets)),
+   `{"type":"present","placement":"pinned"|"inline"}`. Nothing else is ever
    posted to a frame: no device token, conversation ID or other value.
 3. The shell acts on a message only when its `source` is that panel's own
    iframe window and its `origin` is exactly the origin of the panel's frame
@@ -1473,10 +1477,19 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
 6. host.js talks to its parent only when its page came from the socket route
    (`bootstrap.api` is the marker `location`) and is framed: the browser
    shell. It accepts messages only from `window.parent`, only `theme` (four
-   `#rrggbb` colours and a scale within 0.4–6) and `visible` (a boolean),
-   with exactly those fields, as plain objects (not arrays); everything else
-   is ignored. Embedded, it does not poll until the shell's first
-   `visible: true`. It posts with the
+   `#rrggbb` colours and a scale within 0.4–6), `visible` (a boolean) and
+   `present` (`pinned` or `inline`), with exactly those fields, as plain
+   objects (not arrays); everything else is ignored. Embedded, it does not
+   poll until the shell's first `visible: true`. A `present` makes it send
+   its own view's `present` request with only the placement
+   (`{"presentation":{"placement":…},"requestId":…}`, the request the
+   desktop's Unpin makes, `../panel/WidgetSurface.qml`), one at a time; a
+   refusal is shown in its status line. Embedded, it also reports its own
+   size to its view (`viewport`: its window's CSS width and height and the
+   theme's text scale, the report the desktop's native view makes), once
+   the shell first says it is visible and again when the size changes while
+   it is visible, at most once per 120 ms, so an agent sees the size the
+   widget gets (`lastViewport`). It posts with the
    target origin `*` (it cannot know the shell's origin: the shell frames it
    without a referrer), which reveals nothing: `frame-ancestors` lets only
    the gateway's pages frame it, and the messages carry only a height and
@@ -1509,6 +1522,11 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
 | host.js embedded, before the first `visible`           | No polling                                                                |
 | host.js embedded, state answers 404                    | `error` "Its address has ended, …" to the shell; loopback: nothing posted |
 | host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it                          |
+| host.js embedded: `present` `pinned` / `inline`        | One `present` request with that placement only                            |
+| host.js embedded: `present` `full`, or an extra field  | Ignored                                                                   |
+| host.js embedded: `present` refused                    | The refusal in its status line                                            |
+| host.js embedded: first `visible: true`; a new size    | One `viewport` with its size and scale 1; again once per new size         |
+| host.js on the loopback route: `present`, a resize     | No request (the desktop makes its own)                                    |
 
 ### Rule: visibility
 
@@ -1541,6 +1559,11 @@ it is visible). A conversation that is not shown has no frames at all.
 | Activity beside the chat (wide window) | yes     | yes                             |
 | A different conversation shown         | —       | no (the frame is removed)       |
 | Disconnected                           | no      | no, until admitted again        |
+| Pinned and folded                      | no      | no, until unfolded              |
+| Pinned, behind the narrow Activity     | no      | no, until the column is hidden  |
+
+The pinned widget's frame follows the same rule ([pinned widgets](#pinned-widgets)):
+in view is its place being on screen, and folded counts as out of view.
 
 ### Rule: scrolling over a widget
 
@@ -1646,6 +1669,205 @@ told: the press reaches no chat or list element, and nothing is sent.
   the resident older pages after a reconnect would need new logic in the
   paging model (its existing refresh detaches the reader's view), so it is
   left for later.
+
+## Pinned widgets
+
+A conversation can have one **pinned widget**: it stays in view while the
+conversation scrolls, as on the desktop. The agent pins it (its
+`presentation`), or the reader does with **Pin** in an inline widget's
+header; **Unpin** returns it to the chat. Where it sits follows the
+window's shape, as in the agreed design of 2026-11-20:
+
+```text
+ taller than wide: at the top              wider than tall: at the right
+┌──────┬┬───────────────────────┐         ┌──────┬┬──────────────┬┬─────────────┐
+│ list ││ ☰ title  ready  ⚙ ☰  │         │ list ││ ☰ title   ⚙ ☰││ 🧩 name     │
+│      ││ 🧩 name ▾Fold →Right… │         │      ││              ││ ↑Top  Unpin │
+│      ││ widget (25 %)         │         │      ││ chat         ││ widget      │
+│      ││═══════════════════════│ ← edge  │      ││              ││─────────────│
+│      ││ chat                  │         │      ││              ││ Activity    │
+└──────┴┴───────────────────────┘         └──────┴┴──────────────┴┴─────────────┘
+```
+
+Its frame is an inline widget's (`src/widgets/InlineWidget.tsx`,
+`WidgetFrame` in its `pinned` mode): the same sandbox and attributes, the
+same states (loading, shown, failed with Try again, disconnected, the
+address ended) and the same visibility rule, so a pinned frame the reader
+cannot see does not poll. It fills its place instead of fitting its
+content. Nothing about pinning changes the gateway, the listener or the
+desktop: Pin and Unpin are the widget view's own `present` request, which
+the frame origin already forwards (see the messages rule above).
+
+### Rule: which widget is pinned
+
+Rule (`src/widgets/pinned-widget.ts`, drawn by `src/workspace/PinnedWidget.tsx`):
+
+1. A conversation has at most one pinned widget: pinning another unpins the
+   first (the listener's rule). It is the conversation's `pinnedMessage`,
+   which the listener sends with every version of the conversation (each
+   snapshot and update), also when that message is outside the loaded
+   history; `null` means none. From a listener without the field: the first
+   loaded message whose widget is pinned, as the desktop panel does.
+2. It is shown for the conversation shown in the chat only, and not while
+   the settings screen is shown (it belongs to the chat; leaving the
+   settings screen loads it again). Previous sessions and the empty view
+   have none.
+3. It needs a valid frame address. Without one (no frame origin configured)
+   nothing is pinned in the browser, and its message keeps the "not set up"
+   card.
+4. Its message in the chat shows only the widget's header and "📌 Pinned:
+   shown above the chat or at the right.", without a frame: one widget has
+   one frame.
+5. **Pin** (in a shown inline widget's header) and **Unpin** (in the pinned
+   widget's header) ask the widget's own frame to change its presentation
+   (`present`): host.js sends its view's `present` request with only the
+   placement, the request of the desktop's Unpin. A Pin from the browser
+   therefore also gives the widget the default height (25 %), as an Unpin on
+   the desktop does. Each is available while its frame is shown and
+   requests are admitted; otherwise it stays focusable, marked unavailable.
+   A failed frame has no page to ask: its header does not offer them.
+   Nothing moves until the listener reports the change; a refusal is shown
+   in the widget's own status line.
+6. A change made elsewhere (on the desktop, by an agent, in another tab or
+   browser) arrives with the conversation's next version and is shown at
+   once.
+7. The frame counts as not visible (no polling, no load deadline) while it
+   is folded, behind the Activity column lying over the chat in a narrow
+   window, behind the screenshot viewer, in a hidden tab and while
+   disconnected. A new frame address (a reconnect after the handles ended)
+   loads a new frame; an address that ended shows the failed state with its
+   reload hint, as inline.
+8. Switching conversations removes it; coming back loads it again. Moving it
+   between the top and the right draws it in another part of the page, so
+   it loads again there (its state is the listener's; only the widget's own
+   scroll position is lost).
+
+| Case                                                      | Shown                                                              |
+| --------------------------------------------------------- | ------------------------------------------------------------------ |
+| None (`pinnedMessage` null)                               | No pinned widget; its message shows its inline frame               |
+| Pinned here with Pin                                      | Once the listener reports it: pinned; its message "Pinned"         |
+| Unpinned here with Unpin                                  | Once reported: none; the inline frame loads again                  |
+| Pinned or unpinned on the desktop, by an agent, in a tab  | Follows at once                                                    |
+| Another widget of the conversation pinned                 | That one; the first is inline again                                |
+| The pinned message outside the loaded history             | Still pinned                                                       |
+| A listener without `pinnedMessage`, pinned message loaded | Pinned                                                             |
+| No frame origin (no `frameUrl`)                           | None; the message's "not set up" card                              |
+| The conversation switched, and back                       | The other's (or none); back: loaded again                          |
+| The frame's address ended                                 | Failed, "Its address has ended …"; a reconnect's new address loads |
+| Disconnected                                              | Greyed, "Disconnected · reconnecting…", Unpin unavailable          |
+| Folded, then unfolded                                     | Its header only, not visible; then shown and visible again         |
+| The settings screen shown, then left                      | Not shown; then loaded again                                       |
+| Behind the narrow Activity column                         | Not visible; visible again when the column is hidden               |
+
+### Rule: place
+
+Rule (`src/layout/pinned-place.ts`, remembered by `src/layout/stored-layout.ts`
+and `src/layout/usePinnedLayout.ts`):
+
+1. **The space next to the list** is the window's width less the list and
+   its 1 px divider while the list is shown, and the window's height. The
+   list's width counted here is the one it has with nothing beside it, so
+   the place never depends on the right column it opens.
+2. In a window narrower than **640 px** the widget is always at the top.
+3. Otherwise a place fixed in this browser wins: **→ Right** fixes the
+   right, **↑ Top** fixes the top. **Auto** returns to the shape.
+4. **Auto**: a space wider than tall puts it at the right; taller than wide,
+   or exactly square, at the top. A resize across a limit moves it at once.
+5. The header offers, at the top: **Fold**, **→ Right** (in a window of at
+   least 640 px), **Auto** (while a place is fixed) and **Unpin**; at the
+   right: **↑ Top**, **Auto** (while fixed) and **Unpin**.
+6. **At the right** it is the right column, as wide as the Activity column's
+   rule makes it, resized by the same divider (named "Right column width"
+   while Activity is hidden). With Activity hidden the widget has the whole
+   column; with Activity shown, Activity sits below it, each half of the
+   column's height. Activity itself is unchanged.
+7. **At the top** it is a band below the bar (next rule).
+8. The place is remembered in this browser's `localStorage` as
+   `companion.shell.layout.pinnedPlace`, `{"version":1,"value":"auto"|"right"|"top"}`,
+   with the layout entries' rules: a missing or invalid entry gives Auto; a
+   change writes only this entry; a storage that refuses writes keeps the
+   place for this page; not cleared on sign-out; other tabs follow it, so
+   two tabs that fix different places one after the other both show the
+   last one.
+
+| Case                                                     | Place                                        |
+| -------------------------------------------------------- | -------------------------------------------- |
+| 1280 × 800, strip (space 1201 × 800)                     | Right                                        |
+| 900 × 1000, strip                                        | Top                                          |
+| 879 × 800, strip (space 800 × 800, exactly square)       | Top                                          |
+| 880 × 800, strip                                         | Right                                        |
+| 1100 × 900, strip / full list 300 px (space 1021 / 799)  | Right / top                                  |
+| 1000 × 950, list hidden / strip (space 1000 / 921)       | Right / top                                  |
+| 700 × 600, full list 420 px narrowed to 379 (space 320)  | Top                                          |
+| 600 × 300 (below 640 px), Auto or → Right fixed          | Top; no → Right offered                      |
+| 640 × 300 / 639 × 300, → Right fixed                     | Right / top                                  |
+| 900 × 1000, → Right fixed                                | Right                                        |
+| 1280 × 800, ↑ Top fixed                                  | Top                                          |
+| Auto again, 1280 × 800                                   | Right                                        |
+| Activity shown / hidden, widget at the right             | Activity below the widget / the widget alone |
+| The window resized across the square or the 640 px limit | Moves at once; nothing remembered changes    |
+| Reload                                                   | As remembered                                |
+| Two tabs fix different places one after the other        | The last one, in both                        |
+| Entry `"left"`, `3`, of version 2, not JSON              | Auto                                         |
+| Storage refuses writes; ↑ Top                            | Top for this page                            |
+
+### Rule: the band at the top
+
+Rule (`src/layout/pinned-place.ts`, `src/workspace/PinnedWidget.tsx`):
+
+1. Its height is a percentage of the area below the bar: the one this
+   browser remembered from dragging its lower edge, else the widget's own
+   `heightPercent` (the agent's choice; 25 by default), always within 10 %
+   and 70 %.
+2. In pixels it is never more than leaves the chat 160 px below it, and
+   never less than 80 px.
+3. **The lower edge** is a focusable separator ("Pinned widget height").
+   Dragged, the height follows the pointer and is remembered once, when the
+   drag ends; a press that does not move changes nothing. Keys: Down makes
+   the band 5 % taller, Up 5 % lower, Home gives 10 %, End 70 %; each is
+   remembered.
+4. **Fold** (▾ Fold) shrinks the band to its header; **▸ Show** brings it
+   back at its height. Folded, the frame stays loaded but counts as not
+   visible.
+5. Remembered as `companion.shell.layout.pinnedHeight` (whole percent) and
+   `companion.shell.layout.pinnedFolded` (boolean), with the same storage
+   rules. They are one setting of this browser for every pinned widget.
+
+| Case                                                | Band                                            |
+| --------------------------------------------------- | ----------------------------------------------- |
+| Nothing remembered, the widget asks nothing         | 25 %                                            |
+| The widget asks 40 / 100 / 5                        | 40 % / 70 % / 10 %                              |
+| 25 % of an area 752 px high                         | 188 px                                          |
+| 70 % of 400 px                                      | 240 px (the chat keeps 160 px)                  |
+| 25 % of 300 px, or any share of 200 px              | 80 px                                           |
+| Edge dragged to half the area                       | 50 %, remembered on release, not while dragging |
+| Edge dragged below the area's 70 % / above its 10 % | 70 % / 10 %                                     |
+| Press on the edge without moving                    | Nothing changes or is written                   |
+| Down / Up / Home / End on the focused edge          | +5 % / −5 % / 10 % / 70 %, each remembered      |
+| Dragged, the widget asks 40                         | The dragged height                              |
+| ▾ Fold, ▸ Show                                      | Header only (remembered); back at its height    |
+| Reload                                              | Height and fold as remembered                   |
+| Entry `"55"`, `NaN`, fold `"yes"` or of version 2   | The widget's own height; not folded             |
+
+### Known limits and what is left out
+
+- Unpin needs the pinned widget's frame shown and the page connected. A
+  pinned widget whose frame failed can be unpinned here only after Try
+  again loads it, or on the desktop or by the agent.
+- Fold, the dragged height and the fixed place are one setting of this
+  browser for every pinned widget; a dragged height also overrides a
+  widget's own `heightPercent` from then on.
+- Moving between the top and the right, and leaving the settings screen,
+  loads the widget's page again.
+- The size an agent sees (`lastViewport`) is the last one any view
+  reported: the desktop's or a browser's.
+- The desktop's full-height pinned widget (`heightPercent` 100, in place of
+  the chat) is at most 70 % here, and its `replaceActivity` (the desktop
+  hides its Activity strip under a pinned widget) does not apply: the
+  browser's Activity column is shown below the widget at the right, or
+  beside the band.
+- Left out on purpose: pinned session applications, a pop-out, more than
+  one pinned widget, animations.
 
 ## How it works
 
@@ -2015,19 +2237,19 @@ chat of a conversation with more than about a thousand rows,
 Shown as unavailable through the existing `status` fields, not by changing
 the chat page:
 
-| Desktop feature                           | In the browser                                                                                                             |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Recording into the text box               | `recording.available: false` (no Record button)                                                                            |
-| Listener-owned and agent-proposed drafts  | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty                           |
-| Classic view                              | No Classic view button (`classicView: false`)                                                                              |
-| Widgets                                   | Inline widgets in the chat when the gateway has a frame origin ([inline widgets](#inline-widgets)); pinned widgets not yet |
-| Tool details                              | In place, as in the classic view (see [tool details](#tool-details))                                                       |
-| Session applications                      | `application: null`                                                                                                        |
-| Screenshots                               | View screenshot opens the viewer (see [screenshots](#screenshots)); no zoom                                                |
-| Voice target, voice hints, focus shortcut | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                                         |
-| Model picker                              | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker                                         |
-| Pop-out windows, Alt+number               | Not in the browser                                                                                                         |
-| Alt+Shift+Up/Down                         | Move a focused list entry, as the ⋯ menu does (see the list)                                                               |
+| Desktop feature                           | In the browser                                                                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Recording into the text box               | `recording.available: false` (no Record button)                                                                      |
+| Listener-owned and agent-proposed drafts  | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty                     |
+| Classic view                              | No Classic view button (`classicView: false`)                                                                        |
+| Widgets                                   | Inline and pinned widgets when the gateway has a frame origin ([inline](#inline-widgets), [pinned](#pinned-widgets)) |
+| Tool details                              | In place, as in the classic view (see [tool details](#tool-details))                                                 |
+| Session applications                      | `application: null`                                                                                                  |
+| Screenshots                               | View screenshot opens the viewer (see [screenshots](#screenshots)); no zoom                                          |
+| Voice target, voice hints, focus shortcut | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                                   |
+| Model picker                              | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker                                   |
+| Pop-out windows, Alt+number               | Not in the browser                                                                                                   |
+| Alt+Shift+Up/Down                         | Move a focused list entry, as the ⋯ menu does (see the list)                                                         |
 
 Known limit: two tabs of the same browser under the same pairing each keep
 the phone Store's draft map and save it whole, so a draft typed in one tab can
@@ -2041,7 +2263,7 @@ The gateway also limits a message to 4,000 characters (the desktop allows
 Links in answers (http and https only) open in a new tab without opener or
 referrer when the reader clicks them, as on the phone; that navigation is the
 reader's own. The page itself requests nothing from another origin, except
-inline widget pages from the gateway's frame origin when one is configured
+widget pages from the gateway's frame origin when one is configured
 (see [inline widgets](#inline-widgets)).
 
 ## Build, demo and tests
@@ -2060,7 +2282,9 @@ conversation, audio only, not saved), listening starts paused for media, and
 a new entry is heard every 40 seconds (six in all) to show the marker.
 The gateway also runs a frame origin on the next port (`--frame-port N` picks
 another), and the city-trip answer is followed by an inline packing-list
-widget whose items can be ticked off; its actions run in the demo process
+widget whose items can be ticked off; the weekend-budget conversation has a
+pinned widget (a small budget table) at the top or the right, by the
+window's shape. Their actions run in the demo process
 (`test/widget-node-renderer.ts`), not in the isolated widget renderer.
 For the times, the invoice conversation was asked "yesterday" and continued
 today (the listener's clock is set back by a day for its first turn only),
@@ -2096,7 +2320,8 @@ repeated while pending or after a failure.
 
 `demo.test.ts` interrupts `shell:demo` with Ctrl+C while it starts and after
 it started, and checks that no temporary directory is left; and that the
-demo's snapshot has exactly one widget, under the city trip, with a frame
+demo's snapshot has exactly two widgets, inline under the city trip and
+pinned in the weekend budget (its `pinnedMessage`), each with a frame
 address on its frame origin that serves the widget's page.
 
 The [inline widget](#inline-widgets) rules have one table each:
@@ -2158,6 +2383,44 @@ The [inline widget](#inline-widgets) rules have one table each:
   theme, and on both routes widget code sees none of `RTCPeerConnection`,
   `webkitRTCPeerConnection`, `mozRTCPeerConnection` and `WebTransport` in
   its own world, and cannot define them again.
+
+The [pinned widget](#pinned-widgets) rules have one table each:
+
+- `pinned-layout.test.ts` (Node) plays every row of the place, band and
+  pinned-state tables: the place for each window shape, list state and
+  fixed place, a resize across each limit, the header's choices, the
+  remembered entries (invalid, refused, two tabs), the band's percentage,
+  pixels, pointer and keys at their bounds, and which widget is pinned
+  (none, pinned, outside the loaded history, an older listener, no frame
+  origin, a new address) with the row of its message.
+- `pinned-widgets.test.ts` runs the built shell in headless Chromium
+  against the frame fixture: a pinned widget at the top of a tall window
+  (25 % of the area below the bar, its message "Pinned" without a second
+  frame) and at the right of a wide one, moving when the window changes
+  shape; ↑ Top, → Right and Auto, each after a reload, below 640 px always
+  at the top, and a second tab following the place the first fixes; Activity
+  below the widget at the right, each half, and the divider widening both;
+  the widget's own height (40 %), the edge dragged (remembered only on
+  release) to 55 %, beyond 70 % and under 10 %, by key, after a reload; Fold
+  (the header only, not visible, no polling), after a reload, and ▸ Show;
+  Pin on an inline widget and Unpin, the same on the desktop (its own
+  `present` request) and in another tab, a conversation switched and back,
+  and an agent pinning a second widget; the pinned frame unable to read the
+  shell's `localStorage`, the gateway's policy unchanged, the size the
+  widget gets recorded for agents (`viewport`), 420, 1280 and 1600 px
+  without overflow; behind the narrow Activity column not visible and not
+  polling, and the settings screen taking it away until it is left. Every
+  test checks that no request left the two origins and that no policy
+  violation occurred. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it
+  saves the widget at the top, folded, at the right and at the right with
+  Activity, at 420, 1280 and 1600 px.
+- `widget-host.test.ts` also checks host.js's `present` and `viewport` on
+  both routes: on the loopback route a `present` message, visibility and a
+  resize ask for nothing; from the socket route, framed, no `viewport`
+  before the first `visible: true`, then exactly its size and scale, again
+  only for a new size while visible; `present` sends exactly the
+  placement; malformed `present` messages and one from the widget's own
+  frame are ignored; a refusal shows in its status line.
 
 `chat-heading.test.ts` also draws every kind of row without `frameUrl` with
 three kinds of host and compares each with the reference, and with
@@ -2405,6 +2668,14 @@ stopped polling in a hidden tab before), and a frame whose own page
 navigates elsewhere (its messages then have another origin and are
 ignored, a Node table row).
 
+Not covered in the browser for pinned widgets: a disconnection, an ended
+address and a gateway restart with a pinned widget (the frame and its
+states are the inline widget's, covered above; the pinned-state table's
+rows for a new address are in `pinned-layout.test.ts`), the screenshot
+viewer over a pinned widget (the same cover as inline), a pinned message
+outside the loaded history (a Node table row: the listener's
+`pinnedMessage` carries it) and touch dragging of the band's edge.
+
 Not tested: Safari, Firefox and Windows browsers, a real network or Tailscale,
 a widget drawn by the isolated widget renderer (the fixture's renderer runs
 reducers in Node; the browser draws the widget from its bundle either way),
@@ -2430,7 +2701,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/layout/list-width.ts`             | Width rules: strip, full list, snapping, keyboard, narrow windows             |
 | `src/layout/stored-layout.ts`          | The remembered width and hidden state in `localStorage`                       |
 | `src/layout/useListLayout.ts`          | The layout of this page: preference, window width, remembering                |
-| `src/layout/Divider.tsx`               | The draggable, keyboard-operable divider (list and Activity)                  |
+| `src/layout/Divider.tsx`               | The draggable, keyboard-operable divider (list, Activity, the pinned band)    |
 | `src/layout/activity-width.ts`         | Activity column width rules: range, keys, wide and narrow windows             |
 | `src/layout/useActivityLayout.ts`      | The Activity column's layout of this page: preference, shown, remembering     |
 | `src/layout/activity-overlay.ts`       | Whether the Activity column lies over the chat now (for the visible report)   |
@@ -2461,7 +2732,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/models/model-choice.ts`           | What the model picker shows and offers, without DOM access                    |
 | `src/models/ModelPicker.tsx`           | The model button and picker in the bar                                        |
 | `src/styles.css`                       | The frame around the chat; the chat keeps its desktop stylesheet              |
-| `src/widgets/InlineWidget.tsx`         | Inline widget panels: header, frame, states, messages, visibility             |
+| `src/widgets/InlineWidget.tsx`         | Widget panels, inline and pinned: header, frame, states, messages, visibility |
 | `src/widgets/frame-address.ts`         | Which frame addresses are used (exactly `<origin>/f/<handle>/`)               |
 | `src/widgets/frame-state.ts`           | The frame states rule, without DOM access                                     |
 | `src/widgets/frame-messages.ts`        | Messages to and from a frame: checks, height bounds, theme                    |
@@ -2469,6 +2740,10 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/widgets/frame-visibility.ts`      | The visibility rule                                                           |
 | `src/widgets/frame-scroll.ts`          | Scrolling over a widget counts as the reader's scroll                         |
 | `src/widgets/chat-cover.ts`            | Whether the settings screen or the Activity overlay covers the chat           |
+| `src/widgets/pinned-widget.ts`         | Which widget a conversation has pinned, and its message's row                 |
+| `src/workspace/PinnedWidget.tsx`       | The pinned widget: the band at the top or the right column; its controls      |
+| `src/layout/pinned-place.ts`           | Where the pinned widget sits; the band's height; without DOM access           |
+| `src/layout/usePinnedLayout.ts`        | The pinned widget's remembered place, height and fold on this page            |
 | `build.ts`                             | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
 | `demo.ts`                              | Synthetic end-to-end demo                                                     |
 | `synthetic-window.ts`                  | A synthetic window picture (PNG) for the demo's kept screenshot and tests     |

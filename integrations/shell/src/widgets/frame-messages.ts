@@ -10,6 +10,7 @@
  * Shell → frame:
  *   { type: 'theme', theme: { foreground, background, accent, muted, scale } }
  *   { type: 'visible', visible: boolean }
+ *   { type: 'present', placement: 'pinned' | 'inline' }   Pin and Unpin
  *
  * Nothing else crosses in either direction: no message can grant a
  * permission, name another view, or carry the device token or a
@@ -129,6 +130,19 @@ export function themeMessage(theme: FrameTheme): {
 
 export function visibleMessage(visible: boolean): { type: 'visible'; visible: boolean } {
   return { type: 'visible', visible: visible };
+}
+
+/**
+ * Pin (`pinned`) or Unpin (`inline`): asks the frame's page to change its
+ * widget's presentation, which host.js does with its own view's `present`
+ * request (the desktop's Unpin request). The listener then reports the
+ * change to every client.
+ */
+export function presentMessage(placement: 'pinned' | 'inline'): {
+  type: 'present';
+  placement: 'pinned' | 'inline';
+} {
+  return { type: 'present', placement: placement };
 }
 
 /** The colours used when the page's own cannot be read (the chat's defaults). */

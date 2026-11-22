@@ -14,7 +14,18 @@
  *   panel with the widget's name and its page in a sandboxed iframe on the
  *   gateway's frame origin, in one of the states of frame-state.ts, greyed
  *   while the shell is not connected;
- * - with '' (no frame origin configured): a small "not set up" card.
+ * - with '' (no frame origin configured): a small "not set up" card;
+ * - for the message of the conversation's pinned widget (pinned-widget.ts):
+ *   only the header and "Pinned", since the widget itself is shown pinned
+ *   (../workspace/PinnedWidget.tsx), so one widget never has two frames.
+ *
+ * A shown panel's header has Pin, which asks the frame to pin its widget
+ * (frame-messages.ts `present`); the listener's next report then moves it.
+ *
+ * The same frame component (`WidgetFrame`) draws the pinned widget, in its
+ * `pinned` mode: it fills the place it is given instead of fitting its
+ * content, its header carries the pinned widget's controls and Unpin, and
+ * it can be folded to its header.
  *
  * Resources: each panel owns one `message` listener on this window, one
  * IntersectionObserver, one visibility listener, one load deadline timer and
@@ -23,7 +34,7 @@
  * address) or its frame is replaced (Try again).
  */
 
-import type { ComponentType } from 'preact';
+import type { ComponentChildren, ComponentType } from 'preact';
 import { useSyncExternalStore } from 'preact/compat';
 import {
   useCallback,
@@ -35,9 +46,11 @@ import {
 } from 'preact/hooks';
 
 import type { InlineWidgetProps } from '../../../session-apps/chat/protocol.ts';
+import { ActionButton } from '../activity/ActionButton.tsx';
 import type { ChatCover } from './chat-cover.ts';
 import { frameAddress, frameOriginOf, policyRefusedFrame } from './frame-address.ts';
 import {
+  presentMessage,
   readFrameMessage,
   themeFromVariables,
   themeMessage,
@@ -47,6 +60,7 @@ import { initialFrameState, loadDeadlineMilliseconds, nextFrameState } from './f
 import { watchTranscript } from './frame-scroll.ts';
 import { frameVisible } from './frame-visibility.ts';
 import { HeightThrottle, type ThrottleTimers } from './height-throttle.ts';
+import { rowOfMessage } from './pinned-widget.ts';
 
 /** What the panels need from the rest of the page (made in main.tsx). */
 export interface InlineWidgetEnvironment {
@@ -56,6 +70,11 @@ export interface InlineWidgetEnvironment {
   subscribe(listener: () => void): () => void;
   /** Whether the settings screen or the Activity overlay covers the chat. */
   cover: ChatCover;
+  /**
+   * The ID of the message whose widget the conversation has pinned and the
+   * shell shows pinned (pinned-widget.ts), or ''.
+   */
+  pinnedMessageId(sessionId: string): string;
 }
 
 /**
@@ -102,6 +121,13 @@ export function createInlineWidget(
   environment: InlineWidgetEnvironment,
 ): ComponentType<InlineWidgetProps> {
   function InlineWidget(props: InlineWidgetProps) {
+    // Which message's widget is pinned follows every Store change, also
+    // when this row itself does not change (pinned or unpinned elsewhere).
+    const sessionId = props.sessionId;
+    const pinnedMessageId = useSyncExternalStore(environment.subscribe, () =>
+      environment.pinnedMessageId(sessionId),
+    );
+
     const widget = props.row.widget;
     if (!widget) {
       return null;
@@ -114,12 +140,16 @@ export function createInlineWidget(
     if (!address) {
       return <NotSetUp name={widget.name} time={time} />;
     }
+    if (rowOfMessage(pinnedMessageId, props.row.key)) {
+      return <PinnedHere name={widget.name} time={time} />;
+    }
 
     // A new address (after a reconnect that ended the old handles) is a new
     // panel: the old frame and everything it owns go, the new one loads.
     return (
       <WidgetFrame
         key={address}
+        mode="inline"
         name={widget.name}
         time={time}
         address={address}
@@ -142,24 +172,49 @@ function NotSetUp(props: { name: string; time: string }) {
   );
 }
 
-function WidgetHeader(props: { name: string; time: string }) {
+/** The message of the pinned widget: the widget is shown pinned, not here. */
+function PinnedHere(props: { name: string; time: string }) {
+  return (
+    <div class="panel inline-widget" data-phase="pinned">
+      <WidgetHeader name={props.name} time={props.time} />
+      <p class="inline-widget-note">📌 Pinned: shown above the chat or at the right.</p>
+    </div>
+  );
+}
+
+function WidgetHeader(props: { name: string; time: string; children?: ComponentChildren }) {
   return (
     <div class="inline-widget-header">
       <span aria-hidden="true">🧩</span>
       <span class="inline-widget-name">{props.name}</span>
+      {props.children ? <span class="inline-widget-actions">{props.children}</span> : null}
       {props.time ? <span class="message-time">{props.time}</span> : null}
     </div>
   );
 }
 
-function WidgetFrame(props: {
+/**
+ * One widget frame with its header and states: an inline widget in the
+ * chat, or the pinned widget (`mode`).
+ */
+export function WidgetFrame(props: {
+  /**
+   * `inline`: in the chat, as tall as its content (100-420 px), with Pin.
+   * `pinned`: fills the place it is given, with `controls` and Unpin.
+   */
+  mode: 'inline' | 'pinned';
   name: string;
   time: string;
   address: string;
   environment: InlineWidgetEnvironment;
+  /** The pinned widget's own controls (Fold, the place buttons), before Unpin. */
+  controls?: ComponentChildren;
+  /** The pinned band is folded to its header: the frame stays, out of sight. */
+  folded?: boolean;
 }) {
-  const { name, time, address, environment } = props;
+  const { mode, name, time, address, environment } = props;
   const origin = frameOriginOf(address);
+  const folded = props.folded === true;
 
   const [state, dispatch] = useReducer(nextFrameState, undefined, () =>
     initialFrameState(rememberedHeights.get(address)),
@@ -175,7 +230,8 @@ function WidgetFrame(props: {
   const covered = useSyncExternalStore(subscribeToCover, () => cover.covered);
   const pageHidden = usePageHidden();
   const [inView, setInView] = useState(false);
-  const visible = frameVisible({ inView, pageHidden, covered, connected });
+  // A folded pinned widget is out of sight, as one scrolled out of view.
+  const visible = frameVisible({ inView, pageHidden, covered, connected }) && !folded;
 
   const panel = useRef<HTMLDivElement>(null);
   const iframe = useRef<HTMLIFrameElement>(null);
@@ -328,12 +384,13 @@ function WidgetFrame(props: {
     };
   }, [state.phase, state.attempt, visible]);
 
-  // The last height shown is remembered for this address (see above).
+  // The last height shown inline is remembered for this address (see
+  // above). A pinned frame's height is its place's, not its content's.
   useEffect(() => {
-    if (state.phase === 'shown') {
+    if (mode === 'inline' && state.phase === 'shown') {
       rememberHeight(address, state.height);
     }
-  }, [state.phase, state.height, address]);
+  }, [mode, state.phase, state.height, address]);
 
   // Tell the loaded frame when its visibility changes.
   useEffect(() => {
@@ -347,6 +404,56 @@ function WidgetFrame(props: {
     target.postMessage(visibleMessage(visible), origin);
     toldVisible.current = visible;
   }, [loaded, visible, origin]);
+
+  // Pin (inline) or Unpin (pinned): the frame's page asks the listener to
+  // change its widget's presentation (frame-messages.ts `present`). Only a
+  // shown frame of a connected page can be asked; nothing changes here
+  // until the listener reports the change. A failed frame has no page to
+  // ask, so its header does not offer it (Try again comes first).
+  const presentTo = mode === 'inline' ? 'pinned' : 'inline';
+  const presentable = loaded && state.phase === 'shown' && connected;
+  function present() {
+    const target = iframe.current?.contentWindow;
+    if (!presentable || !target) {
+      return;
+    }
+    target.postMessage(presentMessage(presentTo), origin);
+  }
+
+  let presentLabel = `Pin the ${name} widget`;
+  let presentText = 'Pin';
+  if (presentTo === 'inline') {
+    presentLabel = `Unpin the ${name} widget`;
+    presentText = 'Unpin';
+  }
+  let presentButton = null;
+  if (state.phase !== 'failed') {
+    presentButton = (
+      <ActionButton
+        available={presentable}
+        onPress={present}
+        class="panel-action small inline-widget-action"
+        label={presentLabel}
+        title={presentLabel}
+      >
+        {presentText}
+      </ActionButton>
+    );
+  }
+  const header = (
+    <WidgetHeader name={name} time={time}>
+      {props.controls}
+      {presentButton}
+    </WidgetHeader>
+  );
+
+  let panelClass = 'panel inline-widget';
+  if (mode === 'pinned') {
+    panelClass += ' pinned-widget';
+  }
+  if (folded) {
+    panelClass += ' folded';
+  }
 
   /**
    * Each load of the frame (also a page that reloads itself) is a new
@@ -368,9 +475,9 @@ function WidgetFrame(props: {
 
   if (state.phase === 'failed') {
     return (
-      <div ref={panel} class="panel inline-widget" data-phase="failed" data-visible="false">
-        <WidgetHeader name={name} time={time} />
-        <div class="inline-widget-failed">
+      <div ref={panel} class={panelClass} data-phase="failed" data-visible="false">
+        {header}
+        <div class="inline-widget-failed" hidden={folded}>
           <p>
             <strong>The {name} widget could not load.</strong> {state.reason}
           </p>
@@ -392,9 +499,14 @@ function WidgetFrame(props: {
     );
   }
 
-  let panelClass = 'panel inline-widget';
   if (!connected) {
     panelClass += ' disconnected';
+  }
+
+  // Inline, the frame is as tall as its content; pinned, as its place.
+  let frameStyle: Record<string, string> = { height: `${state.height}px` };
+  if (mode === 'pinned') {
+    frameStyle = {};
   }
 
   return (
@@ -405,8 +517,8 @@ function WidgetFrame(props: {
       data-visible={String(visible)}
       data-connected={String(connected)}
     >
-      <WidgetHeader name={name} time={time} />
-      <div class="inline-widget-body">
+      {header}
+      <div class="inline-widget-body" hidden={folded}>
         {/* While disconnected (paused) and while loading (under its label)
             the frame takes no input, keyboard focus included. Only the frame
             is inert: the labels below stay readable. */}
@@ -423,11 +535,11 @@ function WidgetFrame(props: {
               referrerpolicy="no-referrer"
               loading="lazy"
               src={address}
-              style={{ height: `${state.height}px` }}
+              style={frameStyle}
               onLoad={onFrameLoad}
             />
           ) : (
-            <div class="inline-widget-placeholder" style={{ height: `${state.height}px` }} />
+            <div class="inline-widget-placeholder" style={frameStyle} />
           )}
         </div>
         {state.phase === 'loading' && connected && (

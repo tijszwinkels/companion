@@ -33,7 +33,8 @@ import type { PageTimes } from './times/page-times.ts';
 import { TurnTicker } from './times/turn-ticker.ts';
 import { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import { ChatCover } from './widgets/chat-cover.ts';
-import { createInlineWidget } from './widgets/InlineWidget.tsx';
+import { createInlineWidget, type InlineWidgetEnvironment } from './widgets/InlineWidget.tsx';
+import { pinnedWidget } from './widgets/pinned-widget.ts';
 
 /**
  * Where the chat page's rows are on screen. Chat.tsx draws one `.message`
@@ -130,12 +131,19 @@ const bridge = new GatewayChatBridge(store, transcriptView, {
 // messages with this component. Frames are greyed and paused while requests
 // are not admitted, and paused while this page's own screens cover the chat
 // (the workspace keeps `chatCover` up to date).
+// The same environment serves the selected conversation's pinned widget
+// (workspace/PinnedWidget.tsx), whose message the chat then draws as
+// "Pinned" (widgets/pinned-widget.ts).
 const chatCover = new ChatCover();
-bridge.inlineWidget = createInlineWidget({
+const widgets: InlineWidgetEnvironment = {
   connected: () => bridge.admitted,
   subscribe: (listener) => store.subscribe(listener),
   cover: chatCover,
-});
+  pinnedMessageId: (sessionId) => {
+    return pinnedWidget(store.state.sessions.get(sessionId))?.messageId ?? '';
+  },
+};
+bridge.inlineWidget = createInlineWidget(widgets);
 
 const chat = new ChatStore();
 chat.attach(bridge);
@@ -220,6 +228,7 @@ render(
       activityOverlay={activityOverlay}
       viewer={viewer}
       chatCover={chatCover}
+      widgets={widgets}
     />
   </StoreContext.Provider>,
   document.getElementById('app')!,

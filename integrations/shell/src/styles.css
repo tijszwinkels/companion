@@ -922,6 +922,133 @@ body {
   font-size: 12px;
 }
 
+/* The header's actions (Pin; on the pinned widget Fold, the place buttons
+   and Unpin), at its right end before the message's time. Unavailable ones
+   stay focusable (aria-disabled), drawn dimmed. */
+.inline-widget-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.inline-widget-actions + .message-time {
+  margin-left: 0;
+}
+
+.inline-widget-action {
+  min-height: 20px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.inline-widget-action[aria-disabled='true'] {
+  opacity: 0.45;
+}
+
+/* ---- Pinned widget (workspace/PinnedWidget.tsx) ----------------------------------- */
+
+/* The pinned widget fills its place: the band above the chat or the right
+   column. Its frame is as tall as the place less the header. */
+.panel.pinned-widget {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border-radius: 0;
+}
+
+.pinned-widget .inline-widget-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.pinned-widget .inline-widget-frame,
+.pinned-widget .inline-widget-body iframe,
+.pinned-widget .inline-widget-placeholder {
+  height: 100%;
+}
+
+.pinned-widget .inline-widget-failed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pinned-widget .inline-widget-header {
+  flex: none;
+}
+
+.pinned-widget.folded .inline-widget-header {
+  border-bottom: 0;
+}
+
+/* At the top: a band below the bar, its height set by its style (the rule
+   in layout/pinned-place.ts); folded, as high as its header. */
+.pinned-band {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
+/* The band's lower edge: dragged, or moved by keys, like the dividers. */
+.band-edge {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 7px;
+  margin: -4px 0 -3px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.band-edge:hover::after,
+.band-edge.dragging::after,
+.band-edge:focus-visible::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 3px;
+  background: var(--accent);
+}
+
+.band-edge:focus-visible {
+  outline: none;
+}
+
+/* The right column. With only Activity it adds no box of its own, so the
+   column keeps its arrangement (beside the chat, or over it in a narrow
+   window). With the pinned widget at the right it is a column of the
+   Activity width: the widget, and Activity below it while shown, each half
+   of the height. */
+.side-column {
+  display: contents;
+}
+
+.side-column.with-pinned {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--background);
+}
+
+.pinned-side {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.side-column.with-activity > .activity-column {
+  flex: 1 1 0;
+  border-top: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
 /* ---- Previous sessions --------------------------------------------------------- */
 
 .previous-sessions {
