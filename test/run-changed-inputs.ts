@@ -4,8 +4,9 @@
 //   1. Imports: every file it imports, directly or indirectly.
 //   2. Paths: every repository file or directory that one of those files names in a quoted
 //      string, as in new URL('../fixtures/speech.wav', import.meta.url) or
-//      join(here, '..', 'bin', 'companion-phone'). A TypeScript file found this way is
-//      followed like an import, because it is usually started as a program. In a file under
+//      join(here, '..', 'bin', 'companion-phone'), read from the file's own directory and
+//      from the checkout root. A script found this way is followed like an import, because
+//      it is usually started as a program. In a file under
 //      test/ that refers to the checkout root, a bare directory name such as 'starter-kit'
 //      counts too.
 //   3. Programs: a test that starts programs (a file under test/ that uses
@@ -39,7 +40,6 @@ export interface CollectOptions {
 }
 
 const SCRIPT = /\.(ts|mts|js|mjs|cjs)$/;
-const FOLLOWED = /\.(ts|mts)$/;
 const QUOTED = /(['"])([^'"\n]{1,200})\1/g;
 const QUOTED_RUN = /(?:(['"])[^'"\n]{1,200}\1\s*,\s*)*(['"])[^'"\n]{1,200}\2/g;
 
@@ -101,7 +101,14 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
   const referencesOf = (file: string): PathReferences => {
     let found = references.get(file);
     if (found) return found;
-    const text = SCRIPT.test(file) ? readFileSync(join(root, file), 'utf8') : '';
+    let text = '';
+    if (SCRIPT.test(file)) {
+      try {
+        text = readFileSync(join(root, file), 'utf8');
+      } catch {
+        unreadable.add(file); // gone since the files were listed
+      }
+    }
     const files = new Set<string>();
     const bareNames = new Set<string>();
     let refersToRoot = false;
@@ -109,26 +116,28 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
       const prefix = directory + '/';
       for (const inside of repositoryFiles) if (inside.startsWith(prefix)) files.add(inside);
     };
+    const here = dirname(join(root, file));
     const consider = (literal: string): void => {
       if (literal.length < 2 || /[\s$`\\*]/.test(literal)) return;
       const relativeToFile = literal.startsWith('.');
-      if (!relativeToFile && !literal.includes('/') && !fileSet.has(literal)) {
-        bareNames.add(literal);
-        return;
-      }
-      const from = relativeToFile ? dirname(join(root, file)) : root;
-      const target = relative(root, resolve(from, literal));
-      if (target.startsWith('..')) return;
-      if (target === '') {
-        if (relativeToFile) refersToRoot = true;
-      } else if (/^[./]*$/.test(literal)) {
-        // '.', '..' and the like count only when they reach the checkout root.
-      } else if (target.startsWith('node_modules')) {
-        // Installed packages are covered by package-lock.json.
-      } else if (isFile(target)) {
-        files.add(target); // also a file git does not list, such as a build result
-      } else {
-        addDirectory(target);
+      const bare = !relativeToFile && !literal.includes('/');
+      if (bare) bareNames.add(literal);
+      // A path may be meant from the file's own directory or from the checkout root.
+      for (const from of relativeToFile ? [here] : [root, here]) {
+        const target = relative(root, resolve(from, literal));
+        if (target.startsWith('..') || target.startsWith('node_modules')) continue;
+        if (target === '') {
+          if (relativeToFile) refersToRoot = true;
+        } else if (/^[./]*$/.test(literal)) {
+          // '.', '..' and the like count only when they reach the checkout root.
+        } else if (bare) {
+          // A bare name counts as a file only: a listed one, or one on disk with an extension.
+          if (fileSet.has(target) || (literal.includes('.') && isFile(target))) files.add(target);
+        } else if (isFile(target)) {
+          files.add(target); // also a file git does not list, such as a build result
+        } else {
+          addDirectory(target);
+        }
       }
     };
     for (const run of text.matchAll(QUOTED_RUN)) {
@@ -158,7 +167,7 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
     const unknown = new Set<string>();
     for (const file of [...imports.keys()]) {
       for (const target of referencesOf(file).files) {
-        if (FOLLOWED.test(target) && !target.endsWith('.d.ts') && !imports.has(target)) {
+        if (SCRIPT.test(target) && !target.endsWith('.d.ts') && !imports.has(target)) {
           unknown.add(target);
         }
       }
@@ -205,9 +214,8 @@ export function contentHasher(root: string): (file: string) => string {
     if (!hash) {
       try {
         const path = join(root, file);
-        const executable = (statSync(path).mode & 0o111) !== 0;
-        hash =
-          createHash('sha256').update(readFileSync(path)).digest('hex') + (executable ? ' x' : '');
+        const executable = statSync(path).mode & 0o111;
+        hash = `${createHash('sha256').update(readFileSync(path)).digest('hex')} ${executable}`;
       } catch {
         hash = 'missing';
       }

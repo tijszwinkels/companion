@@ -36,7 +36,6 @@ const EVERY_TEST = [
 // What a test that starts programs is taken to depend on.
 const PROGRAM_DIRECTORIES = ['src/', 'bin/'];
 const KEEP_DAYS = 30;
-const UNIT_TEST = /^test\/unit\/[^/]+\.test\.ts$/;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cacheDirectory =
@@ -56,6 +55,11 @@ const named = args
 for (const flag of flags) {
   if (flag !== '--list' && flag !== '--all')
     stop(`Unknown option ${flag}. Options: --list, --all.`);
+}
+// With a filter only part of a test file runs, and that must not be saved as a pass.
+const nodeOptions = `${process.env.NODE_OPTIONS ?? ''} ${process.execArgv.join(' ')}`;
+if (/--test-(name-pattern|skip-pattern|only|shard)/.test(nodeOptions)) {
+  stop('npm run test:changed cannot be combined with Node test filters. Use npm test instead.');
 }
 
 function listRepositoryFiles(): string[] {
@@ -107,7 +111,10 @@ async function snapshot(tests: string[]): Promise<Snapshot> {
   return { inputs, keys };
 }
 
-const unitTests = listRepositoryFiles().filter((file) => UNIT_TEST.test(file));
+// The same files as `npm test`: test/unit/*.test.ts, whether git lists them or not.
+const unitTests = readdirSync(join(root, 'test/unit'))
+  .filter((name) => name.endsWith('.test.ts'))
+  .map((name) => `test/unit/${name}`);
 for (const file of named) {
   if (!unitTests.includes(file)) stop(`Not a test file in test/unit of this checkout: ${file}`);
 }
@@ -119,16 +126,6 @@ const before = await snapshot(tests);
 mkdirSync(cacheDirectory, { recursive: true });
 const saved = (test: string, keys: Map<string, string>): string =>
   join(cacheDirectory, keys.get(test)!);
-const now = new Date();
-const toRun = tests.filter((test) => {
-  if (!before.inputs.get(test)!.complete) return true;
-  try {
-    utimesSync(saved(test, before.keys), now, now); // a pass that is still in use is kept
-  } catch {
-    return true; // no saved pass
-  }
-  return flags.has('--all');
-});
 // Saved passes that no run has used for a month are removed.
 const oldest = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
 for (const name of readdirSync(cacheDirectory)) {
@@ -139,6 +136,16 @@ for (const name of readdirSync(cacheDirectory)) {
   }
 }
 
+const now = new Date();
+const toRun = tests.filter((test) => {
+  if (!before.inputs.get(test)!.complete) return true;
+  try {
+    utimesSync(saved(test, before.keys), now, now); // a pass that is still in use is kept
+  } catch {
+    return true; // no saved pass
+  }
+  return flags.has('--all');
+});
 console.log(
   `${tests.length} test files: ${tests.length - toRun.length} already passed with these inputs, ` +
     `${toRun.length} to run.`,
@@ -157,17 +164,31 @@ if (flags.has('--list')) {
 }
 if (!toRun.length) process.exit(0);
 
-// Node reports one summary per test file, and one for the whole run (without a file).
+// Node reports one summary per test file and one for the whole run (without a file). A
+// summary does not show a failing hook, a failing test process or a skipped suite, so those
+// are taken from the single events. An event that belongs to none of the test files (a test
+// declared in a helper) counts against all of them.
 interface Summary {
   success: boolean;
   counts: { passed: number; skipped: number; todo: number; cancelled: number };
 }
 const summaries = new Map<string, Summary>();
+const failedEvents = new Set<string>();
+const partial = new Set<string>(); // a skipped or todo test or suite
 let runSucceeded = false;
+const ANY = '(any)';
+const entryOf = (file: string | undefined): string => {
+  const entry = file ? relative(root, file) : '';
+  return toRun.includes(entry) ? entry : ANY;
+};
 const stream = run({
   files: toRun.map((test) => join(root, test)),
   cwd: root,
   concurrency: Math.max(1, availableParallelism() - 1), // what `node --test` uses
+});
+stream.on('test:fail', (event) => failedEvents.add(entryOf(event.file)));
+stream.on('test:pass', (event) => {
+  if (event.skip !== undefined || event.todo !== undefined) partial.add(entryOf(event.file));
 });
 stream.on('test:summary', (summary) => {
   if (summary.file) summaries.set(relative(root, summary.file), summary);
@@ -177,19 +198,25 @@ stream.compose(spec).pipe(process.stdout);
 await new Promise<void>((done) => stream.once('end', () => done()));
 
 // A pass is saved only for a test file that ran completely and whose inputs, looked up
-// again, are still what they were before the run.
+// again, are still what they were before the run. Any other outcome removes an earlier pass.
 const after = await snapshot(tests);
 const failed: string[] = [];
 let savedCount = 0;
 for (const test of toRun) {
   const summary = summaries.get(test);
-  if (!summary?.success) {
-    failed.push(test);
-    rmSync(saved(test, before.keys), { force: true }); // an earlier pass no longer holds
+  const failedItself = !summary?.success || failedEvents.has(test);
+  if (failedItself || failedEvents.has(ANY)) {
+    if (failedItself) failed.push(test);
+    rmSync(saved(test, before.keys), { force: true });
     continue;
   }
   const { passed, skipped, todo, cancelled } = summary.counts;
-  if (passed === 0 || skipped > 0 || todo > 0 || cancelled > 0) continue;
+  const ranPartly =
+    skipped > 0 || todo > 0 || cancelled > 0 || partial.has(test) || partial.has(ANY);
+  if (passed === 0 || ranPartly) {
+    rmSync(saved(test, before.keys), { force: true });
+    continue;
+  }
   if (!after.inputs.get(test)!.complete || after.keys.get(test) !== before.keys.get(test)) continue;
   writeFileSync(
     saved(test, before.keys),
@@ -204,7 +231,7 @@ console.log(
   `Ran ${toRun.length} test files in ${seconds} s: ${savedCount} passes saved, ` +
     `${failed.length} failed` +
     (notSaved > 0
-      ? `, ${notSaved} passed but not saved (a skipped test, or an input changed during the run)`
+      ? `, ${notSaved} passed but not saved (a skipped test, a failure outside the test files, or an input changed during the run)`
       : '') +
     (failed.length ? `:\n  ${failed.join('\n  ')}` : '.'),
 );
