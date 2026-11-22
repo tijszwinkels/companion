@@ -199,7 +199,7 @@ export interface ListenerMicrophones {
 
 /**
  * The microphones in the listener's state (`microphones`), absent in other
- * modes and in older listeners. See src/desktop/README.md, "Microphones".
+ * modes and in older listeners. See src/desktop/README.md, "Microphones and listening browsers".
  */
 export interface MicrophonesState {
   /** The computer's microphone switch is on. */
@@ -2254,7 +2254,7 @@ export class DesktopRuntime {
 
   /**
    * A listening browser's audio stream, relayed by the remote gateway (see
-   * src/desktop/README.md, "Listening browsers"). Remote connections only:
+   * src/desktop/README.md, "Microphones and listening browsers"). Remote connections only:
    * the gateway adds the device's name to `audio-start`, and a connection
    * feeds and stops only its own stream.
    *

@@ -7,7 +7,7 @@ import { SAMPLE_RATE } from './segmenter.ts';
  * Purpose: a listening browser (the shell's "Listen here") sends its
  * microphone as 16 kHz mono signed 16-bit little-endian samples, in pieces
  * relayed by the remote gateway as `audio-chunk` requests (see
- * src/desktop/README.md, "Listening browsers"). This source turns those
+ * src/desktop/README.md, "Microphones and listening browsers"). This source turns those
  * pieces into the same 512-sample frames the computer's recorder yields
  * (`pcmFrames`), so one listening period (`listen`) runs on it unchanged.
  *
