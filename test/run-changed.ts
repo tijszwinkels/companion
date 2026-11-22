@@ -145,7 +145,8 @@ const toRun = tests.filter((test) => {
     return true; // no saved pass
   }
   if (!flags.has('--all')) return false;
-  rmSync(saved(test, before.keys), { force: true }); // an interrupted --all run leaves no pass
+  // An interrupted --all run leaves no pass behind; --list changes nothing.
+  if (!flags.has('--list')) rmSync(saved(test, before.keys), { force: true });
   return true;
 });
 console.log(
