@@ -60,8 +60,12 @@ const FILES: Record<string, string> = {
     "import test from 'node:test';\nimport { existsSync, readFileSync } from 'node:fs';\n" +
     "const name = 'txt.neddih/atad'.split('').reverse().join('');\n" +
     "test('checks the file if there', () => { if (existsSync(name)) readFileSync(name); });\n",
-  // No test at all: never saved as a pass.
+  // No test at all, and a test process that ends early: never saved as a pass.
   'test/unit/empty.test.ts': 'export {};\n',
+  'test/unit/exits.test.ts':
+    "import test from 'node:test';\ntest('passes', () => {});\n" +
+    "test('ends the process', () => { process.exit(0); });\n" +
+    "test('would fail', () => { throw new Error('never reached'); });\n",
   'test/unit/plain.test.ts': "import test from 'node:test';\ntest('passes', () => {});\n",
   'test/unit/fails.test.ts':
     "import test from 'node:test';\ntest('fails', () => { throw new Error('as intended'); });\n",
@@ -118,14 +122,15 @@ test('the sandbox holds only the inputs, and a missed input takes the fallback',
     /^↻ test\/unit\/probes\.test\.ts .* \(missing: data\/hidden\.txt\)\.$/m,
   );
   assert.match(first.output, /^✔ test\/unit\/empty\.test\.ts .*none passed/m);
+  assert.match(first.output, /^✔ test\/unit\/exits\.test\.ts .*ended early/m);
   assert.match(
     first.output,
-    /5 passes saved, 1 failed, 2 needed files outside .*, 1 passed but not saved/,
+    /5 passes saved, 1 failed, 2 needed files outside .*, 2 passed but not saved/,
   );
 
   // Only the failure runs again.
   const unchanged = testChanged(['--list']);
-  assert.match(unchanged.output, /5 already passed with these inputs, 2 to run/);
+  assert.match(unchanged.output, /5 already passed with these inputs, 3 to run/);
   assert.match(unchanged.output, /^ {2}test\/unit\/fails\.test\.ts /m);
 
   // A file that only the root template reaches: that test file and the one that took the

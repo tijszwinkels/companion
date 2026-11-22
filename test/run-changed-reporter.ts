@@ -10,11 +10,14 @@ import { resolve } from 'node:path';
 import type { TestEvent } from 'node:test/reporters';
 
 export interface FileOutcome {
-  /** Node's own verdict for the run, and no failing test, hook or process. */
+  /** Node's own verdict for the run and for the file, and no failing test, hook or process. */
   succeeded: boolean;
   /** Tests that passed, not counting skipped and todo tests, suites or the file itself. */
   passed: number;
-  /** A test or suite was skipped, todo or cancelled: the file did not run completely. */
+  /**
+   * A test or suite was skipped, todo or cancelled, or the file reported no summary of its
+   * own: the file did not run completely.
+   */
   partial: boolean;
 }
 
@@ -22,6 +25,8 @@ export default async function* outcomeReporter(
   events: AsyncIterable<TestEvent>,
 ): AsyncGenerator<string> {
   let nodeSucceeded = false;
+  let fileSummarized = false;
+  let fileSucceeded = true;
   let failedEvent = false;
   let passed = 0;
   let partial = false;
@@ -42,7 +47,12 @@ export default async function* outcomeReporter(
       } else if (event.data.details.type === 'test' && !fileItself) {
         passed++;
       }
-    } else if (event.type === 'test:summary' && event.data.file === undefined) {
+    } else if (event.type === 'test:summary' && event.data.file !== undefined) {
+      // The summary of the single file. A test process that ends early, even with status 0,
+      // and a file without tests report none.
+      fileSummarized = true;
+      fileSucceeded = event.data.success;
+    } else if (event.type === 'test:summary') {
       // The summary of the whole run, not the one of the single file.
       const { counts } = event.data;
       nodeSucceeded = event.data.success;
@@ -52,6 +62,7 @@ export default async function* outcomeReporter(
     }
   }
 
-  const outcome: FileOutcome = { succeeded: nodeSucceeded && !failedEvent, passed, partial };
+  const succeeded = nodeSucceeded && fileSucceeded && !failedEvent;
+  const outcome: FileOutcome = { succeeded, passed, partial: partial || !fileSummarized };
   yield JSON.stringify(outcome) + '\n';
 }

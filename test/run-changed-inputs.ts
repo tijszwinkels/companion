@@ -245,8 +245,13 @@ export function contentHasher(root: string): (file: string) => string {
     if (!hash) {
       try {
         const path = join(root, file);
-        const executable = statSync(path).mode & 0o111;
-        hash = `${createHash('sha256').update(readFileSync(path)).digest('hex')} ${executable}`;
+        const type = statSync(path);
+        if (type.isFile()) {
+          const executable = type.mode & 0o111;
+          hash = `${createHash('sha256').update(readFileSync(path)).digest('hex')} ${executable}`;
+        } else {
+          hash = 'not a file'; // a directory, or a pipe that reading could wait on forever
+        }
       } catch {
         hash = 'missing';
       }

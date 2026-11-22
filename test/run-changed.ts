@@ -24,6 +24,7 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -125,6 +126,8 @@ function listRepositoryFiles(): string[] {
 
 interface Snapshot {
   repositoryFiles: string[];
+  /** The fingerprints of files as they were (see contentHasher). */
+  hashOf: (file: string) => string;
   inputs: Map<string, TestInputs>;
   keys: Map<string, string>;
   /** The key of a test file that depends on every file of the repository. */
@@ -142,10 +145,14 @@ async function snapshot(tests: string[]): Promise<Snapshot> {
   });
   const hashOf = contentHasher(root);
   // The sandbox shows every file git lists by name (run-changed-process.ts), so a test can
-  // observe which files exist; adding, removing or renaming a file changes every key.
-  const names = createHash('sha256')
-    .update([...repositoryFiles].sort().join('\0'))
-    .digest('hex');
+  // observe which files exist; adding, removing or renaming a file changes every key. A
+  // symbolic link counts with the path it leads to, as the sandbox recreates it.
+  const nameList = [...repositoryFiles].sort().map((file) => {
+    const path = join(root, file);
+    const isLink = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() === true;
+    return isLink ? `${file} -> ${readlinkSync(path)}` : file;
+  });
+  const names = createHash('sha256').update(nameList.join('\0')).digest('hex');
   const everyTest = [
     FORMAT,
     process.version,
@@ -169,7 +176,7 @@ async function snapshot(tests: string[]): Promise<Snapshot> {
   for (const file of repositoryFiles) {
     hashOf(file);
   }
-  return { repositoryFiles, inputs, keys, wholeRepositoryKey };
+  return { repositoryFiles, hashOf, inputs, keys, wholeRepositoryKey };
 }
 
 // The same files as `npm test`: test/unit/*.test.ts, whether git lists them or not.
@@ -179,7 +186,7 @@ const unitTests = readdirSync(join(root, 'test/unit'))
 for (const file of named) {
   if (!unitTests.includes(file)) stop(`Not a test file in test/unit of this checkout: ${file}`);
 }
-const tests = (named.length ? named : unitTests).sort();
+const tests = [...new Set(named.length ? named : unitTests)].sort();
 
 // Without a sandbox a missed input could not show itself, so nothing may be skipped.
 if (!sandboxWorks(root)) {
@@ -211,8 +218,15 @@ const markerOf = (computedKey: string): string =>
     createHash('sha256').update(`needs the whole repository\n${computedKey}`).digest('hex'),
   );
 const now = new Date();
-// Marks a saved file as still in use, so that it is kept; false when it does not exist.
+// Saved passes and markers that no run has used for a month are not used any more.
+const oldest = now.getTime() - KEEP_DAYS * 24 * 60 * 60 * 1000;
+// Marks a saved file as still in use, so that it is kept; false when it does not exist or
+// has expired.
 const touch = (path: string): boolean => {
+  const modified = statSync(path, { throwIfNoEntry: false })?.mtimeMs;
+  if (modified === undefined || modified < oldest) {
+    return false;
+  }
   try {
     utimesSync(path, now, now);
     return true;
@@ -263,7 +277,6 @@ if (flags.has('--list')) {
 
 mkdirSync(cacheDirectory, { recursive: true });
 // Saved passes and markers that no run has used for a month are removed.
-const oldest = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
 for (const name of readdirSync(cacheDirectory)) {
   const path = join(cacheDirectory, name);
   const modified = statSync(path, { throwIfNoEntry: false })?.mtimeMs;
@@ -327,7 +340,7 @@ async function runOne(test: string, index: number): Promise<void> {
   const sandboxFiles = new Set([...EVERY_TEST, ...before.inputs.get(test)!.files]);
   if (!wholeRepository.has(test)) {
     const unreadable = before.repositoryFiles.filter((file) => !sandboxFiles.has(file));
-    const sandbox = { inputs: [...sandboxFiles], unreadable };
+    const sandbox = { inputs: [...sandboxFiles], unreadable, fingerprint: before.hashOf };
     sandboxRun = await runTestFile({ root, test, sandbox, workDirectory });
     if (sandboxRun.succeeded) {
       result = sandboxRun;
@@ -353,7 +366,9 @@ async function runOne(test: string, index: number): Promise<void> {
   if (result.complete) {
     console.log(`✔ ${test} (${seconds})`);
   } else if (result.succeeded) {
-    console.log(`✔ ${test} (${seconds}; a test was skipped, todo or cancelled, or none passed)`);
+    console.log(
+      `✔ ${test} (${seconds}; a test was skipped, todo or cancelled, none passed, or the file ended early)`,
+    );
   } else {
     console.log(`✖ ${test} (${seconds})\n${result.output.trimEnd()}\n`);
   }
@@ -402,7 +417,7 @@ console.log(
     `${failed.length} failed` +
     (fellBack > 0 ? `, ${fellBack} needed files outside their computed inputs` : '') +
     (notSaved > 0
-      ? `, ${notSaved} passed but not saved (a skipped test, or an input changed during the run)`
+      ? `, ${notSaved} passed but not saved (a skipped test, a file that ended early, or an input changed during the run)`
       : '') +
     (failed.length ? `:\n  ${failed.join('\n  ')}` : '.'),
 );

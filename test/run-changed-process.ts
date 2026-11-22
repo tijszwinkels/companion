@@ -21,12 +21,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { contentHasher } from './run-changed-inputs.ts';
 import type { FileOutcome } from './run-changed-reporter.ts';
 
 export interface TestRun {
   /** The process exited with status 0 and reported no failing test, hook or process. */
   succeeded: boolean;
-  /** Succeeded, at least one test passed, and no test was skipped, todo or cancelled. */
+  /**
+   * Succeeded, at least one test passed, no test was skipped, todo or cancelled, and the
+   * sandbox held the inputs the key describes.
+   */
   complete: boolean;
   /** What the spec reporter and the test process wrote, stdout and stderr together. */
   output: string;
@@ -50,6 +54,8 @@ export interface SandboxFiles {
   inputs: string[];
   /** Present as empty files that cannot be read. */
   unreadable: string[];
+  /** The fingerprints of the inputs the key was computed from (see contentHasher). */
+  fingerprint: (file: string) => string;
 }
 
 /** Whether bwrap is installed and may mount here (user namespaces can be switched off). */
@@ -78,6 +84,9 @@ export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
     test,
   ];
   let command = node;
+  // False when a copied input differs from what the key was computed from: it changed in
+  // between, so a pass must not be saved under that key.
+  let copiedAsKeyed = true;
   if (sandbox) {
     const copy = join(workDirectory, 'checkout');
     try {
@@ -93,6 +102,9 @@ export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
         seconds: (performance.now() - started) / 1000,
       };
     }
+
+    const copied = contentHasher(copy);
+    copiedAsKeyed = sandbox.inputs.every((file) => copied(file) === sandbox.fingerprint(file));
 
     // bwrap reads the source of each mount from the file system as it was before the
     // mounts, so node_modules still comes from the real checkout. A checkout without its own
@@ -144,32 +156,47 @@ export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
   const succeeded = exitCode === 0 && outcome.succeeded;
   return {
     succeeded,
-    complete: succeeded && outcome.passed > 0 && !outcome.partial,
+    complete: succeeded && outcome.passed > 0 && !outcome.partial && copiedAsKeyed,
     output: Buffer.concat(chunks).toString('utf8'),
     seconds: (performance.now() - started) / 1000,
   };
 }
 
-/** Builds the sandbox's checkout in `copy`: the inputs, and the unreadable placeholders. */
+/**
+ * Builds the sandbox's checkout in `copy`: the inputs, and the unreadable placeholders.
+ * Symbolic links are recreated as they are (a dangling one stays dangling), and last, so that
+ * no file or directory is ever made through a link, which could lead into the real checkout.
+ */
 function copyCheckout(root: string, copy: string, sandbox: SandboxFiles): void {
-  for (const file of sandbox.inputs) {
+  const inputs = new Set(sandbox.inputs);
+  const links: string[] = [];
+  for (const file of [...sandbox.inputs, ...sandbox.unreadable]) {
     const source = join(root, file);
     const target = join(copy, file);
     const type = lstatSync(source, { throwIfNoEntry: false });
     if (!type) {
       continue; // gone since the files were listed, so absent in the checkout too
     }
-    mkdirSync(dirname(target), { recursive: true });
     if (type.isSymbolicLink()) {
-      symlinkSync(readlinkSync(source), target);
-    } else {
+      links.push(file);
+      continue;
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    if (inputs.has(file)) {
       copyFileSync(source, target); // keeps the executable bit
+    } else {
+      writeFileSync(target, '', { mode: 0 });
     }
   }
 
-  for (const file of sandbox.unreadable) {
+  for (const file of links) {
     const target = join(copy, file);
+    for (let parent = dirname(target); parent !== copy; parent = dirname(parent)) {
+      if (lstatSync(parent, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Error(`${file} lies behind a symbolic link`);
+      }
+    }
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, '', { mode: 0 });
+    symlinkSync(readlinkSync(join(root, file)), target);
   }
 }
