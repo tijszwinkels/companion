@@ -129,6 +129,8 @@ export interface GatewayServiceOptions {
    * Widget and application frames, on the frame origin, never may.
    */
   allowMicrophone?: boolean;
+  /** Monotonic clock for the audio rate bound (audio-streams.ts); tests inject their own. */
+  audioClock?: () => number;
 }
 
 /**
@@ -1099,6 +1101,7 @@ export class Gateway {
       frames,
       deviceName: device.name,
       audioStreams: this.audioStreams,
+      audioClock: this.options.audioClock,
       onClosed: () => {
         this.relays.delete(relay);
         // The rate buckets live as long as one of the device's connections.

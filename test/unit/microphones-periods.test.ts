@@ -148,7 +148,7 @@ test('computer only: its speech is heard and its Activity entries name no browse
     await waitFor(() => listener.entries().length === 1);
     assert.deepEqual(listener.entries(), ['w3 (computer)']);
     assert.equal(
-      listener.observer.messages.find((message) => message.type === 'activity-entry').entry
+      listener.observer.messages.find((message) => message.type === 'activity-entry')!.entry
         .microphone,
       undefined,
       'An entry of the computer has no microphone field',
