@@ -5,8 +5,8 @@
 //   2. Paths: every repository file or directory that one of those files names in a quoted
 //      string, as in new URL('../fixtures/speech.wav', import.meta.url) or
 //      join(here, '..', 'bin', 'companion-phone'), read from the file's own directory and
-//      from the checkout root. A script found this way is followed like an import, because
-//      it is usually started as a program. In a file under
+//      from each directory above it up to the checkout root. A script found this way is
+//      followed like an import, because it is usually started as a program. In a file under
 //      test/ that refers to the checkout root, a bare directory name such as 'starter-kit'
 //      counts too.
 //   3. Programs: a test that starts programs (a file under test/ that uses
@@ -39,7 +39,9 @@ export interface CollectOptions {
   programDirectories: string[];
 }
 
-const SCRIPT = /\.(ts|mts|js|mjs|cjs)$/;
+const SCRIPT = /\.(ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;
+// Backticks are left out on purpose: comments use them around file names, and every file a
+// widely imported module mentions in a comment would become an input of most tests.
 const QUOTED = /(['"])([^'"\n]{1,200})\1/g;
 const QUOTED_RUN = /(?:(['"])[^'"\n]{1,200}\1\s*,\s*)*(['"])[^'"\n]{1,200}\2/g;
 
@@ -117,13 +119,18 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
       for (const inside of repositoryFiles) if (inside.startsWith(prefix)) files.add(inside);
     };
     const here = dirname(join(root, file));
+    // The file's directory and every directory above it, up to the checkout root.
+    const upwards = [here];
+    while (upwards.at(-1) !== root) upwards.push(dirname(upwards.at(-1)!));
     const consider = (literal: string): void => {
       if (literal.length < 2 || /[\s$`\\*]/.test(literal)) return;
       const relativeToFile = literal.startsWith('.');
       const bare = !relativeToFile && !literal.includes('/');
       if (bare) bareNames.add(literal);
-      // A path may be meant from the file's own directory or from the checkout root.
-      for (const from of relativeToFile ? [here] : [root, here]) {
+      // '../x' is read from the file's directory, './x' from there or from the checkout root
+      // (the working directory of the tests), any other path from each directory upwards.
+      const bases = literal.startsWith('..') ? [here] : relativeToFile ? [here, root] : upwards;
+      for (const from of bases) {
         const target = relative(root, resolve(from, literal));
         if (target.startsWith('..') || target.startsWith('node_modules')) continue;
         if (target === '') {
@@ -156,7 +163,7 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
     found = {
       files: [...files],
       root: refersToRoot,
-      startsPrograms: file.startsWith('test/') && /['"]node:child_process['"]/.test(text),
+      startsPrograms: file.startsWith('test/') && /['"](node:)?child_process['"]/.test(text),
     };
     references.set(file, found);
     return found;

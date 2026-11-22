@@ -58,7 +58,7 @@ for (const flag of flags) {
 }
 // With a filter only part of a test file runs, and that must not be saved as a pass.
 const nodeOptions = `${process.env.NODE_OPTIONS ?? ''} ${process.execArgv.join(' ')}`;
-if (/--test-(name-pattern|skip-pattern|only|shard)/.test(nodeOptions)) {
+if (/--test[-_](name[-_]pattern|skip[-_]pattern|only|shard|rerun[-_]failures)/.test(nodeOptions)) {
   stop('npm run test:changed cannot be combined with Node test filters. Use npm test instead.');
 }
 
@@ -144,7 +144,9 @@ const toRun = tests.filter((test) => {
   } catch {
     return true; // no saved pass
   }
-  return flags.has('--all');
+  if (!flags.has('--all')) return false;
+  rmSync(saved(test, before.keys), { force: true }); // an interrupted --all run leaves no pass
+  return true;
 });
 console.log(
   `${tests.length} test files: ${tests.length - toRun.length} already passed with these inputs, ` +
@@ -186,7 +188,10 @@ const stream = run({
   cwd: root,
   concurrency: Math.max(1, availableParallelism() - 1), // what `node --test` uses
 });
-stream.on('test:fail', (event) => failedEvents.add(entryOf(event.file)));
+stream.on('test:fail', (event) => {
+  // A failing todo test does not fail the run; its file only counts as partly run.
+  (event.todo !== undefined ? partial : failedEvents).add(entryOf(event.file));
+});
 stream.on('test:pass', (event) => {
   if (event.skip !== undefined || event.todo !== undefined) partial.add(entryOf(event.file));
 });

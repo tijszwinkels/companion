@@ -34,6 +34,9 @@ const FILES: Record<string, string> = {
     "const root = new URL('../../', import.meta.url).pathname;\n" +
     "console.log(join(root, 'kit'));\n",
   'test/unit/names.test.ts': "console.log('test/unit/url.test.ts', '../../build/result.txt');\n",
+  // A path from a directory above the file's own, and the old spelling of the built-in.
+  'test/unit/upwards.test.ts': "console.log('fixtures/data.json');\n",
+  'test/unit/old-spelling.test.ts': "import { spawn } from 'child_process';\nconsole.log(spawn);\n",
   'test/unit/broken.test.ts':
     "import { broken } from '../../src/broken.js';\nconsole.log(broken);\n",
 };
@@ -113,11 +116,20 @@ test('a named test file and a file git does not list are inputs', () => {
 });
 
 test('a test that starts programs depends on the program directories', () => {
-  assert.deepEqual(inputs.get('test/unit/spawns.test.ts'), {
-    files: [...PROGRAMS, 'test/unit/spawns.test.ts'],
-    startsPrograms: true,
-    complete: true,
-  });
+  for (const name of ['test/unit/spawns.test.ts', 'test/unit/old-spelling.test.ts']) {
+    assert.deepEqual(inputs.get(name), {
+      files: [...PROGRAMS, name],
+      startsPrograms: true,
+      complete: true,
+    });
+  }
+});
+
+test('a path is also read from the directories above the file', () => {
+  assert.deepEqual(inputs.get('test/unit/upwards.test.ts')!.files, [
+    'test/fixtures/data.json',
+    'test/unit/upwards.test.ts',
+  ]);
 });
 
 test('a test that names the checkout root also reaches a directory by its bare name', () => {
@@ -153,6 +165,7 @@ test('a key changes exactly when an input changes', () => {
   const edited = keys();
   assert.deepEqual(changedBetween(before, edited), [
     'test/unit/imports.test.ts',
+    'test/unit/old-spelling.test.ts',
     'test/unit/program.test.ts',
     'test/unit/root.test.ts',
     'test/unit/spawns.test.ts',
@@ -162,11 +175,13 @@ test('a key changes exactly when an input changes', () => {
   chmodSync(join(root, 'bin/tool'), 0o755);
   const executable = keys();
   assert.deepEqual(changedBetween(edited, executable), [
+    'test/unit/old-spelling.test.ts',
     'test/unit/root.test.ts',
     'test/unit/spawns.test.ts',
   ]);
   rmSync(join(root, 'bin/tool'));
   assert.deepEqual(changedBetween(executable, keys()), [
+    'test/unit/old-spelling.test.ts',
     'test/unit/root.test.ts',
     'test/unit/spawns.test.ts',
   ]);
