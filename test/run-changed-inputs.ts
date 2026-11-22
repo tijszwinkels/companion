@@ -159,10 +159,20 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
         consider(parts.slice(start).join('/'));
       }
     }
-    // Only the directory part counts: 'widgets/' of `widgets/${name}.js`.
+    // Only the directory part counts: 'widgets/' of `widgets/${name}.js`. './' and '../' name
+    // the file's own directory and the one above it, which consider() leaves out for quoted
+    // strings; the checkout root itself is not taken as a directory.
     for (const template of text.matchAll(TEMPLATE_START)) {
       const fixedStart = template[1];
-      consider(fixedStart.slice(0, fixedStart.lastIndexOf('/') + 1));
+      const directory = fixedStart.slice(0, fixedStart.lastIndexOf('/') + 1);
+      if (/^(\.\.?\/)+$/.test(directory)) {
+        const target = relative(root, resolve(here, directory));
+        if (target !== '' && !target.startsWith('..')) {
+          addDirectory(target);
+        }
+      } else {
+        consider(directory);
+      }
     }
     // A test with the checkout root in hand needs only a bare name to reach a directory.
     // Source files are left out: there every word that is also a directory name would count.

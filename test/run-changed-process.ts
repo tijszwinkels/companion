@@ -3,12 +3,23 @@
 //
 // The sandbox is bubblewrap (`bwrap`): the whole file system stays visible as it is, and a
 // private copy of the inputs is mounted over the checkout's own path. Absolute paths, the tsx
-// cache and everything outside the checkout keep working; an input that the rules in
-// run-changed-inputs.ts missed is absent, so a test that needs it fails instead of passing.
-// node_modules is mounted from the checkout, because package-lock.json, an input of every
-// test, stands for it.
+// cache and everything outside the checkout keep working. Every other file git lists is there
+// as an empty file that cannot be read: a test that reads an input the rules in
+// run-changed-inputs.ts missed fails instead of passing, and a test that only checks whether
+// a file exists or lists a directory sees the same names as in the checkout. node_modules is
+// mounted from the checkout, because package-lock.json, an input of every test, stands for it.
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { FileOutcome } from './run-changed-reporter.ts';
 
@@ -28,10 +39,17 @@ export interface TestRunOptions {
   root: string;
   /** Repository-relative path of the test file. */
   test: string;
-  /** The files the sandbox holds, repository-relative; undefined runs outside the sandbox. */
-  sandboxFiles: string[] | undefined;
+  /** What the sandbox holds, repository-relative; undefined runs outside the sandbox. */
+  sandbox: SandboxFiles | undefined;
   /** An empty private directory outside the checkout, removed afterwards. */
   workDirectory: string;
+}
+
+export interface SandboxFiles {
+  /** Copied as they are. */
+  inputs: string[];
+  /** Present as empty files that cannot be read. */
+  unreadable: string[];
 }
 
 /** Whether bwrap is installed and may mount here (user namespaces can be switched off). */
@@ -43,7 +61,7 @@ export function sandboxWorks(root: string): boolean {
 }
 
 export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
-  const { root, test, sandboxFiles, workDirectory } = options;
+  const { root, test, sandbox, workDirectory } = options;
   const started = performance.now();
   const outcomeFile = join(workDirectory, 'outcome.json');
   mkdirSync(workDirectory, { recursive: true });
@@ -60,18 +78,32 @@ export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
     test,
   ];
   let command = node;
-  if (sandboxFiles) {
+  if (sandbox) {
     const copy = join(workDirectory, 'checkout');
-    for (const file of sandboxFiles) {
-      mkdirSync(dirname(join(copy, file)), { recursive: true });
-      copyFileSync(join(root, file), join(copy, file)); // keeps the executable bit
+    try {
+      copyCheckout(root, copy, sandbox);
+    } catch (error) {
+      // A file that changed type or vanished while the copy was made: a failure, so that the
+      // test file runs once more in the checkout.
+      rmSync(workDirectory, { recursive: true, force: true });
+      return {
+        succeeded: false,
+        complete: false,
+        output: `Could not prepare the sandbox: ${String(error)}`,
+        seconds: (performance.now() - started) / 1000,
+      };
     }
-    mkdirSync(join(copy, 'node_modules'), { recursive: true }); // where node_modules is mounted
 
     // bwrap reads the source of each mount from the file system as it was before the
-    // mounts, so node_modules still comes from the real checkout. --die-with-parent ends
-    // the test when this command is interrupted.
+    // mounts, so node_modules still comes from the real checkout. A checkout without its own
+    // node_modules (a worktree inside another checkout) finds the one above it, which the
+    // sandbox leaves as it is. --die-with-parent ends the test when this command is
+    // interrupted.
     const nodeModules = join(root, 'node_modules');
+    const mountNodeModules = existsSync(nodeModules) ? ['--bind', nodeModules, nodeModules] : [];
+    if (mountNodeModules.length) {
+      mkdirSync(join(copy, 'node_modules'), { recursive: true });
+    }
     command = [
       'bwrap',
       '--dev-bind',
@@ -80,9 +112,7 @@ export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
       '--bind',
       copy,
       root,
-      '--bind',
-      nodeModules,
-      nodeModules,
+      ...mountNodeModules,
       '--chdir',
       root,
       '--die-with-parent',
@@ -118,4 +148,28 @@ export async function runTestFile(options: TestRunOptions): Promise<TestRun> {
     output: Buffer.concat(chunks).toString('utf8'),
     seconds: (performance.now() - started) / 1000,
   };
+}
+
+/** Builds the sandbox's checkout in `copy`: the inputs, and the unreadable placeholders. */
+function copyCheckout(root: string, copy: string, sandbox: SandboxFiles): void {
+  for (const file of sandbox.inputs) {
+    const source = join(root, file);
+    const target = join(copy, file);
+    const type = lstatSync(source, { throwIfNoEntry: false });
+    if (!type) {
+      continue; // gone since the files were listed, so absent in the checkout too
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    if (type.isSymbolicLink()) {
+      symlinkSync(readlinkSync(source), target);
+    } else {
+      copyFileSync(source, target); // keeps the executable bit
+    }
+  }
+
+  for (const file of sandbox.unreadable) {
+    const target = join(copy, file);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, '', { mode: 0 });
+  }
 }

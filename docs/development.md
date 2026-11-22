@@ -139,18 +139,21 @@ test file in which a test was skipped; passes unused for 30 days are removed.
 `-- --list` shows what would run and `-- --all` runs every file.
 
 Each test file runs in a sandbox (`bwrap`, bubblewrap) in which the checkout, at
-its own path, holds only that file's inputs and `node_modules`; the rest of the
-system is unchanged. An input the rules missed is then absent and the test
-fails. A test file that fails in the sandbox runs once more in the checkout as
-it is; if it passes there, the command says so (with the missing path when the
-output names one), and from then on that test file depends on every file git
-lists, until its computed inputs change. Without a working `bwrap` the command
-says so and runs every test file, without using or saving passes. The sandbox
-does not cover what lies outside the checkout (system programs, the network,
-the clock), `.git`, a test that passes by chance, or two runs at the same time.
-In the sandbox, files owned by root appear to belong to nobody, so a test that
-checks ownership takes the fallback. Run the full `npm test` before handing work
-over; it always runs everything.
+its own path, holds only that file's inputs and `node_modules`; every other file
+git lists is there as an empty file that cannot be read, and the rest of the
+system is unchanged. A test that reads an input the rules missed then fails.
+Because a test can see which files exist, adding, removing or renaming a file
+runs every test file again. A test file that fails in the sandbox runs once more
+in the checkout as it is; if it passes there, the command says so (with the
+missing path when the output names one), and from then on that test file depends
+on every file git lists, until its computed inputs change. Without a working
+`bwrap` the command says so and runs every test file, without using or saving
+passes. The sandbox does not cover what lies outside the checkout (system
+programs, the network, the clock), `.git`, files git does not list (they are
+absent unless they are inputs), a test that passes by chance, or two runs at the
+same time. In the sandbox, files owned by root appear to belong to nobody, so a
+test that checks ownership takes the fallback. Run the full `npm test` before
+handing work over; it always runs everything.
 
 For native-window changes, build with `npm run ui:build`, then run
 `npm run test:window`. See the native guide for Qt/WebEngine/LayerShellQt

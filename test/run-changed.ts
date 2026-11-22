@@ -65,7 +65,8 @@ function stop(message: string): never {
 }
 // The sandbox hides the checkout's own files, so the copies and results must be elsewhere.
 const cacheInCheckout = relative(root, cacheDirectory);
-if (!cacheInCheckout.startsWith('..') && !isAbsolute(cacheInCheckout)) {
+const cacheOutside = cacheInCheckout === '..' || cacheInCheckout.startsWith('../');
+if (!cacheOutside && !isAbsolute(cacheInCheckout)) {
   stop(`The cache directory must be outside the checkout: ${cacheDirectory}`);
 }
 
@@ -107,11 +108,13 @@ function listRepositoryFiles(): string[] {
 }
 
 interface Snapshot {
+  repositoryFiles: string[];
   inputs: Map<string, TestInputs>;
   keys: Map<string, string>;
   /** The key of a test file that depends on every file of the repository. */
   wholeRepositoryKey: (test: string) => string;
 }
+
 // The inputs and keys of the given test files as the checkout is now.
 async function snapshot(tests: string[]): Promise<Snapshot> {
   const repositoryFiles = listRepositoryFiles();
@@ -122,24 +125,35 @@ async function snapshot(tests: string[]): Promise<Snapshot> {
     programDirectories: PROGRAM_DIRECTORIES,
   });
   const hashOf = contentHasher(root);
+  // The sandbox shows every file git lists by name (run-changed-process.ts), so a test can
+  // observe which files exist; adding, removing or renaming a file changes every key.
+  const names = createHash('sha256')
+    .update([...repositoryFiles].sort().join('\n'))
+    .digest('hex');
   const everyTest = [
     FORMAT,
     process.version,
     process.platform,
     process.arch,
+    `names ${names}`,
     ...EVERY_TEST.map((file) => `${file} ${hashOf(file)}`),
   ];
   const keys = new Map(
     tests.map((test) => [test, testKey(test, inputs.get(test)!, everyTest, hashOf)]),
   );
   // Every file git lists, and the computed inputs, which may include a build result that git
-  // does not list. Computed only for the test files that need it; hashOf reads each file once.
+  // does not list. Computed only for the test files that need it.
   const wholeRepositoryKey = (test: string): string => {
     const files = [...new Set([...repositoryFiles, ...inputs.get(test)!.files])].sort();
     const whole = { files, startsPrograms: true, complete: inputs.get(test)!.complete };
     return testKey(test, whole, ['whole repository', ...everyTest], hashOf);
   };
-  return { inputs, keys, wholeRepositoryKey };
+  // Every file is read now, so that the key of a test file that turns out to need the whole
+  // repository describes the checkout at this moment, not at a later first use.
+  for (const file of repositoryFiles) {
+    hashOf(file);
+  }
+  return { repositoryFiles, inputs, keys, wholeRepositoryKey };
 }
 
 // The same files as `npm test`: test/unit/*.test.ts, whether git lists them or not.
@@ -233,7 +247,6 @@ if (flags.has('--list')) {
   }
   process.exit(0);
 }
-if (!toRun.length) process.exit(0);
 
 // The sandbox copies of a run are in a directory named after its process ID. A directory
 // whose process is gone was left behind by an interrupted run.
@@ -244,7 +257,11 @@ for (const name of readdirSync(sandboxDirectory)) {
     rmSync(join(sandboxDirectory, name), { recursive: true, force: true });
   }
 }
+// A directory left by an earlier run with this process ID is emptied as well.
 const runDirectory = join(sandboxDirectory, String(process.pid));
+rmSync(runDirectory, { recursive: true, force: true });
+
+if (!toRun.length) process.exit(0);
 
 function processExists(pid: number): boolean {
   try {
@@ -255,11 +272,18 @@ function processExists(pid: number): boolean {
   }
 }
 
-// The first file of the checkout that a test's output names and that was not in its sandbox.
+// The first file of the checkout that a test's output names and that was not in its sandbox:
+// an absolute path, or the quoted path of a failed file operation (relative to the checkout,
+// the working directory of the test).
 function missingPath(output: string, sandboxFiles: Set<string>): string | undefined {
   const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  for (const match of output.matchAll(new RegExp(`${escapedRoot}/([^\\s'"\`),:]+)`, 'g'))) {
-    const file = match[1];
+  const absolute = new RegExp(`${escapedRoot}/([^\\s'"\`),:]+)`, 'g');
+  const operation = /(?:ENOENT|EACCES)[^'\n]*'([^'\n]+)'/g;
+  const named = [
+    ...[...output.matchAll(absolute)].map((match) => match[1]),
+    ...[...output.matchAll(operation)].map((match) => relative(root, resolve(root, match[1]))),
+  ];
+  for (const file of named) {
     if (!sandboxFiles.has(file) && existsSync(join(root, file))) {
       return file;
     }
@@ -277,13 +301,15 @@ async function runOne(test: string, index: number): Promise<void> {
   let sandboxRun: TestRun | undefined;
   const sandboxFiles = new Set([...EVERY_TEST, ...before.inputs.get(test)!.files]);
   if (!wholeRepository.has(test)) {
-    sandboxRun = await runTestFile({ root, test, sandboxFiles: [...sandboxFiles], workDirectory });
+    const unreadable = before.repositoryFiles.filter((file) => !sandboxFiles.has(file));
+    const sandbox = { inputs: [...sandboxFiles], unreadable };
+    sandboxRun = await runTestFile({ root, test, sandbox, workDirectory });
     if (sandboxRun.succeeded) {
       result = sandboxRun;
     }
   }
   if (!result) {
-    result = await runTestFile({ root, test, sandboxFiles: undefined, workDirectory });
+    result = await runTestFile({ root, test, sandbox: undefined, workDirectory });
     if (sandboxRun && result.succeeded) {
       wholeRepository.add(test);
       writeFileSync(markerOf(before.keys.get(test)!), JSON.stringify({ test }) + '\n');

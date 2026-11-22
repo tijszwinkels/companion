@@ -4,13 +4,15 @@
 // may be saved.
 //
 // The summary Node gives at the end does not show a failing hook, a failing test process or a
-// skipped suite, so those are taken from the single events.
+// skipped suite, so those are taken from the single events. Passed tests are counted from the
+// events too: a file without any test is reported as one passed test named after the file.
+import { resolve } from 'node:path';
 import type { TestEvent } from 'node:test/reporters';
 
 export interface FileOutcome {
   /** Node's own verdict for the run, and no failing test, hook or process. */
   succeeded: boolean;
-  /** Tests that passed, not counting skipped and todo tests. */
+  /** Tests that passed, not counting skipped and todo tests, suites or the file itself. */
   passed: number;
   /** A test or suite was skipped, todo or cancelled: the file did not run completely. */
   partial: boolean;
@@ -33,14 +35,17 @@ export default async function* outcomeReporter(
         failedEvent = true;
       }
     } else if (event.type === 'test:pass') {
+      const { file, name, nesting } = event.data;
+      const fileItself = nesting === 0 && file !== undefined && resolve(name) === resolve(file);
       if (event.data.skip !== undefined || event.data.todo !== undefined) {
         partial = true;
+      } else if (event.data.details.type === 'test' && !fileItself) {
+        passed++;
       }
     } else if (event.type === 'test:summary' && event.data.file === undefined) {
       // The summary of the whole run, not the one of the single file.
       const { counts } = event.data;
       nodeSucceeded = event.data.success;
-      passed = counts.passed;
       if (counts.skipped > 0 || counts.todo > 0 || counts.cancelled > 0) {
         partial = true;
       }
