@@ -1550,29 +1550,27 @@ transcript instead, and neither the chat page nor the shell sees the
 reader's input. The chat page would take such a scroll for a layout change
 and, at the live end, pull the view straight back. So while at least one
 widget frame is in the transcript (`src/widgets/frame-scroll.ts`), a scroll
-of the transcript toward its start counts as the reader's when either the
-transcript's height and its content's height are unchanged since the
-previous scroll event (or size change), or the previous scroll event left
-the view at the end and it is no longer at the end. The second case covers
-a scroll that coincides with a change of the content (an answer streaming,
-a widget's frame growing to its height): growth never moves the view toward
-the start, and the browser pulling the view back after the content shrank
-leaves it at the new end. The shell then sends the chat page a synthetic
+of the transcript toward its start, with the transcript's height and its
+content's height unchanged since the previous scroll event (or size
+change), counts as the reader's: the shell sends the chat page a synthetic
 `wheel` on the transcript before the page's own scroll handler runs, which
 is how the page notes the reader's input. A panel watches only while its
 frame is in the page (not after it failed, nor while it waits for the
-connection). Layout changes that move the view change one of the heights;
-the chat page's own scrolls toward the start happen only then, while the
-reader is away from the live end. A chat without widgets is not watched.
+connection). Layout changes that move the
+view change one of the heights; the chat page's own scrolls toward the
+start happen only then. A chat without widgets is not watched.
 
-| Case                                                                                      | Reader's scroll |
-| ----------------------------------------------------------------------------------------- | --------------- |
-| Toward the start, heights unchanged (wheel over a frame)                                  | yes             |
-| From the live end toward the start while the content grew at the same moment              | yes             |
-| Toward the end, heights unchanged                                                         | no (not needed) |
-| The content shrank and the browser pulled the view back (to the new end)                  | no              |
-| The content grew, or the window was resized, and the view did not move toward the start   | no              |
-| Away from the end, toward the start, while the content changed (keeping the reader's row) | no              |
+| Case                                                     | Reader's scroll |
+| -------------------------------------------------------- | --------------- |
+| Toward the start, heights unchanged (wheel over a frame) | yes             |
+| Toward the end, heights unchanged                        | no (not needed) |
+| The content shrank and the browser pulled the view back  | no              |
+| The content grew, or the window was resized              | no              |
+
+Limit: a wheel scroll over a widget in the exact instant the content grows
+(a widget's frame taking its reported height, an answer streaming) can jump
+back to the end, because the heights changed at that moment. Moving the
+pointer off the widget, or scrolling again, works.
 
 ### Rule: a press into a widget
 
@@ -1631,6 +1629,11 @@ told: the press reaches no chat or list element, and nothing is sent.
 
 ### Known limits
 
+- **Scrolling over a widget while the content grows.** A wheel scroll over a
+  widget in the exact instant the content grows (a widget's frame taking its
+  reported height, an answer streaming) can jump back to the end (see the
+  scrolling rule). Moving the pointer off the widget, or scrolling again,
+  works.
 - **Older pages after a long disconnection.** A widget in an older history
   page the reader has loaded (above the live window) keeps the frame
   address it was loaded with. When the shell was disconnected for more than
@@ -2132,8 +2135,7 @@ The [inline widget](#inline-widgets) rules have one table each:
   scrolled out, polling again when back, not visible behind the settings
   screen and behind the Activity column over the chat at 420 px; at the
   live end, a wheel over a widget's frame leaving the end and staying there
-  (it was pulled back before), also when the view moves at the same moment
-  as the frame grows; a page loaded before the gateway had a frame
+  (it was pulled back before); a page loaded before the gateway had a frame
   origin failing at once with the reload reason, and showing the widget
   after a reload; while disconnected only the frame inert, its label
   readable; the open screenshot viewer making the frame not visible

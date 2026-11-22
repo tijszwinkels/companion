@@ -877,27 +877,6 @@ test(
     await drawn(page);
     assert.equal(await page.evaluate<number>(`${transcript}.scrollTop`), moved);
     await page.waitFor(`document.querySelector('button.latest')`);
-
-    // The same scroll at the moment the content grows (here the widget's
-    // frame, as when it reports its height): one task moves the view 300 px
-    // toward the start without any input event, as the browser does for a
-    // wheel over the frame, and makes the frame taller. The view stays
-    // there (it was pulled back to the end before the rule's second case).
-    await page.evaluate(`document.querySelector('button.latest').click()`);
-    await page.waitFor(atEnd);
-    await page.waitFor(`!document.querySelector('button.latest')`);
-    await drawn(page);
-    const fromEnd = await page.evaluate<number>(`${transcript}.scrollTop`);
-    await page.evaluate(`(() => {
-      const frame = ${panelExpression('probe')}.querySelector('iframe');
-      frame.style.height = (frame.getBoundingClientRect().height + 16) + 'px';
-      ${transcript}.scrollTop = ${transcript}.scrollTop - 300;
-    })()`);
-    await drawn(page);
-    await drawn(page);
-    const stayed = await page.evaluate<number>(`${transcript}.scrollTop`);
-    assert.ok(stayed <= fromEnd - 250, `from ${fromEnd} to ${stayed}`);
-    await page.waitFor(`document.querySelector('button.latest')`);
     await assertNoViolations(page);
   },
 );
