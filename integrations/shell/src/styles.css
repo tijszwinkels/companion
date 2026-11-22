@@ -949,8 +949,11 @@ body {
 /* ---- Pinned widget (workspace/PinnedWidget.tsx) ----------------------------------- */
 
 /* The pinned widget fills its place: the band above the chat or the right
-   column. Its frame is as tall as the place less the header. */
+   column. Its frame is as tall as the place less the header. It is outside
+   the chat page, so it sets the chat's pixel unit (`--u`, which the
+   PanelAction buttons in its header use) itself, at the shell's scale 1. */
 .panel.pinned-widget {
+  --u: 1px;
   flex: 1;
   width: 100%;
   min-height: 0;

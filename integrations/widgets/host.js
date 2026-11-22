@@ -806,12 +806,14 @@ function shellTheme(value) {
   return value;
 }
 
-// Pin and Unpin from the shell's header: the same request the desktop's
-// Unpin makes (integrations/panel/WidgetSurface.qml), `present` with only the
-// placement, on this page's own view. The listener then reports the change
-// to every client, the shell included, which moves the widget; nothing is
-// shown as changed before that. One request at a time; a refusal is shown
-// in this page's status line, as an action's error is.
+// Pin and Unpin from the shell's header: this page's own view's `present`
+// request, the one the desktop's Unpin makes (integrations/panel/
+// WidgetSurface.qml), with only the placement changed: the view's current
+// presentation (its height and Activity choice, read with its state) is
+// kept. The listener then reports the change to every client, the shell
+// included, which moves the widget; nothing is shown as changed before
+// that. One request at a time; a refusal is shown in this page's status
+// line, as an action's error is.
 let presenting = false;
 
 function presentFromShell(placement) {
@@ -822,11 +824,19 @@ function presentFromShell(placement) {
   const requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, '0'),
   ).join('');
-  void fetch(api + '/present', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ presentation: { placement }, requestId: 'shell-' + requestId }),
-  })
+  void fetchState()
+    .then((snapshot) => {
+      const current = snapshot.presentation;
+      let presentation = { placement };
+      if (current && typeof current === 'object' && !Array.isArray(current)) {
+        presentation = { ...current, placement };
+      }
+      return fetch(api + '/present', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presentation, requestId: 'shell-' + requestId }),
+      });
+    })
     .then(async (response) => {
       if (!response.ok) {
         const value = await response.json().catch(() => ({}));

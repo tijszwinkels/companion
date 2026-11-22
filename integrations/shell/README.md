@@ -1480,9 +1480,10 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    `#rrggbb` colours and a scale within 0.4–6), `visible` (a boolean) and
    `present` (`pinned` or `inline`), with exactly those fields, as plain
    objects (not arrays); everything else is ignored. Embedded, it does not
-   poll until the shell's first `visible: true`. A `present` makes it send
-   its own view's `present` request with only the placement
-   (`{"presentation":{"placement":…},"requestId":…}`, the request the
+   poll until the shell's first `visible: true`. A `present` makes it read
+   its view's state and send its own view's `present` request with that
+   presentation and the new placement
+   (`{"presentation":{…,"placement":…},"requestId":…}`, the request the
    desktop's Unpin makes, `../panel/WidgetSurface.qml`), one at a time; a
    refusal is shown in its status line. Embedded, it also reports its own
    size to its view (`viewport`: its window's CSS width and height and the
@@ -1522,7 +1523,7 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
 | host.js embedded, before the first `visible`           | No polling                                                                |
 | host.js embedded, state answers 404                    | `error` "Its address has ended, …" to the shell; loopback: nothing posted |
 | host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it                          |
-| host.js embedded: `present` `pinned` / `inline`        | One `present` request with that placement only                            |
+| host.js embedded: `present` `pinned` / `inline`        | One `present` request: the view's presentation, that placement            |
 | host.js embedded: `present` `full`, or an extra field  | Ignored                                                                   |
 | host.js embedded: `present` refused                    | The refusal in its status line                                            |
 | host.js embedded: first `visible: true`; a new size    | One `viewport` with its size and scale 1; again once per new size         |
@@ -1623,7 +1624,7 @@ told: the press reaches no chat or list element, and nothing is sent.
   load only from that origin.
 - **Nothing given to a frame.** The shell puts nothing into a frame's
   address (it is used exactly as the gateway sent it) and posts only
-  `theme` and `visible` (rule above). The frame's origin differs from the
+  `theme`, `visible` and `present` (the messages rule above). The frame's origin differs from the
   shell's, so it cannot read the shell's `localStorage` (the device token),
   its DOM or its socket.
 - **Layout.** A frame changes only its own height, within 100–420 px and at
@@ -1720,10 +1721,10 @@ Rule (`src/widgets/pinned-widget.ts`, drawn by `src/workspace/PinnedWidget.tsx`)
    one frame.
 5. **Pin** (in a shown inline widget's header) and **Unpin** (in the pinned
    widget's header) ask the widget's own frame to change its presentation
-   (`present`): host.js sends its view's `present` request with only the
-   placement, the request of the desktop's Unpin. A Pin from the browser
-   therefore also gives the widget the default height (25 %), as an Unpin on
-   the desktop does. Each is available while its frame is shown and
+   (`present`): host.js sends its view's `present` request, the request of
+   the desktop's Unpin, with the view's current presentation (read with its
+   state) and only the placement changed, so the widget keeps its own
+   height and Activity choice. Each is available while its frame is shown and
    requests are admitted; otherwise it stays focusable, marked unavailable.
    A failed frame has no page to ask: its header does not offer them.
    Nothing moves until the listener reports the change; a refusal is shown
@@ -1739,8 +1740,10 @@ Rule (`src/widgets/pinned-widget.ts`, drawn by `src/workspace/PinnedWidget.tsx`)
    reload hint, as inline.
 8. Switching conversations removes it; coming back loads it again. Moving it
    between the top and the right draws it in another part of the page, so
-   it loads again there (its state is the listener's; only the widget's own
-   scroll position is lost).
+   it loads again there: its state is the listener's, but what the widget
+   holds only in its page (text typed and not yet saved, its scroll
+   position) is lost. The same happens when a resize crosses the shape's
+   limit under Auto (see the known limits).
 
 | Case                                                      | Shown                                                              |
 | --------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -1857,8 +1860,18 @@ Rule (`src/layout/pinned-place.ts`, `src/workspace/PinnedWidget.tsx`):
 - Fold, the dragged height and the fixed place are one setting of this
   browser for every pinned widget; a dragged height also overrides a
   widget's own `heightPercent` from then on.
-- Moving between the top and the right, and leaving the settings screen,
-  loads the widget's page again.
+- Moving between the top and the right (a place button, or a resize across
+  the shape's limit under Auto, for example a tiling window manager
+  halving the window), and leaving the settings screen, loads the widget's
+  page again: text typed in the widget and not yet saved is lost. Keeping
+  the page would need the frame drawn in one place and positioned over the
+  other by measuring it, a second layout mechanism; left out until asked
+  for.
+- In a window so low that the band's percentage would leave the chat less
+  than 160 px, the band stops growing, but its edge still announces (and
+  its keys still step through) the percentage remembered, so the first key
+  presses may not move it. Showing the reached percentage would need the
+  area below the bar measured.
 - The size an agent sees (`lastViewport`) is the last one any view
   reported: the desktop's or a browser's.
 - The desktop's full-height pinned widget (`heightPercent` 100, in place of

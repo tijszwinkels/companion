@@ -464,4 +464,6 @@ test('pinned state: one case per row of the README table', () => {
   assert.equal(rowOfMessage('w', 'w@1024'), true, 'a fragment of the message');
   assert.equal(rowOfMessage('w', 'w2@0'), false);
   assert.equal(rowOfMessage('', 'w@0'), false, 'nothing pinned');
+  assert.equal(rowOfMessage('w', 'w@x@0'), false, 'another message whose ID starts with it');
+  assert.equal(rowOfMessage('w@x', 'w@x@0'), true, 'an ID with @ in it');
 });

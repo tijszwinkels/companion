@@ -79,5 +79,6 @@ export function rowOfMessage(messageId: string, rowKey: string): boolean {
   if (messageId === '') {
     return false;
   }
-  return rowKey.startsWith(messageId + '@');
+  // The offset follows the last '@'; a message ID may contain one itself.
+  return rowKey.slice(0, rowKey.lastIndexOf('@')) === messageId;
 }

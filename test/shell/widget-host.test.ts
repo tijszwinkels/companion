@@ -515,7 +515,14 @@ test(
     });
 
     const { run } = await fixture.conversation();
-    const widgetId = await fixture.publishCounter(run);
+    // A widget whose agent chose its own presentation (kept by Pin and Unpin).
+    // (The fixture's type names only placement and height; the widget tool
+    // takes the whole presentation.)
+    const presentation = { placement: 'inline', heightPercent: 40, replaceActivity: false };
+    const widgetId = await fixture.publishCounter(
+      run,
+      presentation as { placement: 'inline'; heightPercent: number },
+    );
     const viewUrl = fixture.sessions
       .snapshot()[0]
       .messages.find((message) => message.widget?.id === widgetId)!.widget!.viewUrl!;
@@ -594,15 +601,25 @@ test(
       textScale: 1,
     });
 
-    // Pin and Unpin: exactly the desktop Unpin's request, with the placement.
+    // Pin and Unpin: the desktop Unpin's request, with the view's current
+    // presentation (from its state) and only the placement changed.
+    assert.deepEqual(state.presentation, {
+      placement: 'inline',
+      heightPercent: 40,
+      replaceActivity: false,
+    });
     await post(shell, `{ type: 'present', placement: 'pinned' }`);
     await waitFor(() => presents().length === 1, 5000);
     assert.deepEqual(Object.keys(presents()[0].body), ['presentation', 'requestId']);
-    assert.deepEqual(presents()[0].body.presentation, { placement: 'pinned' });
+    assert.deepEqual(presents()[0].body.presentation, {
+      placement: 'pinned',
+      heightPercent: 40,
+      replaceActivity: false,
+    });
     assert.match(presents()[0].body.requestId, /^shell-[0-9a-f]{32}$/);
     await post(shell, `{ type: 'present', placement: 'inline' }`);
     await waitFor(() => presents().length === 2, 5000);
-    assert.deepEqual(presents()[1].body.presentation, { placement: 'inline' });
+    assert.equal(presents()[1].body.presentation.placement, 'inline');
 
     // Malformed ones, and one from the widget's own inner frame: ignored.
     for (const message of [

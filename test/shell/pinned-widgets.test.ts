@@ -150,13 +150,22 @@ function listenerPlacement(fixture: ShellFrameFixture, conversationId: string): 
  */
 async function pinnedSetup(
   context: { after(callback: () => Promise<void>): void },
-  options: { placement: 'pinned' | 'inline'; width: number; height: number; title?: string },
+  options: {
+    placement: 'pinned' | 'inline';
+    width: number;
+    height: number;
+    title?: string;
+    heightPercent?: number;
+  },
 ) {
   const { fixture, browser } = await frameSetup(context);
   const title = options.title ?? 'Pinned fixture';
   const { id, run } = await conversation(fixture, title);
   run.emit(chatMessage('answer', 'assistant', 'Here is a counter.'));
-  const widgetId = await fixture.publishCounter(run, { placement: options.placement });
+  const widgetId = await fixture.publishCounter(run, {
+    placement: options.placement,
+    heightPercent: options.heightPercent,
+  });
   run.finish();
 
   const { page, browserContextId } = await pairedPage(
@@ -513,7 +522,7 @@ test(
   async (context) => {
     const { fixture, browser, page, browserContextId, id, widgetId, title } = await pinnedSetup(
       context,
-      { placement: 'inline', width: 1280, height: 800 },
+      { placement: 'inline', width: 1280, height: 800, heightPercent: 40 },
     );
 
     // Inline: its header has Pin, once the frame is shown.
@@ -521,6 +530,11 @@ test(
     assert.equal(await page.evaluate(`document.querySelector('#pinned-widget')`), null);
     await press(page, 'Pin', chatPanel('counter'));
     await waitFor(() => listenerPlacement(fixture, id) === 'pinned', 5000);
+    // The widget keeps the height its agent chose (only the placement changed).
+    const presentation = () =>
+      fixture.sessions.snapshot().find((candidate) => candidate.id === id)?.pinnedMessage?.widget
+        ?.presentation;
+    assert.equal(presentation()?.heightPercent, 40);
     await shownAt(page, 'right');
     await page.waitFor(`${chatPanel('counter')}?.dataset.phase === 'pinned'`);
     assert.equal(await page.evaluate(`document.querySelectorAll('iframe').length`), 1);
@@ -599,6 +613,14 @@ test(
     await shownAt(page, 'right');
     const address = await pinnedAddress(page);
     assert.match(address, new RegExp('^' + fixture.frameOrigin + '/f/[A-Za-z0-9_-]{43}/$'));
+    // Its header's buttons have the chat's button size (it is outside the chat page).
+    assert.deepEqual(
+      await page.evaluate(
+        `[...${pinnedPanel}.querySelectorAll('.inline-widget-action')].map((button) => button.getBoundingClientRect().height)`,
+      ),
+      [22, 22],
+    );
+
     const attributes = await page.evaluate<Json>(`(() => {
       const iframe = ${pinnedPanel}.querySelector('iframe');
       return { sandbox: iframe.getAttribute('sandbox'), referrer: iframe.getAttribute('referrerpolicy') };
