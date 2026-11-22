@@ -22,6 +22,12 @@ export interface IntentFeedback {
 export interface HistoryEntry {
   id: string;
   observedAt: number;
+  /**
+   * The listening browser (its device name) whose microphone heard this
+   * utterance. Only in this run's Activity, never stored: absent for the
+   * computer's microphone, typed text and earlier runs.
+   */
+  microphone?: string;
   /** The raw ASR transcript (or typed Activity text), always unchanged. */
   utterance: string;
   application: string | null;

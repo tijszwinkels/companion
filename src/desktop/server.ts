@@ -449,23 +449,29 @@ export class DesktopServer {
           action === 'reopen-agent' ||
           action === 'close-agent' ||
           action === 'client-role' ||
-          action === 'start-agent';
+          action === 'start-agent' ||
+          // A listening browser's stream and the computer's microphone
+          // switch are listening controls, like Pause.
+          action === 'audio-start' ||
+          action === 'audio-stop' ||
+          action === 'set-computer-microphone';
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
         // Panel reports, visibility withdrawals, refused-report notices
-        // (`report-refused`) and draft edits are the exception: their handlers never wait, so each finishes in the
+        // (`report-refused`), draft edits and audio pieces (`audio-chunk`) are the exception: their handlers never wait, so each finishes in the
         // microtask right after this read (in arrival order, like every
         // request), and they neither need nor take a slot. A report therefore
         // never makes a following request in the same read look busy, the
         // gateway can withdraw a departed phone's visibility while that
-        // phone's requests fill the slots, and keystrokes that arrive in one
-        // read (or while another request runs) are all kept.
+        // phone's requests fill the slots, and keystrokes or pieces of sound
+        // that arrive in one read (or while another request runs) are all kept.
         const neverWaits =
           action === 'panel-state' ||
           action === 'withdraw-visibility' ||
           action === 'report-refused' ||
-          action === 'draft-set';
+          action === 'draft-set' ||
+          action === 'audio-chunk';
         if (!neverWaits && ((control && controlsInFlight >= 16) || (!control && handling))) {
           this.send(connection, {
             type: 'error',
@@ -487,6 +493,12 @@ export class DesktopServer {
         const request = Promise.resolve()
           .then(async () => {
             const result = await this.handle(value, clientId);
+            // An accepted piece of a listening browser's sound is not
+            // answered: ten a second per browser would only be noise. A
+            // refused piece is answered with its error, as any request.
+            if (action === 'audio-chunk') {
+              return;
+            }
             this.send(connection, { type: 'result', action, requestId, result });
           })
           .catch((error) => {

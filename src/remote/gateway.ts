@@ -52,6 +52,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { AppProxy } from '../apps/proxy.ts';
 import { AppRegistry } from '../apps/registry.ts';
+import { AudioStreamRegistry } from './audio-streams.ts';
 import { DeviceStore, type PairedDevice } from './devices.ts';
 import { frameSourceDirective } from './frames/headers.ts';
 import { FrameOrigin, type FrameListenOptions } from './frames/server.ts';
@@ -121,6 +122,13 @@ export interface GatewayServiceOptions {
   apps?: GatewayAppOptions;
   /** Optional frame origin for widget and application pages; off when omitted. */
   frames?: GatewayFrameOptions;
+  /**
+   * Let the gateway's own page use the microphone (`Permissions-Policy:
+   * microphone=(self)`), so a paired browser can listen here. Off when
+   * omitted: every response is then exactly as before (`microphone=()`).
+   * Widget and application frames, on the frame origin, never may.
+   */
+  allowMicrophone?: boolean;
 }
 
 /**
@@ -295,6 +303,8 @@ export class Gateway {
   private readonly requestRate = new DeviceRequestRate();
   /** Draft edits have their own per-device bucket (see request-rate.ts). */
   private readonly draftEditRate = new DeviceRequestRate(undefined, draftEditRateLimit);
+  /** Listening browsers' audio streams: one per device, four in total (audio-streams.ts). */
+  private readonly audioStreams = new AudioStreamRegistry();
   /** Every relay that still holds a listener connection, with its device ID. */
   private readonly relays = new Map<Relay, string>();
   private readonly screenshots = new Map<string, Set<string>>();
@@ -616,7 +626,11 @@ export class Gateway {
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Frame-Options', 'DENY');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-    response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // The microphone only for this origin's own page, and only when the
+    // gateway was started to let paired browsers listen. Frames and other
+    // origins never get it (no frame is allowed it in `allow` either).
+    const microphone = this.options.allowMicrophone ? 'microphone=(self)' : 'microphone=()';
+    response.setHeader('Permissions-Policy', `camera=(), ${microphone}, geolocation=()`);
   }
 
   private sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1083,6 +1097,8 @@ export class Gateway {
         allowed.add(sessionId);
       },
       frames,
+      deviceName: device.name,
+      audioStreams: this.audioStreams,
       onClosed: () => {
         this.relays.delete(relay);
         // The rate buckets live as long as one of the device's connections.

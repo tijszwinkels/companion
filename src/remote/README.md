@@ -174,6 +174,11 @@ page a secure context.
   session application's chat permissions can be changed only for the
   conversation the connection itself shows
   ([application chat access](#application-chat-access)).
+- **Audio.** Binary messages are sound, accepted only within a connection's
+  open audio stream and under their own limits (one stream per device, four
+  in total, 8 KiB pieces, 1.5 times real time); everything else about them is
+  in [listening browsers](#listening-browsers). Without a stream they are
+  refused as before.
 - **Content.** The app is served with a strict CSP (`default-src 'none'`, self
   scripts/styles only, no inline script, `frame-ancestors 'none'`). Transcript text
   is rendered as text or sanitized Markdown, never as HTML.
@@ -580,6 +585,131 @@ until the listener confirms the remote role. Reopen and Activity-based starts
 open in the background on the desktop, just like typed phone starts. Activity-based
 starts reuse an existing saved screenshot; they do not capture a new one.
 
+## Listening browsers
+
+A paired browser can be one more microphone of Companion ("Listen here" in the
+browser shell). Its speech is treated exactly as speech at the computer; the
+listener's side is described in [microphones and listening
+periods](../sensors/audio/README.md) and [the desktop
+protocol](../desktop/README.md#microphones-and-listening-browsers).
+
+### Using it from a client
+
+1. Serve the gateway with `--allow-microphone`, so its own page may use the
+   microphone (see [microphone permission](#microphone-permission)).
+2. After `authenticated`, read the engine state: listening here is available
+   when `microphones.streams` is `true`, and possible while `paused` is false.
+   `microphones.listening` lists the microphones that listen now, `computer`
+   the computer's switch.
+3. Send `{"type":"request","requestId":"…","action":"audio-start"}` and wait
+   for its result `{"streamId":"<uuid>"}`. Errors say why: not available
+   (older listener), paused, already streaming on this connection, or too many
+   browsers listening.
+4. Then send the microphone as **binary** WebSocket messages: 16 kHz mono
+   signed 16-bit little-endian samples, each an even number of bytes, at most
+   8 KiB (`maximumAudioChunkBytes`); pieces of 100 ms (3,200 bytes) are
+   intended. Send in real time; at most 1.5 times real time on average, with
+   up to 2 seconds of sound at once after a stall.
+5. Stop with `{"type":"request","requestId":"…","action":"audio-stop"}`
+   (result `stopped`, or `not-streaming`). It is never refused for the
+   request rate.
+6. The gateway sends `{"type":"audio-ended","streamId","reason","message"}`
+   when the stream ended without the client asking: `taken-over`,
+   `too-large`, `too-fast`, `slow-listener`, `paused`, `slow`, `failed`,
+   `shutdown` or `replaced` (see `AudioEndReason` in
+   [`protocol.ts`](protocol.ts)). From then on binary messages are refused
+   again. After `paused`, start a new stream once the state says listening.
+7. `{"type":"request","action":"set-computer-microphone","enabled":false}`
+   switches the computer's own microphone off (or on). It is a mutating
+   action with a receipt.
+
+The client must not send binary messages before the `audio-start` result: the
+stream opens only then. A binary message without an open stream is answered
+with the existing `{"type":"error","message":"Expected a text message"}`.
+
+### Rules: audio admission
+
+Checked by the relay for every message ([`relay.ts`](relay.ts),
+[`audio-streams.ts`](audio-streams.ts)):
+
+1. Binary messages are accepted **only** from an authenticated, admitted
+   connection whose audio stream is open (from the `audio-start` result to
+   the stream's end). Otherwise the existing refusal stays: before
+   authentication a binary message closes the socket as not paired (4401);
+   afterwards it is answered "Expected a text message" and nothing reaches the
+   listener. A connection whose client has gone (draining) has no stream.
+2. **One stream per paired device.** A second connection of the same device
+   that starts one takes it over: the first connection's stream ends with
+   `taken-over` (also while it was still starting), its connection stays.
+3. **Four streams in total** (`maximumAudioStreams`), starting ones included.
+   A fifth device is refused (`Too many browsers are listening`); no stream is
+   taken from another device.
+4. **Pieces of at most 8 KiB**, nonempty, of whole 16-bit samples. A piece
+   over that ends the stream (`too-large`).
+5. **At most 1.5 times real time**: a token bucket in bytes per stream, two
+   seconds of sound deep (64,000 bytes, full at the start), refilled at
+   48,000 bytes per second on the monotonic clock. A piece that does not fit
+   ends the stream (`too-fast`).
+6. **Counted apart from the request bucket.** Pieces take no request tokens;
+   `audio-start` takes one like any request, `audio-stop` none.
+7. **A slow listener**: when more than 256 KiB wait to be written to the
+   listener, the next piece ends the stream (`slow-listener`). The listener
+   itself ends a stream with more than 5 seconds of sound waiting (`slow`).
+8. A violation ends the **stream, not the connection**, and the client is
+   told why. Text requests during a stream work as always.
+9. Pieces go to the listener as `{"action":"audio-chunk","data":"<base64>"}`
+   lines on the connection's existing remote-role socket; `audio-start`
+   carries `deviceName`, which only the gateway sets. The gateway's own
+   `audio-stop` names the stream it ends, so a late stop never ends a newer
+   stream of the same connection.
+10. **Revocation, a closed page and a lost connection end the stream**: the
+    slot is freed at once, the listener ends the stream with its connection
+    (revocation closes it within 5 seconds) or on the gateway's `audio-stop`,
+    and its listening period ends with it.
+11. **An older listener** (its state has no `microphones.streams`) is never
+    sent `audio-start`: the client is answered "Listening here is not
+    available on this computer" and nothing else changes.
+12. `audio-start` and `audio-stop` have no receipts: a stream belongs to its
+    connection and is never repeated after a reconnect.
+
+### Microphone permission
+
+Without `--allow-microphone` every gateway response is byte-identical to
+before: `Permissions-Policy: camera=(), microphone=(), geolocation=()`. With
+it, the gateway's own responses say `microphone=(self)`: only pages of the
+gateway's own origin may ask the browser for the microphone, and only with
+the browser's own permission prompt. Widget and application frames, served
+from the frame origin, keep `microphone=()` in every case, and no frame is
+given the permission in its `allow` attribute (the shell's own rule).
+
+### What a paired device can now do
+
+Accepted by the user (decision D4): a listening device's speech is treated as
+the user's speech at the computer. By speaking, a paired device can therefore
+do what its typed requests cannot: type into the application in front on the
+computer, change the computer's selected conversation by voice navigation, and
+start conversations carrying the computer's screenshot (desktop-only actions
+for typed requests, see `desktopOnlyActions` in
+[`src/desktop/runtime.ts`](../desktop/runtime.ts)). It can switch the
+computer's microphone off and on. The intent switches on the Activity page
+still turn typing and the other intents off for all microphones.
+
+It still cannot hear any microphone (the computer's or another browser's),
+receive the computer's screenshots, record into a text box, or reach
+anything new through text requests. All sound near a listening browser
+leaves that device continuously over TLS to the gateway and over the private
+socket to the listener; it is stored only as the capture-storage switch
+allows (per utterance, as for the computer's microphone).
+
+### Tests
+
+`test/unit/remote-audio.test.ts` tables these rules against the real gateway,
+the real listener control socket, synthetic audio and the test recogniser:
+each limit at and over its bound, binary without a stream, on an
+unauthenticated or closed connection, text during a stream, takeover,
+revocation and a slow listener. `test/unit/remote-microphone-policy.test.ts`
+checks the headers with and without `--allow-microphone`.
+
 ## Drafts
 
 The listener keeps each conversation's unsent text, the **draft**, in memory
@@ -850,6 +980,8 @@ and the send length, both against the real gateway and listener.
 `test/unit/remote-plain-unchanged.test.ts` compares everything a connection
 without `drafts` receives in a scripted session with a transcript recorded
 on the revision before remote drafts (`test/fixtures/remote-plain-transcript.json`).
+`test/unit/remote-audio.test.ts` and `test/unit/remote-microphone-policy.test.ts`
+cover [listening browsers](#listening-browsers).
 `test/unit/remote-serve-check.test.ts` covers the Serve matcher, the read
 retries, and the CLI flags and warnings against a fake `tailscale` script. Real Tailscale is never used.
 The supervised service (`src/remote/service/`) has its own tests; see

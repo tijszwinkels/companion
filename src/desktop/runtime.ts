@@ -35,6 +35,8 @@ import { MAX_DIRECT_USER_MESSAGE_LENGTH } from '../agents/message-limits.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
+import type { ComputerMicrophoneSwitch } from '../sensors/audio/computer-microphone.ts';
+import type { BrowserMicrophones, BrowserStreamEnd } from '../sensors/audio/browser-microphones.ts';
 import type {
   DictationAppendRequest,
   DictationAppendResult,
@@ -184,6 +186,50 @@ interface RemoteClient {
   lastActionsKey: string;
 }
 
+/**
+ * The listener's microphones, attached in live microphone mode only
+ * (`connectMicrophones`). See src/sensors/audio/README.md.
+ */
+export interface ListenerMicrophones {
+  /** The computer's microphone switch (D8). */
+  computer: ComputerMicrophoneSwitch;
+  /** Listening browsers' streams. */
+  browsers: BrowserMicrophones;
+}
+
+/**
+ * The microphones in the listener's state (`microphones`), absent in other
+ * modes and in older listeners. See src/desktop/README.md, "Microphones".
+ */
+export interface MicrophonesState {
+  /** The computer's microphone switch is on. */
+  computer: boolean;
+  /**
+   * The microphones that listen now, the computer's first: empty while
+   * paused, and when the computer's is switched off and no browser listens
+   * (Companion then hears nothing).
+   */
+  listening: { id: string; kind: 'computer' | 'browser'; name: string }[];
+  /** A remote connection may open an audio stream (`audio-start`). */
+  streams: boolean;
+}
+
+/** The computer's microphone in `MicrophonesState.listening`. */
+const computerMicrophoneEntry = { id: 'computer', kind: 'computer', name: 'Computer' } as const;
+
+/**
+ * Largest `audio-chunk` piece, in bytes of 16-bit samples: 8 KiB, the
+ * gateway's own bound (`maximumAudioChunkBytes` in src/remote/protocol.ts),
+ * 256 ms of sound. Its base64 text is at most 10,924 characters.
+ */
+const maximumAudioChunkBytes = 8 * 1024;
+
+/** Strict base64: whole groups of four, padding only at the end. */
+const base64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** Longest device name an `audio-start` may carry (the gateway's pairing bound is lower). */
+const maximumMicrophoneNameLength = 100;
+
 /** Shown wherever labeling is refused because capture storage is off. */
 const labelingRequiresStorage = 'Labeling requires capture storage';
 
@@ -319,6 +365,13 @@ export class DesktopRuntime {
   // Manual recording into a conversation's text box; absent outside
   // microphone mode. Appends still waiting for the owning panel's answer.
   private dictation?: DictationController;
+  // The computer's microphone switch and listening browsers; absent outside
+  // microphone mode.
+  private microphones?: ListenerMicrophones;
+  // This run's Activity entries heard by a browser's microphone, by entry ID:
+  // the device name shown with the entry. The computer's speech and typed
+  // text have none.
+  private readonly entryMicrophones = new Map<string, string>();
   private readonly pendingRecordingAppends = new Map<
     string,
     { clientId: number; finish(result: DictationAppendResult): void }
@@ -389,6 +442,9 @@ export class DesktopRuntime {
         if (this.remoteClients.delete(clientId)) {
           this.draftHosts.delete(clientId);
           this.pendingDraftSends.delete(clientId);
+          // A closed connection (its page closed, the gateway lost it or
+          // revoked its device) ends its audio stream and listening period.
+          this.microphones?.browsers.stop(clientId, 'disconnected');
           return;
         }
         this.viewActionKeys.delete(clientId);
@@ -535,6 +591,7 @@ export class DesktopRuntime {
         }
         const storage = options.captureStorage.allows(transcript.storage) ? 'on' : 'off';
         this.history.add(transcript, storage);
+        this.rememberMicrophone(transcript.id, transcript.microphone);
         this.server.broadcast();
       },
       screenshotCaptured: async (id, screenshot) => {
@@ -1051,6 +1108,66 @@ export class DesktopRuntime {
     this.server.broadcast();
   };
 
+  /**
+   * Attach the computer's microphone switch and listening browsers (live
+   * microphone mode only). Their state is published to every panel; the end
+   * of a browser's stream that its connection did not ask for is told to
+   * that connection only (`audio-ended`).
+   */
+  connectMicrophones(microphones: ListenerMicrophones): void {
+    this.microphones = microphones;
+    microphones.computer.on('change', this.microphonesChanged);
+    microphones.browsers.changed = this.microphonesChanged;
+    microphones.browsers.ended = (owner, streamId, reason) => {
+      this.browserStreamEnded(owner, streamId, reason);
+    };
+    this.server.broadcast();
+  }
+
+  private readonly microphonesChanged = () => {
+    this.server.broadcast();
+  };
+
+  /** Tell a connection that its stream ended without its asking. */
+  private browserStreamEnded(owner: number, streamId: string, reason: BrowserStreamEnd): void {
+    if (reason === 'stopped' || reason === 'disconnected') {
+      return;
+    }
+    this.server.publishTo(owner, { type: 'audio-ended', streamId, reason });
+  }
+
+  /** The microphones as the state shows them; undefined outside microphone mode. */
+  private microphonesState(): MicrophonesState | undefined {
+    const microphones = this.microphones;
+    if (!microphones) {
+      return undefined;
+    }
+
+    const listening: MicrophonesState['listening'] = [];
+    if (!this.pause.paused) {
+      if (microphones.computer.enabled) {
+        listening.push({ ...computerMicrophoneEntry });
+      }
+      for (const browser of microphones.browsers.list) {
+        listening.push({ id: browser.id, kind: 'browser', name: browser.name });
+      }
+    }
+
+    return { computer: microphones.computer.enabled, listening, streams: true };
+  }
+
+  /** Remember which browser heard frame `id`, for its Activity entry. */
+  private rememberMicrophone(id: number, microphone: string | undefined): void {
+    if (microphone === undefined) {
+      return;
+    }
+    const entryId = this.history.entryId(id);
+    const name = this.microphones?.browsers.nameOf(microphone);
+    if (entryId && name !== undefined) {
+      this.entryMicrophones.set(entryId, name);
+    }
+  }
+
   private readonly dictationFinished = (summary: DictationSummary) => {
     this.server.publishTo(summary.clientId, {
       type: 'recording-finished',
@@ -1201,6 +1318,9 @@ export class DesktopRuntime {
       transcriptionCleanup: this.options.cleanup ? { enabled: this.options.cleanup.enabled } : null,
       // Absent in older listeners: clients treat that as unavailable, not off.
       captureStorage: this.options.captureStorage.state,
+      // Absent outside microphone mode and in older listeners: no switch for
+      // the computer's microphone, and no browser can listen.
+      microphones: this.microphonesState(),
       agentActions: this.agentActions(),
     };
   }
@@ -1622,6 +1742,11 @@ export class DesktopRuntime {
 
   /** An entry as clients should see it now, including originals found lost. */
   private current(entry: HistoryEntry): HistoryEntry {
+    const microphone = this.entryMicrophones.get(entry.id);
+    if (microphone !== undefined) {
+      entry = { ...entry, microphone };
+    }
+
     const lost = this.lostOriginals.get(entry.id);
     if (!lost) {
       return entry;
@@ -2127,6 +2252,71 @@ export class DesktopRuntime {
     }
   }
 
+  /**
+   * A listening browser's audio stream, relayed by the remote gateway (see
+   * src/desktop/README.md, "Listening browsers"). Remote connections only:
+   * the gateway adds the device's name to `audio-start`, and a connection
+   * feeds and stops only its own stream.
+   *
+   * - `audio-start {deviceName}` opens the connection's stream (ending an
+   *   earlier one of the same connection) and answers `{streamId}`.
+   * - `audio-chunk {data}`: one piece, base64 of 2–8192 bytes of 16 kHz mono
+   *   signed 16-bit little-endian samples (an even number of bytes). Never
+   *   waits; answered only when refused (src/desktop/server.ts).
+   * - `audio-stop {streamId?}` ends it: `stopped`, or `not-streaming` when
+   *   there was none (or it is not the named one: the gateway names the
+   *   stream it means, so a late stop never ends a newer stream).
+   */
+  private handleAudioStream(
+    request: Record<string, unknown>,
+    clientId: number,
+    remote: boolean,
+  ): unknown {
+    if (!remote) {
+      throw Error('Only remote panels stream audio');
+    }
+    const browsers = this.microphones?.browsers;
+    if (!browsers) {
+      throw Error('Listening here is not available');
+    }
+
+    if (request.action === 'audio-start') {
+      const name = request.deviceName;
+      if (
+        typeof name !== 'string' ||
+        name.trim() === '' ||
+        name.length > maximumMicrophoneNameLength
+      ) {
+        throw Error(`Expected a device name of 1–${maximumMicrophoneNameLength} characters`);
+      }
+      return { streamId: browsers.start(clientId, name) };
+    }
+
+    if (request.action === 'audio-stop') {
+      if (request.streamId !== undefined && typeof request.streamId !== 'string') {
+        throw Error('Expected the stream ID as text');
+      }
+      const stopped = browsers.stop(clientId, 'stopped', request.streamId);
+      return stopped ? 'stopped' : 'not-streaming';
+    }
+
+    const data = request.data;
+    if (
+      typeof data !== 'string' ||
+      data.length === 0 ||
+      data.length > Math.ceil(maximumAudioChunkBytes / 3) * 4 ||
+      !base64Pattern.test(data)
+    ) {
+      throw Error('Expected base64 audio of at most 8 KiB');
+    }
+    const bytes = Buffer.from(data, 'base64');
+    if (bytes.length === 0 || bytes.length > maximumAudioChunkBytes || bytes.length % 2 !== 0) {
+      throw Error('Expected whole 16-bit samples, at most 8 KiB');
+    }
+    browsers.push(clientId, bytes);
+    return 'received';
+  }
+
   private async handle(value: unknown, clientId: number): Promise<unknown> {
     this.signal.throwIfAborted();
 
@@ -2214,6 +2404,30 @@ export class DesktopRuntime {
 
     if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
       throw Error('This action is only available on the desktop');
+    }
+
+    if (
+      request.action === 'audio-start' ||
+      request.action === 'audio-chunk' ||
+      request.action === 'audio-stop'
+    ) {
+      return this.handleAudioStream(request, clientId, remote !== undefined);
+    }
+
+    if (request.action === 'set-computer-microphone') {
+      if (!this.microphones) {
+        throw Error("The computer's microphone switch is unavailable");
+      }
+      if (typeof request.enabled !== 'boolean') {
+        throw Error('Expected enabled: true or false');
+      }
+      if (this.microphones.computer.set(request.enabled)) {
+        this.log(
+          'microphone',
+          request.enabled ? "Computer's microphone on" : "Computer's microphone off",
+        );
+      }
+      return request.enabled ? 'computer-microphone-on' : 'computer-microphone-off';
     }
 
     if (request.action === 'start-agent') {
@@ -3218,6 +3432,7 @@ export class DesktopRuntime {
     this.dictation?.abandon('shutdown');
     this.dictation?.off('change', this.dictationChanged);
     this.dictation?.off('finished', this.dictationFinished);
+    this.microphones?.computer.off('change', this.microphonesChanged);
     this.options.agents?.setCloseGuard(undefined);
     this.abandonRecordingAppends(undefined, 'Companion is shutting down.');
     this.ready = false;

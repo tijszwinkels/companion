@@ -34,7 +34,13 @@ import { Transcriber } from './sensors/audio/transcriber.ts';
 import type { VoiceActivityDetector } from './sensors/audio/vad.ts';
 import { listen } from './sensors/audio/listener.ts';
 import { listenToMicrophone } from './sensors/audio/microphone-loop.ts';
-import { SensorPipeline } from './core/pipeline.ts';
+import {
+  ComputerMicrophoneSwitch,
+  listenWhileSwitchedOn,
+} from './sensors/audio/computer-microphone.ts';
+import { BrowserMicrophones } from './sensors/audio/browser-microphones.ts';
+import { SpeechIndicator } from './sensors/audio/speech-indicator.ts';
+import { computerMicrophone, SensorPipeline } from './core/pipeline.ts';
 import { PauseControl } from './core/pause-control.ts';
 import { DictationController } from './core/dictation/controller.ts';
 import { DeliveryControl } from './core/delivery-control.ts';
@@ -224,6 +230,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let transcriber: Transcriber | undefined;
   let pipeline: SensorPipeline | undefined;
   let dictation: DictationController | undefined;
+  let browsers: BrowserMicrophones | undefined;
   let desktop: DesktopRuntime | undefined;
   let external: ExternalSessionServer | undefined;
   let phone: PhoneAccessHook | undefined;
@@ -455,6 +462,28 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       // throwing, on shutdown or a failure that is not lost capture.
       const listeningVad = vad;
       const sensorPipeline = pipeline;
+
+      // Several microphones (src/sensors/audio/README.md): the computer's,
+      // behind its own switch, and with the desktop one per listening
+      // browser. "Hearing speech" is on while any of them hears speech.
+      const computer = new ComputerMicrophoneSwitch();
+      const speech = new SpeechIndicator((speaking) => activity.speechChanged?.(speaking));
+      const computerActivity = { ...activity, speechChanged: speech.reporter(computerMicrophone) };
+
+      if (desktop) {
+        const vadModel = config.vadModel;
+        browsers = new BrowserMicrophones({
+          pipeline,
+          pause,
+          signal: controller.signal,
+          createVad: () => VoiceActivityDetector.create(vadModel),
+          activity,
+          speech,
+          log,
+        });
+        desktop.connectMicrophones({ computer, browsers });
+      }
+
       await listenToMicrophone({
         signal: controller.signal,
         pause,
@@ -462,13 +491,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         vad: listeningVad,
         device: values.device,
         listen: (listeningSignal, handoff) =>
-          listen(
-            listeningVad,
-            sensorPipeline,
-            log,
-            listeningSignal,
-            { device: values.device, handoff },
-            activity,
+          listenWhileSwitchedOn(computer, listeningSignal, handoff, (periodEnd) =>
+            listen(
+              listeningVad,
+              sensorPipeline,
+              log,
+              listeningSignal,
+              { device: values.device, handoff: periodEnd },
+              computerActivity,
+            ),
           ),
         idle: () => sensorPipeline.idle(),
         log,
@@ -496,6 +527,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // Shutdown abandons a recording; its last chunk settles promptly.
     await dictation?.idle();
     dictation?.close();
+    // Every browser's period ends with shutdown; wait for their detectors.
+    await browsers?.close();
     await pipeline?.idle();
     await transcriber?.close();
     await external?.close();
