@@ -1,0 +1,68 @@
+// A Node test reporter for `npm run test:changed`. run-changed.ts starts one `node --test`
+// process per test file and gives it this reporter next to `spec`; the reporter writes one
+// line of JSON that says how the file ran, so that run-changed.ts can decide whether the pass
+// may be saved.
+//
+// The summary Node gives at the end does not show a failing hook, a failing test process or a
+// skipped suite, so those are taken from the single events. Passed tests are counted from the
+// events too: a file without any test is reported as one passed test named after the file.
+import { resolve } from 'node:path';
+import type { TestEvent } from 'node:test/reporters';
+
+export interface FileOutcome {
+  /** Node's own verdict for the run and for the file, and no failing test, hook or process. */
+  succeeded: boolean;
+  /** Tests that passed, not counting skipped and todo tests, suites or the file itself. */
+  passed: number;
+  /**
+   * A test or suite was skipped, todo or cancelled, or the file reported no summary of its
+   * own: the file did not run completely.
+   */
+  partial: boolean;
+}
+
+export default async function* outcomeReporter(
+  events: AsyncIterable<TestEvent>,
+): AsyncGenerator<string> {
+  let nodeSucceeded = false;
+  let fileSummarized = false;
+  let fileSucceeded = true;
+  let failedEvent = false;
+  let passed = 0;
+  let partial = false;
+
+  for await (const event of events) {
+    if (event.type === 'test:fail') {
+      // A failing todo test does not fail the run; the file only counts as partly run.
+      if (event.data.todo !== undefined) {
+        partial = true;
+      } else {
+        failedEvent = true;
+      }
+    } else if (event.type === 'test:pass') {
+      const { file, name, nesting } = event.data;
+      const fileItself = nesting === 0 && file !== undefined && resolve(name) === resolve(file);
+      if (event.data.skip !== undefined || event.data.todo !== undefined) {
+        partial = true;
+      } else if (event.data.details.type === 'test' && !fileItself) {
+        passed++;
+      }
+    } else if (event.type === 'test:summary' && event.data.file !== undefined) {
+      // The summary of the single file. A test process that ends early, even with status 0,
+      // and a file without tests report none.
+      fileSummarized = true;
+      fileSucceeded = event.data.success;
+    } else if (event.type === 'test:summary') {
+      // The summary of the whole run, not the one of the single file.
+      const { counts } = event.data;
+      nodeSucceeded = event.data.success;
+      if (counts.skipped > 0 || counts.todo > 0 || counts.cancelled > 0) {
+        partial = true;
+      }
+    }
+  }
+
+  const succeeded = nodeSucceeded && fileSucceeded && !failedEvent;
+  const outcome: FileOutcome = { succeeded, passed, partial: partial || !fileSummarized };
+  yield JSON.stringify(outcome) + '\n';
+}
