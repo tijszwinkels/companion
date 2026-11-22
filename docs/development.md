@@ -126,6 +126,18 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -import test/omarchy/stubs -input test/omarchy
 ```
 
+While working, `npm run test:changed` runs only the unit test files whose inputs
+changed since they last passed on this machine. Per test file it computes one key
+from the content of the files the test imports (directly or indirectly), the
+repository files those name by path, and, for tests that start programs, all of
+`src/` and `bin/`; `package.json`, `package-lock.json`, `tsconfig.json` and the
+Node version are part of every key. A pass is saved as a small file under
+`~/.cache/companion-test-results/` (`COMPANION_TEST_CACHE` selects another
+directory), a failure is never saved, and passes unused for 30 days are removed.
+`-- --list` shows what would run and `-- --all` runs every file. A path that a
+test builds in another way than as text in the code is not seen, so run the full
+`npm test` before handing work over; it always runs everything.
+
 For native-window changes, build with `npm run ui:build`, then run
 `npm run test:window`. See the native guide for Qt/WebEngine/LayerShellQt
 dependencies and the window-only option. ASR changes use `npm run asr:build`,
