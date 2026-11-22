@@ -8,12 +8,14 @@
 //      from each directory above it up to the checkout root. A script found this way is
 //      followed like an import, because it is usually started as a program. In a file under
 //      test/ that refers to the checkout root, a bare directory name such as 'starter-kit'
-//      counts too.
+//      counts too. A template that is filled in at run time, as in
+//      `../../integrations/widgets/${name}.js`, names the whole directory its fixed start
+//      names.
 //   3. Programs: a test that starts programs (a file under test/ that uses
 //      node:child_process) or that refers to the checkout root depends on every file in the
 //      program directories as well.
-// Rule 2 only sees paths written as text. A path built in another way is missed, which is why
-// `npm test` keeps running everything.
+// Rule 2 only sees paths written as text. A path built in another way is missed; run-changed.ts
+// runs each test file with only these inputs present, so a missed input fails the test there.
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -44,6 +46,9 @@ const SCRIPT = /\.(ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;
 // widely imported module mentions in a comment would become an input of most tests.
 const QUOTED = /(['"])([^'"\n]{1,200})\1/g;
 const QUOTED_RUN = /(?:(['"])[^'"\n]{1,200}\1\s*,\s*)*(['"])[^'"\n]{1,200}\2/g;
+// The fixed start of a template up to its first ${…}. Unlike a plain backtick string, such a
+// template is code that builds a path or a text at run time, not a name in a comment.
+const TEMPLATE_START = /`([^`$\n]{0,200})\$\{/g;
 
 interface PathReferences {
   files: string[];
@@ -153,6 +158,11 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
       for (let start = 0; start < parts.length - 1; start++) {
         consider(parts.slice(start).join('/'));
       }
+    }
+    // Only the directory part counts: 'widgets/' of `widgets/${name}.js`.
+    for (const template of text.matchAll(TEMPLATE_START)) {
+      const fixedStart = template[1];
+      consider(fixedStart.slice(0, fixedStart.lastIndexOf('/') + 1));
     }
     // A test with the checkout root in hand needs only a bare name to reach a directory.
     // Source files are left out: there every word that is also a directory name would count.
