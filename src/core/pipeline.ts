@@ -129,6 +129,9 @@ export class SensorPipeline implements InspectableModule {
   // `idleForComputer`).
   private readonly unfinished = new Set<Job>();
 
+  // The last job ID admitted before the latest Pause (`pauseStarted`).
+  private pauseCutoff?: number;
+
   // Cleanup of superseded jobs that never reached the worker. Tracked so that
   // idle() and shutdown wait for their capture and activity callbacks.
   private readonly retiring = new Set<Promise<void>>();
@@ -558,17 +561,27 @@ export class SensorPipeline implements InspectableModule {
   }
 
   /**
+   * Listening was paused: remember which jobs were admitted before it (see
+   * `idleForComputer`). Called by the listener's owner on every Pause.
+   */
+  pauseStarted(): void {
+    this.pauseCutoff = this.nextId;
+  }
+
+  /**
    * What the computer's microphone loop waits for after a pause (see
    * microphone-loop.ts): accepted work to settle before its next period.
    * Like `idle()`, it waits until every admitted job has finished its
    * cleanup, including typed text admitted while it waits; but speech from a
-   * listening browser admitted after this call is not waited for. After
-   * Resume a browser may speak at once, and its new utterances must not keep
-   * the computer's microphone closed. Without browser speech the jobs waited
-   * for are exactly those `idle()` waits for.
+   * listening browser admitted after the latest Pause (`pauseStarted`) is not
+   * waited for. After Resume a browser may speak at once, also while the
+   * computer's old period is still unwinding, and its new utterances must not
+   * keep the computer's microphone closed. Without browser speech the jobs
+   * waited for are exactly those `idle()` waits for, whatever the cutoff.
    */
   async idleForComputer(): Promise<void> {
-    const firstLater = this.nextId + 1;
+    // Without a recorded Pause, everything admitted so far counts as earlier.
+    const firstLater = (this.pauseCutoff ?? this.nextId) + 1;
     const waitedFor = (job: Job) =>
       job.id < firstLater || job.microphone === undefined || job.microphone === computerMicrophone;
 

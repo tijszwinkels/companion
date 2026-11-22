@@ -13,6 +13,11 @@ import {
 import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 import { deferred } from '../helpers.ts';
 import { ComputerMicrophoneSwitch } from '../../src/sensors/audio/computer-microphone.ts';
+import {
+  maximumDriftMs,
+  maximumSoundLagMs,
+  stalledAtAgeMs,
+} from '../../src/sensors/audio/browser-microphones.ts';
 
 /**
  * Microphones and listening periods (src/sensors/audio/README.md, "Rules:
@@ -650,4 +655,57 @@ test('sound sent ahead of real time earns at most two seconds of credit against 
   } finally {
     await listener.close();
   }
+});
+
+test("browser speech admitted while the computer's old period still unwinds after Pause does not keep it closed", async () => {
+  const listener = await setup({ holdTranscriptions: true });
+  let releaseComputer = () => {};
+  try {
+    // A frame of the computer's is in its voice detector when listening is
+    // paused, so its period is still unwinding through Pause and Resume.
+    listener.microphones.computerDetector.gate = new Promise<void>((resolve) => {
+      releaseComputer = resolve;
+    });
+    listener.microphones.sayOnComputer(utterance(0.3, 64, 0));
+    await waitFor(() => listener.microphones.computerDetector.held > 0);
+    await listener.observer.request({ action: 'toggle-pause' });
+    await listener.observer.request({ action: 'toggle-pause' });
+
+    // Right after Resume a browser speaks; its utterance is in recognition.
+    const phone = await listener.browser('Phone');
+    phone.client.send(utterance(0.5));
+    await waitFor(() => listener.microphones.transcriptions.length === 1);
+
+    // The computer's old period ends now. Its next period must not wait for
+    // the browser's utterance, admitted after the Pause.
+    const periods = listener.microphones.computerPeriods;
+    listener.microphones.computerDetector.gate = undefined;
+    releaseComputer();
+    await waitFor(() => listener.microphones.computerPeriods === periods + 1);
+    assert.equal(listener.microphones.dispatched.length, 0, 'The browser utterance still waits');
+
+    listener.microphones.transcriptions[0]();
+    await listener.waitForDispatches(1);
+    assert.deepEqual(listener.microphones.dispatched, [{ utterance: 'w5' }]);
+  } finally {
+    releaseComputer();
+    for (const release of listener.microphones.transcriptions) {
+      release();
+    }
+    await listener.close();
+  }
+});
+
+test('the drift allowance of the lag bound is 1% of the age, capped at 10 seconds', () => {
+  // A minute of sound: the 1% allowance (about 0.6 s) is below the cap.
+  assert.equal(stalledAtAgeMs(60_000, maximumSoundLagMs), 63_000 / 0.99);
+  // Eight hours of sound: 1% would be almost five minutes; the cap holds it
+  // to 10 seconds, so a stopped phone ends 13 seconds after its last sound.
+  const eightHours = 8 * 60 * 60 * 1000;
+  assert.equal(maximumDriftMs, 10_000);
+  assert.equal(stalledAtAgeMs(eightHours, maximumSoundLagMs), eightHours + 3_000 + 10_000);
+  // The two rules meet where 1% of the age is exactly the cap.
+  const capAge = maximumDriftMs / 0.01;
+  const received = capAge * 0.99 - maximumSoundLagMs;
+  assert.ok(Math.abs(stalledAtAgeMs(received, maximumSoundLagMs) - capAge) < 1e-6);
 });

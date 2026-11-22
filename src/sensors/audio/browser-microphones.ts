@@ -113,8 +113,41 @@ export const maximumSoundLagMs = 3000;
  */
 const maximumAheadMs = 2000;
 
-/** Clock drift allowed between a browser's sound and the listener's clock: 1%. */
+/**
+ * Clock drift allowed between a browser's sound and the listener's clock: 1%
+ * of the stream's age, but never more than `maximumDriftMs` in all.
+ *
+ * Why 10 seconds: real sound clocks differ by about 0.01% (100 ppm) at most,
+ * which takes some 28 hours to reach 10 seconds, so an honest stream never
+ * meets the cap. Without a cap the allowance grows with the stream's age:
+ * after eight hours of listening a phone whose capture stopped would stay
+ * "listening" (and could hold its open candidate in the shared queue) for
+ * almost five minutes. With it, such a stream ends at most 13 seconds after
+ * its sound stopped (3 s lag + 10 s drift), at any age.
+ */
 const allowedDrift = 0.01;
+export const maximumDriftMs = 10_000;
+
+/**
+ * The stream age, in milliseconds, at which a stream that has delivered
+ * `receivedMs` of sound counts as stalled: when its sound is more than
+ * `maximumLagMs` plus the drift allowance (1% of its age, at most
+ * `driftCapMs`) behind real time. The allowance reaches its cap at the age
+ * `driftCapMs / allowedDrift`; before that, age * (1 - drift) must reach
+ * the sound plus the lag, after it, age - cap must.
+ */
+export function stalledAtAgeMs(
+  receivedMs: number,
+  maximumLagMs: number,
+  driftCapMs: number = maximumDriftMs,
+): number {
+  const owed = maximumLagMs + receivedMs;
+  const uncappedAge = owed / (1 - allowedDrift);
+  if (uncappedAge * allowedDrift <= driftCapMs) {
+    return uncappedAge;
+  }
+  return owed + driftCapMs;
+}
 
 /** Names of ended streams kept for Activity entries still being processed. */
 const rememberedNames = 64;
@@ -251,15 +284,14 @@ export class BrowserMicrophones {
 
   /**
    * (Re)start the stream's lag timer. It fires when the stream's sound would
-   * fall more than `maximumLagMs` (plus the allowed drift) behind real time:
-   * at the time t where (t - startedAt) * (1 - drift) - receivedMs equals
-   * `maximumLagMs`. Every piece moves it later by the sound it carried, so a
-   * stream that stops, or trickles, ends in time, and one that keeps up never.
+   * fall more than `maximumLagMs` (plus the capped drift allowance) behind
+   * real time (`stalledAtAgeMs`). Every piece moves it later by the sound it
+   * carried, so a stream that stops, or trickles, ends in time, and one that
+   * keeps up never.
    */
   private watchLag(stream: Stream): void {
     clearTimeout(stream.lagTimer);
-    const deadline =
-      stream.startedAt + (this.maximumLagMs + stream.receivedMs) / (1 - allowedDrift);
+    const deadline = stream.startedAt + stalledAtAgeMs(stream.receivedMs, this.maximumLagMs);
     stream.lagTimer = setTimeout(
       () => {
         this.options.log(

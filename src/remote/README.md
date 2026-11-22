@@ -664,7 +664,9 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
    listener, the next piece ends the stream (`slow-listener`). If that
    buffer has not drained 15 seconds later (the request timeout), the
    connection closes as engine unavailable (4503), so sound never stays
-   buffered for a listener that stopped reading. The listener itself ends a
+   buffered for a listener that stopped reading. The same deadline starts
+   when any stream's stop (the client's `audio-stop`, a takeover, a closed
+   page) is written behind a backlog that waits for the socket to drain. The listener itself ends a
    stream with more than 5 seconds of sound waiting (`slow`).
 8. A violation ends the **stream, not the connection**, and the client is
    told why. Text requests during a stream work as always.
@@ -696,11 +698,6 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
     no start waits behind the role negotiation.
 12. `audio-start` and `audio-stop` have no receipts: a stream belongs to its
     connection and is never repeated after a reconnect.
-
-Known limit (open): after the client's `audio-stop`, sound still buffered
-for a listener that has stopped reading is released only when the
-connection closes; the 15-second drain deadline applies only after
-`slow-listener`.
 
 ### Microphone permission
 

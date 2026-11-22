@@ -193,6 +193,14 @@ export function microphonesFixture(
   let computerPeriods = 0;
   const computerDetector = new LevelDetector();
 
+  // As src/cli.ts: every Pause marks the jobs admitted before it.
+  const pauseStarted = () => {
+    if (pause.paused) {
+      pipeline.pauseStarted();
+    }
+  };
+  pause.on('change', pauseStarted);
+
   const loop = listenToMicrophone({
     signal: controller.signal,
     pause,
@@ -217,15 +225,21 @@ export function microphonesFixture(
       }),
     idle: () => pipeline.idleForComputer(),
     log,
-  }).catch(() => {
-    // The loop ends only by throwing, at shutdown.
-  });
+  })
+    .catch(() => {
+      // The loop ends only by throwing, at shutdown.
+    })
+    .finally(() => {
+      pause.off('change', pauseStarted);
+    });
 
   return {
     pipeline,
     computer,
     browsers,
     detectors,
+    /** The computer microphone's voice detector (its `gate` holds its frames back). */
+    computerDetector,
     dispatched,
     transcriptions,
     logs,

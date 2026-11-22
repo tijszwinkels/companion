@@ -484,6 +484,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         desktop.connectMicrophones({ computer, browsers });
       }
 
+      // The jobs admitted before each Pause are the ones the computer's loop
+      // waits for after it (SensorPipeline.idleForComputer).
+      const pauseStarted = () => {
+        if (pause.paused) {
+          sensorPipeline.pauseStarted();
+        }
+      };
+      pause.on('change', pauseStarted);
+
       await listenToMicrophone({
         signal: controller.signal,
         pause,
@@ -504,6 +513,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         // After a pause: wait for earlier work, not for a browser's new speech.
         idle: () => sensorPipeline.idleForComputer(),
         log,
+      }).finally(() => {
+        pause.off('change', pauseStarted);
       });
     }
 

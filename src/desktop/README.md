@@ -761,8 +761,9 @@ connection for that browser; there is no second socket.
   stream, malformed) is answered with an error as any request. A piece that
   would make more than 5 seconds of sound (or 250 pieces) wait for the
   stream's voice detector ends the stream (`slow`); sound more than three
-  seconds behind real time (plus 1% of the stream's age for clock drift)
-  ends it too (`stalled`), whether pieces stopped or only trickle.
+  seconds behind real time (plus 1% of the stream's age for clock drift, at
+  most 10 seconds) ends it too (`stalled`), whether pieces stopped or only
+  trickle.
 - `{"action":"audio-stop","streamId":"<uuid>"}` ends the connection's stream:
   `stopped`, or `not-streaming` when it has none. With `streamId` it ends the
   stream only if it is that one (the gateway always names it, so a late stop

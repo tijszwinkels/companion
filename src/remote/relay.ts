@@ -728,14 +728,19 @@ export class Relay {
   }
 
   /**
-   * After `slow-listener`, sound (and the stream's stop) still wait in the
-   * upstream socket's buffer. A listener that never reads again would keep
-   * them there for as long as the connection lives, so the connection is
-   * closed as "engine unavailable" if the buffer has not drained within the
-   * request timeout, as for a request the listener never answers.
+   * After `slow-listener`, or when a stream's stop was written behind a
+   * backlog, sound (and the stream's stop) still wait in the upstream
+   * socket's buffer. A listener that never reads again would keep them there
+   * for as long as the connection lives, so the connection is closed as
+   * "engine unavailable" if the buffer has not drained within the request
+   * timeout, as for a request the listener never answers.
+   *
+   * Only a buffer that is waiting for `drain` counts (a write returned
+   * false): Node emits `drain` only then, and a small rest that the socket
+   * accepted at once is flushed without it.
    */
   private awaitUpstreamDrain(): void {
-    if (this.upstreamDrainTimer || this.upstream.destroyed) {
+    if (this.upstreamDrainTimer || this.upstream.destroyed || !this.upstream.writableNeedDrain) {
       return;
     }
     const drained = () => {
@@ -808,6 +813,7 @@ export class Relay {
       this.abandonedStarts.set(audio.token, reason);
       if (this.ready) {
         this.writeUpstream({ action: 'audio-stop', requestId: audioStopRequestId });
+        this.awaitUpstreamDrain();
       }
       return;
     }
@@ -817,6 +823,9 @@ export class Relay {
       streamId: audio.streamId,
       requestId: audioStopRequestId,
     });
+    // Sound still queued for a listener that stopped reading is released
+    // within the request timeout, not only when the connection closes.
+    this.awaitUpstreamDrain();
     if (reason) {
       this.sendAudioEnded(audio.streamId, reason);
     }

@@ -39,9 +39,12 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
    Each browser's stream ends with `paused`; the browser opens a new stream
    when the state says listening again. **Resume** starts the computer's
    period again (if its switch is on) once the work accepted before the
-   pause has settled, as before; a browser's speech accepted after Resume is
-   not waited for (`SensorPipeline.idleForComputer`), so it cannot keep the
-   computer's microphone closed. `audio-start` is refused while paused.
+   pause has settled, as before; a browser's speech accepted after the Pause
+   is not waited for (`SensorPipeline.idleForComputer`, with the cutoff taken
+   at Pause by `pauseStarted`), also while the computer's old period is
+   still unwinding, so it cannot keep the computer's microphone closed.
+   Typed text is still waited for; without browser speech the wait is
+   exactly the one from before. `audio-start` is refused while paused.
 4. **The computer's microphone switch** (D8) turns only the computer's
    listening off or on. Off ends its current period like Record's hand-over:
    the open candidate is discarded, accepted utterances continue. On starts a
@@ -53,8 +56,10 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
    reason: stopped by its page, replaced by a newer stream of the same
    connection, its connection closed (page closed, revocation, lost
    gateway), its queue full, its sound more than three seconds behind real
-   time (`stalled`, with 1% allowed for clock drift; sound sent ahead of real
-   time counts for at most two seconds: a phone's capture stopped, or it
+   time (`stalled`, with 1% of the stream's age allowed for clock drift, at
+   most 10 seconds, so a stream ends at most 13 seconds after its sound
+   stopped at any age; sound sent ahead of real time counts for at most two
+   seconds: a phone's capture stopped, or it
    delivers far too little sound, while its page stays connected), its
    period failed, or shutdown. The stream's hold and "hearing speech" are
    released, and its unread sound dropped, the moment it ends, even while
@@ -150,18 +155,12 @@ microphone off).
 
 ## Known limits
 
-Found in the last review round and not yet changed (each awaits a decision):
-
 - The queue bound counts waiting entries: while microphone A's utterance is
   still in recognition, its continuation and microphone B's utterance fill
   both waiting places, so a third microphone's utterance arriving then is
-  dropped (logged as `dropped`), although only three utterances exist.
-- The lag bound allows 1% clock drift of the stream's whole age: after hours
-  of listening, a browser whose capture stopped may stay listed (and hold its
-  open candidate) for minutes rather than seconds.
-- After Resume, the computer's microphone waits for browser speech that was
-  admitted before its own wait began (possible only while its previous
-  period is still unwinding at Resume).
+  dropped (logged as `dropped`), although only three utterances exist. Kept
+  on purpose: it needs three microphones and one interleaving, and changing
+  the bound risks the one-microphone overflow behaviour.
 
 ## Tests
 

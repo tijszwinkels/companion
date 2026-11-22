@@ -673,3 +673,55 @@ test('audio budgets are pruned: revoked devices at once, disconnected ones once 
   registry.prune(new Set(['kept', 'refilled']), (deviceId) => deviceId === 'kept');
   assert.deepEqual([...budgets.keys()], ['kept'], 'Connected devices keep theirs');
 });
+
+test('a stop written behind a backlog to a listener that stopped reading closes the connection in time', async () => {
+  const listener = await fakeListener((request, reply, socket) => {
+    if (request.action === 'audio-start') {
+      reply({ type: 'result', requestId: request.requestId, result: { streamId: randomUUID() } });
+      // From now on the listener reads nothing.
+      socket.pause();
+    }
+  });
+  // Every read of the audio clock is a second later: the rate never binds.
+  let seconds = 0;
+  const fixture = await remoteFixture({
+    gateway: { controlSocket: listener.socketPath, audioClock: () => ++seconds * 1000 },
+  });
+  try {
+    const phone = await fakeListenerPhone(fixture);
+    phone.send({ requestId: 'start', action: 'audio-start' });
+    assert.equal(((await phone.reply('start')) as Json).type, 'result');
+
+    // Send until the gateway's socket to the listener waits for `drain`,
+    // well below the 256 KiB that would end the stream as slow-listener.
+    const relays = (fixture.gateway as unknown as { relays: Map<any, string> }).relays;
+    const upstream = () => [...relays.keys()][0].upstream as { writableNeedDrain: boolean };
+    let pongs = 0;
+    for (let round = 0; round < 200 && !upstream().writableNeedDrain; round++) {
+      phone.socket.send(Buffer.alloc(maximumAudioChunkBytes));
+      phone.socket.send(JSON.stringify({ type: 'ping' }));
+      pongs++;
+      await waitFor(
+        () =>
+          (phone.messages as Json[]).filter((message) => message.type === 'pong').length >= pongs,
+      );
+    }
+    assert.equal(upstream().writableNeedDrain, true);
+
+    phone.send({ requestId: 'stop', action: 'audio-stop' });
+    assert.equal(((await phone.reply('stop')) as Json).result, 'stopped');
+    assert.equal(
+      (phone.messages as Json[]).some((message) => message.type === 'audio-ended'),
+      false,
+      'Stopped by the client, not ended as slow-listener',
+    );
+
+    // The buffered sound is not kept until the page leaves: the connection
+    // closes once the stop has waited the request timeout (15 s).
+    const closed = await within(phone.closed, 20_000, 'the stuck connection to close');
+    assert.equal(closed.code, 4503);
+  } finally {
+    await fixture.close();
+    await listener.close();
+  }
+});
