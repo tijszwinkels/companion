@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { connectPhone } from '../remote-fixture.ts';
+
 /**
  * `npm run shell:demo` (integrations/shell/demo.ts) stopped with Ctrl+C
  * deletes its temporary directory, also when Ctrl+C comes while the demo is
@@ -63,12 +65,17 @@ for (const moment of ['while it starts', 'after it started'] as const) {
     const parent = await mkdtemp(join(tmpdir(), 'companion-demo-test-'));
     context.after(() => rm(parent, { recursive: true, force: true }));
     const port = await freePort();
-    const child = spawn('npm', ['run', 'shell:demo', '--', '--port', String(port)], {
-      cwd: root,
-      env: { ...process.env, TMPDIR: parent },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-    });
+    const framePort = await freePort();
+    const child = spawn(
+      'npm',
+      ['run', 'shell:demo', '--', '--port', String(port), '--frame-port', String(framePort)],
+      {
+        cwd: root,
+        env: { ...process.env, TMPDIR: parent },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      },
+    );
     const group = child.pid!;
     let output = '';
     child.stdout.on('data', (chunk) => {
@@ -126,3 +133,108 @@ for (const moment of ['while it starts', 'after it started'] as const) {
     assert.deepEqual(left, [], output);
   });
 }
+
+test(
+  'the demo shows the city trip with one inline widget on its frame origin',
+  { skip },
+  async (context) => {
+    const parent = await mkdtemp(join(tmpdir(), 'companion-demo-test-'));
+    const port = await freePort();
+    const framePort = await freePort();
+    const child = spawn(
+      'npm',
+      ['run', 'shell:demo', '--', '--port', String(port), '--frame-port', String(framePort)],
+      {
+        cwd: root,
+        env: { ...process.env, TMPDIR: parent },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      },
+    );
+    const group = child.pid!;
+    let output = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk;
+    });
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    context.after(async () => {
+      let running = true;
+      try {
+        process.kill(-group, 'SIGINT');
+      } catch {
+        running = false;
+      }
+      // Ctrl+C, and the temporary directory gone, as in the tests above.
+      const until = Date.now() + stopMilliseconds;
+      while (running && (await demoDirectories(parent)).length > 0 && Date.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2000).unref())]);
+      try {
+        process.kill(-group, 'SIGKILL');
+      } catch {
+        // The group has already exited.
+      }
+      await rm(parent, { recursive: true, force: true });
+    });
+
+    const deadline = Date.now() + startMilliseconds;
+    while (!output.includes('Pairing code')) {
+      assert.ok(Date.now() < deadline, `the demo did not get going: ${output}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const frameOrigin = `http://127.0.0.1:${framePort}`;
+    assert.ok(output.includes(`Widget frames: ${frameOrigin}/`), output);
+    const code = /Pairing code:\s+(\S+)/.exec(output)![1].replace('-', '');
+
+    // Pair as a browser would and read the snapshot.
+    const origin = `http://127.0.0.1:${port}`;
+    const paired = await fetch(`${origin}/api/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: origin },
+      body: JSON.stringify({ code, name: 'Demo test' }),
+    });
+    assert.equal(paired.status, 200);
+    const { token } = (await paired.json()) as { token: string };
+    // The trip's answer streams for a few seconds before its widget is
+    // published: connect again (a new snapshot) until one has it.
+    let snapshot: any;
+    const widgetDeadline = Date.now() + startMilliseconds;
+    while (!snapshot) {
+      assert.ok(Date.now() < widgetDeadline, 'no widget in the demo');
+      const phone = await connectPhone(`ws://127.0.0.1:${port}/api/socket`, token, origin);
+      try {
+        snapshot = await phone.engine('state', (message) =>
+          message.sessions?.some((session: { messages: { widget?: { frameUrl?: string } }[] }) =>
+            session.messages.some((row) => row.widget?.frameUrl),
+          ),
+        );
+      } catch {
+        // Not published yet.
+      } finally {
+        phone.socket.terminate();
+      }
+    }
+
+    // Exactly one widget, under the city trip, with a frame address that serves its page.
+    const widgets = snapshot.sessions.flatMap(
+      (session: { title: string; messages: { widget?: { name: string; frameUrl?: string } }[] }) =>
+        session.messages
+          .filter((row) => row.widget)
+          .map((row) => ({ title: session.title, widget: row.widget! })),
+    );
+    assert.equal(widgets.length, 1);
+    assert.match(widgets[0].title, /city trip/);
+    assert.equal(widgets[0].widget.name, 'packing-list');
+    assert.match(
+      widgets[0].widget.frameUrl!,
+      new RegExp('^' + frameOrigin + '/f/[A-Za-z0-9_-]{43}/$'),
+    );
+    const page = await fetch(widgets[0].widget.frameUrl!);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-type') ?? '', /^text\/html/);
+  },
+);

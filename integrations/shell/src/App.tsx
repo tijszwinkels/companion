@@ -27,6 +27,7 @@ import { ScreenshotViewer } from './screenshots/ScreenshotViewer.tsx';
 import type { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import type { SettingsView } from './settings/settings-view.ts';
 import type { PageTimes } from './times/page-times.ts';
+import type { ChatCover } from './widgets/chat-cover.ts';
 import { Workspace } from './workspace/Workspace.tsx';
 
 export function App(props: {
@@ -36,6 +37,7 @@ export function App(props: {
   settingsView: SettingsView;
   activityOverlay: ActivityOverlay;
   viewer: ScreenshotViewerState;
+  chatCover: ChatCover;
 }) {
   const state = useAppState();
 
@@ -62,6 +64,7 @@ export function App(props: {
           times={props.times}
           settingsView={props.settingsView}
           activityOverlay={props.activityOverlay}
+          chatCover={props.chatCover}
         />
         <Toasts />
         <ScreenshotViewer viewer={props.viewer} />

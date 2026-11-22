@@ -20,6 +20,7 @@
     "integrations/mobile/src",
     "integrations/shell/src",
     "test/shell/bridge.test.ts",
+    "test/shell/inline-widget-rules.test.ts",
     "test/shell/times.test.ts",
     "test/shell/tool-details.test.ts",
     "test/shell/screenshot-viewer.test.ts",

@@ -228,3 +228,57 @@ test(
     }
   },
 );
+
+/**
+ * The shared chat page's change for inline widgets (`widget.frameUrl` and
+ * `NativeBridge.inlineWidget`, integrations/shell/README.md, "Changes to the
+ * shared chat page", item 4): without the field the page draws exactly the
+ * reference, whatever the host's `inlineWidget`; with it and a host
+ * component, the widget row is that component inside
+ * `<div class="message assistant inline-widget-message">` and nothing else
+ * changes; with it and no component (as in the Qt host) the reference again.
+ */
+test(
+  'without widget.frameUrl the page draws exactly as before; with it, only the widget row is the host’s',
+  { skip },
+  async (context) => {
+    const browser = new TestBrowser();
+    await browser.start();
+    context.after(() => browser.close());
+
+    const reference = await readFile(referencePath, 'utf8');
+
+    // No frameUrl: the reference, with every kind of host.
+    for (const host of ['answer-everything', 'absent', 'component'] as const) {
+      assert.equal(await drawRows(browser, chatDirectory, referenceRows, host), reference, host);
+    }
+
+    // frameUrl on the widget row (an address, or '' for "not set up").
+    for (const frameUrl of ['http://127.0.0.1:8789/f/' + 'A'.repeat(43) + '/', '']) {
+      const withFrame = referenceRows.map((row) =>
+        row.widget ? { ...row, widget: { ...row.widget, frameUrl } } : row,
+      );
+
+      // A host without the component (the Qt host never sends the field):
+      // the reference.
+      assert.equal(await drawRows(browser, chatDirectory, withFrame, 'absent'), reference);
+
+      // With the component: only the widget row differs, and it is the
+      // component inside one .message element.
+      const drawn = await drawRows(browser, chatDirectory, withFrame, 'component');
+      const lines = drawn.trimEnd().split(/\n(?=<div class="message )/);
+      const expectedLines = reference.trimEnd().split(/\n(?=<div class="message )/);
+      assert.equal(lines.length, expectedLines.length);
+      for (let index = 0; index < lines.length; index++) {
+        if (withFrame[index].widget) {
+          assert.equal(
+            lines[index],
+            `<div class="message assistant inline-widget-message"><div class="host-widget">Planner at ${frameUrl}</div></div>`,
+          );
+        } else {
+          assert.equal(lines[index], expectedLines[index], withFrame[index].key);
+        }
+      }
+    }
+  },
+);

@@ -12,15 +12,17 @@
  * on (`screenshotPath`). The page then offers View screenshot, and the
  * bridge opens it in the shell's viewer, fetched with the device token in a
  * header (../screenshots/). A screenshot the gateway no longer has is
- * labelled "screenshot unavailable", as one without a route. (The gateway
- * also removes widget view URLs; the page shows only the widget's name
- * either way.)
+ * labelled "screenshot unavailable", as one without a route. The gateway
+ * removes widget view URLs; with a frame origin configured it sends a frame
+ * address instead, which `pageRow` passes on as `widget.frameUrl` for the
+ * shell's inline widget (widgets/InlineWidget.tsx).
  */
 
 import type { AgentMessage } from '../../../src/agents/types.ts';
 import { chatRow } from '../../session-apps/ChatState.mjs';
 import type { HistoryRow } from '../../panel/HistoryRows.mjs';
 import type { ChatRow, ChatToolDetails } from '../../session-apps/chat/protocol.ts';
+import { frameAddress } from './widgets/frame-address.ts';
 
 const uuidPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const applicationNamePattern = /^[a-z][a-z0-9-]{0,47}$/;
@@ -167,12 +169,18 @@ export interface PageRowExtras {
   tools?: ChatToolDetails;
   /** The gateway no longer has this row's screenshot. */
   screenshotGone?: boolean;
+  /** The bridge has the shell's inline widget component (widget.frameUrl). */
+  inlineWidgets?: boolean;
 }
 
 /**
  * The page's row for one resident row: `ChatState.chatRow(rowData(row))`,
  * plus the time the message was written (`ChatRow.time`) when `time` is not
- * empty, and a tool row's in-place details (`ChatRow.tools`).
+ * empty, a tool row's in-place details (`ChatRow.tools`), and for a widget
+ * row, when `inlineWidgets` is set (the bridge has the shell's inline widget
+ * component), its frame address (`widget.frameUrl`): the one the gateway
+ * sent when it is valid, else '' (the "not set up" card). Without inline
+ * widgets a widget row is exactly the Qt host's.
  */
 export function pageRow(row: HistoryRow, extras: PageRowExtras = {}): ChatRow {
   const page: ChatRow = chatRow(rowData(row, extras.screenshotGone === true));
@@ -181,6 +189,13 @@ export function pageRow(row: HistoryRow, extras: PageRowExtras = {}): ChatRow {
   }
   if (extras.tools) {
     page.tools = extras.tools;
+  }
+
+  if (page.widget && extras.inlineWidgets) {
+    // `frameUrl` is not part of the listener's declared attachment type:
+    // the gateway adds it for remote clients (src/remote/README.md).
+    const attachment = row.message.widget as { frameUrl?: unknown } | undefined;
+    page.widget.frameUrl = frameAddress(attachment?.frameUrl);
   }
   return page;
 }

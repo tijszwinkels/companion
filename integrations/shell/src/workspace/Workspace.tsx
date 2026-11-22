@@ -67,6 +67,7 @@ import { SettingsScreen } from '../settings/SettingsScreen.tsx';
 import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
 import type { SettingsView } from '../settings/settings-view.ts';
 import type { PageTimes } from '../times/page-times.ts';
+import type { ChatCover } from '../widgets/chat-cover.ts';
 import { BarState } from './BarState.tsx';
 import { ChatBar } from './ChatBar.tsx';
 import { PreviousSessions } from './PreviousSessions.tsx';
@@ -92,6 +93,7 @@ export function Workspace(props: {
   times: PageTimes;
   settingsView: SettingsView;
   activityOverlay: ActivityOverlay;
+  chatCover: ChatCover;
 }) {
   const store = useStore();
   const state = useAppState();
@@ -227,6 +229,14 @@ export function Workspace(props: {
       columnActivityButton.current?.focus();
     }
   }, [chatCovered]);
+
+  // Inline widget frames count as not visible while this page's own
+  // screens cover the chat: the settings screen, or the Activity column
+  // over it in a narrow window (../widgets/frame-visibility.ts).
+  const chatCover = props.chatCover;
+  useLayoutEffect(() => {
+    chatCover.setCovered(settingsShown || chatCovered);
+  }, [chatCover, settingsShown, chatCovered]);
 
   function showFromBar() {
     focusAfterToggle.current = 'column';

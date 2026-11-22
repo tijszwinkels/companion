@@ -4,6 +4,8 @@
  * currentStatus(); the native side validates every request again.
  */
 
+import type { ComponentType } from 'preact';
+
 /** One resident transcript row (ChatState.chatRow). */
 export interface ChatRow {
   key: string;
@@ -25,7 +27,18 @@ export interface ChatRow {
     sessionId: string;
     groupId: string;
   } | null;
-  widget: { name: string } | null;
+  widget: {
+    name: string;
+    /**
+     * Set only by a host that draws widget rows itself with
+     * `NativeBridge.inlineWidget` (the browser shell): the widget page's
+     * address on the gateway's frame origin (`<frame origin>/f/<handle>/`),
+     * or '' when the host has none for it (no frame origin configured).
+     * Optional: the Qt host never sets it, and without it the page draws
+     * its own card exactly as before.
+     */
+    frameUrl?: string;
+  } | null;
   /**
    * When the message was written, as the host formats it for the reader
    * (`14:02`, `Yesterday 16:48`), shown at the right of its heading line.
@@ -221,4 +234,17 @@ export interface NativeBridge {
   openOrigin(sessionId: string, key: string): void;
   classicView(): void;
   openApp(): void;
+  /**
+   * Optional: a host that draws widget messages itself (the browser shell,
+   * integrations/shell/src/widgets/). The page draws a widget row with it,
+   * instead of its own "shown in the classic view" card, when the row
+   * carries `widget.frameUrl` (also ''). The Qt host has neither.
+   */
+  inlineWidget?: ComponentType<InlineWidgetProps>;
+}
+
+/** What the page gives a host's inline widget: the widget row and its conversation. */
+export interface InlineWidgetProps {
+  row: ChatRow;
+  sessionId: string;
 }

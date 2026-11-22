@@ -136,9 +136,26 @@ async function pageScript(chatDirectory: string): Promise<string> {
         }, 0);
       },
     };
+    // The host's inline widget (window.__inlineWidget, see InlineWidgetHost):
+    // by default, like every other member, a function that draws nothing;
+    // 'absent' as in the Qt host; 'component' a stand-in that names the row.
+    const inlineWidget = window.__inlineWidget;
+    if (inlineWidget === 'component') {
+      host.inlineWidget = (props) => (
+        <div class="host-widget">{props.row.widget.name + ' at ' + props.row.widget.frameUrl}</div>
+      );
+    }
     // Every other request of the page is answered with nothing.
     const bridge = new Proxy(host, {
-      get: (target, name) => (name in target ? target[name] : () => {}),
+      get: (target, name) => {
+        if (name in target) {
+          return target[name];
+        }
+        if (name === 'inlineWidget' && inlineWidget === 'absent') {
+          return undefined;
+        }
+        return () => {};
+      },
     });
     const store = new ChatStore();
     store.attach(bridge);
@@ -160,6 +177,15 @@ async function pageScript(chatDirectory: string): Promise<string> {
 }
 
 /**
+ * The stand-in host's `inlineWidget` (protocol.ts): `answer-everything` (the
+ * default, as when the reference was drawn) is a function drawing nothing,
+ * like every member the stand-in does not implement; `absent` is no member,
+ * as in the Qt host; `component` draws `<div class="host-widget">` naming
+ * the row's widget and frame address.
+ */
+export type InlineWidgetHost = 'answer-everything' | 'absent' | 'component';
+
+/**
  * The transcript rows' HTML as the page draws `rows`, one row element per
  * line, with `chatDirectory`'s Chat.tsx.
  */
@@ -167,8 +193,9 @@ export async function drawRows(
   browser: TestBrowser,
   chatDirectory: string,
   rows: ChatRow[],
+  inlineWidget: InlineWidgetHost = 'answer-everything',
 ): Promise<string> {
-  return (await drawRowsWithTimes(browser, chatDirectory, rows)).html;
+  return (await drawRowsWithTimes(browser, chatDirectory, rows, inlineWidget)).html;
 }
 
 /**
@@ -184,6 +211,7 @@ export async function drawRowsWithTimes(
   browser: TestBrowser,
   chatDirectory: string,
   rows: ChatRow[],
+  inlineWidget: InlineWidgetHost = 'answer-everything',
 ): Promise<{ html: string; times: TimePlace[] }> {
   const script = await pageScript(chatDirectory);
   const { targetId } = await browser.call('Target.createTarget', { url: 'about:blank' });
@@ -210,7 +238,8 @@ export async function drawRowsWithTimes(
       mobile: false,
     });
     await evaluate(`document.body.innerHTML = '<div id="chat"></div>';
-      window.__chatRows = ${JSON.stringify(rows)};`);
+      window.__chatRows = ${JSON.stringify(rows)};
+      window.__inlineWidget = ${JSON.stringify(inlineWidget)};`);
     await evaluate(script);
     const drawn = (await evaluate(`new Promise((resolve) => {
       const started = Date.now();

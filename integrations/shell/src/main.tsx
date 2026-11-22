@@ -32,6 +32,8 @@ import { ListenerClock } from './times/listener-clock.ts';
 import type { PageTimes } from './times/page-times.ts';
 import { TurnTicker } from './times/turn-ticker.ts';
 import { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
+import { ChatCover } from './widgets/chat-cover.ts';
+import { createInlineWidget } from './widgets/InlineWidget.tsx';
 
 /**
  * Where the chat page's rows are on screen. Chat.tsx draws one `.message`
@@ -124,6 +126,17 @@ const bridge = new GatewayChatBridge(store, transcriptView, {
   settings: times.settings,
   clock,
 });
+// Inline widgets (widgets/InlineWidget.tsx): the chat page draws widget
+// messages with this component. Frames are greyed and paused while requests
+// are not admitted, and paused while this page's own screens cover the chat
+// (the workspace keeps `chatCover` up to date).
+const chatCover = new ChatCover();
+bridge.inlineWidget = createInlineWidget({
+  connected: () => bridge.admitted,
+  subscribe: (listener) => store.subscribe(listener),
+  cover: chatCover,
+});
+
 const chat = new ChatStore();
 chat.attach(bridge);
 
@@ -133,6 +146,14 @@ const viewer = new ScreenshotViewerState((path, signal) =>
   fetchScreenshot(path, store.connection, signal),
 );
 bridge.onScreenshot((request) => viewer.open(request));
+
+// Inline widget frames behind the open viewer count as covered: they stop
+// polling and a loading frame's deadline waits (widgets/chat-cover.ts).
+// Only the frames: the visible report for the unread mark (selectionShown
+// above) does not read this.
+viewer.subscribe(() => {
+  chatCover.setViewerOpen(viewer.state.kind !== 'closed');
+});
 
 // The viewer shows a screenshot of the shown conversation only: it closes
 // when another conversation (or another lifetime of the same one) is shown,
@@ -198,6 +219,7 @@ render(
       settingsView={settingsView}
       activityOverlay={activityOverlay}
       viewer={viewer}
+      chatCover={chatCover}
     />
   </StoreContext.Provider>,
   document.getElementById('app')!,

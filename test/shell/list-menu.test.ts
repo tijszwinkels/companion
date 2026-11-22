@@ -881,6 +881,25 @@ test(
       const box = document.querySelector('.entry-menu').getBoundingClientRect();
       return box.top >= 0 && box.bottom <= innerHeight;
     })()`);
+    // The menu follows the list's scrolling: wait until it has stopped
+    // moving (the same place for three frames) before choosing an entry it
+    // does not cover, or the tap below may land on the menu.
+    await page.evaluate(`new Promise((resolve) => {
+      let last = '';
+      let same = 0;
+      const check = () => {
+        const box = document.querySelector('.entry-menu').getBoundingClientRect();
+        const place = box.top + ',' + box.left + ',' + document.querySelector('.conversation-scroll').scrollTop;
+        same = place === last ? same + 1 : 0;
+        last = place;
+        if (same >= 2) {
+          resolve(true);
+        } else {
+          requestAnimationFrame(check);
+        }
+      };
+      requestAnimationFrame(check);
+    })`);
     // A tap on another entry, still in view, closes the menu without
     // scrolling the list back to the ⋯, and selects that entry.
     const scrolledTo = await page.evaluate<number>(
@@ -904,6 +923,10 @@ test(
     assert.ok(uncovered, 'an entry in view beside the menu');
     const lastTitle = uncovered.title;
     const lastPoint = { x: uncovered.x, y: uncovered.y };
+    // The point hits that entry (not the menu) when the finger comes down.
+    await page.waitFor(
+      `document.elementFromPoint(${lastPoint.x}, ${lastPoint.y})?.closest('.entry-select')?.title === ${JSON.stringify(lastTitle)}`,
+    );
     await page.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [lastPoint] });
     assert.equal(
       await page.evaluate<number>(`document.querySelector('.conversation-scroll').scrollTop`),

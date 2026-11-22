@@ -26,7 +26,23 @@ frame.setAttribute(
   "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; payment 'none'; usb 'none'; serial 'none'; bluetooth 'none'; display-capture 'none'",
 );
 frame.title = bootstrap.title;
-frame.srcdoc = bootstrap.document;
+// Widget code must not open WebRTC connections: CSP `webrtc 'block'` is not
+// enforced by Chromium, and no permission covers it, so an RTCPeerConnection
+// could send STUN/ICE packets anywhere from the browser's network. This
+// script runs first in the inner document, before frame.js imports the
+// widget module, and makes the constructors undefined in its only realm, as
+// the desktop's native widget view does in every frame (NativeWidgetView.qml,
+// same list). The inner policy has `frame-src 'none'` and the sandbox no
+// popups, so widget code gets no fresh window to take them from. It is a
+// `data:` script because the inner document also inherits this page's
+// policy, which allows no inline scripts. Both routes, both hosts.
+const withoutWebRtc =
+  '<script src="data:text/javascript,' +
+  encodeURIComponent(
+    "for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection', 'WebTransport']) Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });",
+  ) +
+  '"></script>';
+frame.srcdoc = bootstrap.document.replace('<head>', '<head>' + withoutWebRtc);
 document.body.append(frame);
 const status = document.createElement('div');
 status.className = 'error';
@@ -41,6 +57,29 @@ let readyResolve;
 const ready = new Promise((resolve) => {
   readyResolve = resolve;
 });
+
+// Embedded in the browser shell (integrations/shell/README.md, "Inline
+// widgets"): served on the widget service's socket route, whose documents
+// carry the fixed marker 'location' instead of an address
+// (src/widgets/socket.ts), and framed by another page, which the frame
+// origin's `frame-ancestors` limits to the gateway's own pages. Only then
+// does this page talk to its parent; on the loopback route (desktop panel,
+// pop-out) it installs no listener for it and posts nothing to it.
+const shellEmbedded = bootstrap.api === 'location' && window.parent !== window;
+// Whether the shell shows this frame. Polling stops while it does not. An
+// embedded page waits for the shell's first `visible` (sent when the frame
+// has loaded), so a frame out of view never polls; elsewhere it is always
+// true, as before.
+let shellVisible = !shellEmbedded;
+// The first height goes to the shell only once the first state was drawn
+// (the inner frame reports a height before that too); later ones as they
+// change.
+let shellShown = false;
+let shellHeight = null;
+// The status line's text node a polling failure wrote, or null. Any other
+// write of the status line (an action's error, even with the same text)
+// replaces that node, so it is no longer the one a later poll may clear.
+let shellPollingError = null;
 
 function command(message) {
   return ready.then(
@@ -81,6 +120,9 @@ window.addEventListener('message', (event) => {
     readyResolve();
   } else if (message.type === 'geometry' && Number.isFinite(message.height)) {
     window.widgetContentHeight = Math.max(0, Math.min(2200, message.height));
+    if (shellEmbedded) {
+      reportHeightToShell();
+    }
   } else if (message.type === 'result') {
     const pending = waiting.get(message.id);
     if (pending) {
@@ -375,7 +417,12 @@ async function fetchState(options) {
     const response = await fetch(api + '/state', options);
     const snapshot = await response.json();
     if (!response.ok) {
-      throw Error(typeof snapshot?.error === 'string' ? snapshot.error : 'Widget is unavailable');
+      const failure = Error(
+        typeof snapshot?.error === 'string' ? snapshot.error : 'Widget is unavailable',
+      );
+      // The status, so the embedded page can tell an ended view (404) apart.
+      failure.status = response.status;
+      throw failure;
     }
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       throw Error('Invalid application state');
@@ -651,17 +698,36 @@ window.widgetHost = {
 void initialUpdate
   .then(() => {
     window.widgetReady = true;
+    if (shellEmbedded) {
+      shellShown = true;
+      reportHeightToShell();
+    }
   })
   .catch((error) => {
     status.textContent = error.message;
+    if (shellEmbedded) {
+      postToShell({ type: 'error', text: String(error.message || error).slice(0, 200) });
+    }
   });
 if (api) {
   setInterval(() => {
-    if (document.hidden) {
+    if (document.hidden || !shellVisible) {
+      return;
+    }
+    // Embedded, a tick while a refresh is still on its way does nothing:
+    // only a completed refresh may clear a polling error (below).
+    if (shellEmbedded && refreshing) {
       return;
     }
     void refresh()
       .then(() => {
+        // Embedded, a polling failure the shell's connection loss caused
+        // (the frame stays when the shell reconnects to the same address)
+        // goes once polling works again; other messages stay as before.
+        if (shellEmbedded && shellPollingError && status.firstChild === shellPollingError) {
+          status.textContent = '';
+        }
+        shellPollingError = null;
         if (chatWatching && chatAllowed && !document.hidden) {
           readChat(null);
         }
@@ -671,6 +737,100 @@ if (api) {
           withdrawChat('Application connection is unavailable');
         }
         status.textContent = error.message;
+        shellPollingError = status.firstChild;
+        // Embedded, a 404 means the frame address has ended for good (the
+        // gateway's handle ended, for example after a long disconnection):
+        // the shell then shows its failed state instead of this line.
+        if (shellEmbedded && error.status === 404) {
+          postToShell({ type: 'error', text: viewEndedText });
+        }
       });
   }, 400);
+}
+
+// ---- Messages with the browser shell (embedded mode only) -------------------
+//
+// To the shell: { type: 'geometry', height } and { type: 'error', text }.
+// From it: { type: 'theme', theme: { foreground, background, accent, muted,
+// scale } } and { type: 'visible', visible }. Nothing else is sent or
+// accepted; no message grants a permission or names another view. The
+// target origin is '*' because this page cannot know its parent's origin
+// (the shell frames it without a referrer); `frame-ancestors` already limits
+// who can frame it to the gateway's pages, and these messages carry only a
+// height and a short error text.
+
+// The reason the shell shows when this page's address has ended.
+const viewEndedText =
+  'Its address has ended, for example after a long disconnection. Reload the page to show it again.';
+
+function postToShell(message) {
+  window.parent.postMessage(message, '*');
+}
+
+function reportHeightToShell() {
+  const height = window.widgetContentHeight;
+  if (!shellShown || typeof height !== 'number' || height === shellHeight) {
+    return;
+  }
+  shellHeight = height;
+  postToShell({ type: 'geometry', height });
+}
+
+const shellColour = /^#[0-9a-fA-F]{6}$/;
+
+// A theme from the shell, or null: exactly the four colours as #rrggbb and
+// a text scale within Companion's range.
+function shellTheme(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const keys = ['foreground', 'background', 'accent', 'muted', 'scale'];
+  if (
+    Object.keys(value).length !== keys.length ||
+    !keys.every((key) => Object.hasOwn(value, key))
+  ) {
+    return null;
+  }
+  for (const key of ['foreground', 'background', 'accent', 'muted']) {
+    if (typeof value[key] !== 'string' || !shellColour.test(value[key])) {
+      return null;
+    }
+  }
+  if (
+    typeof value.scale !== 'number' ||
+    !(value.scale >= minimumTextScale && value.scale <= maximumTextScale)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+if (shellEmbedded) {
+  window.addEventListener('message', (event) => {
+    if (
+      event.source !== window.parent ||
+      !event.data ||
+      typeof event.data !== 'object' ||
+      Array.isArray(event.data)
+    ) {
+      return;
+    }
+    const message = event.data;
+    const exactly = (name) => Object.keys(message).length === 2 && Object.hasOwn(message, name);
+    if (message.type === 'visible' && exactly('visible') && typeof message.visible === 'boolean') {
+      shellVisible = message.visible;
+    } else if (message.type === 'theme' && exactly('theme')) {
+      const value = shellTheme(message.theme);
+      if (value) {
+        setTheme({
+          ...theme,
+          foreground: value.foreground,
+          background: value.background,
+          accent: value.accent,
+          muted: value.muted,
+          scale: value.scale,
+        });
+      }
+    }
+  });
 }

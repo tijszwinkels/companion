@@ -17,9 +17,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { widgetTools } from '../src/agents/widget-tools.ts';
-import type { WidgetBundle, WidgetRecord, JsonObject } from '../src/widgets/types.ts';
+import type { JsonObject } from '../src/widgets/types.ts';
 import { frame, signal } from './helpers.ts';
 import { freePort, remoteFixture, waitFor, type SyntheticRun } from './remote-fixture.ts';
+import { useNodeRenderer } from './widget-node-renderer.ts';
+
+// The Node renderer moved to its own module (shared with the shell demo).
+export { useNodeRenderer };
 
 /** A widget with one action: a button that counts its clicks. */
 const counterManifest = {
@@ -154,7 +158,8 @@ export function mount(root) {
 }
 `;
 
-async function writeWidget(
+/** Write one widget (manifest, module and a small stylesheet) into `library`. */
+export async function writeWidget(
   library: string,
   manifest: { name: string },
   javascript: string,
@@ -164,26 +169,6 @@ async function writeWidget(
   await writeFile(join(directory, 'widget.json'), JSON.stringify(manifest, null, 2));
   await writeFile(join(directory, 'widget.js'), javascript);
   await writeFile(join(directory, 'style.css'), 'button { font-size: 1rem; }\n');
-}
-
-/** The bundle's own module, evaluated in Node (test-controlled code only). */
-type WidgetModule = {
-  describe(props: JsonObject): string;
-  actions?: Record<string, (props: JsonObject, args: JsonObject, context: object) => any>;
-  queries?: Record<string, (props: JsonObject, args: JsonObject) => any>;
-  mount?: unknown;
-};
-
-const modules = new Map<string, Promise<WidgetModule>>();
-
-function moduleOf(bundle: WidgetBundle): Promise<WidgetModule> {
-  let loaded = modules.get(bundle.hash);
-  if (!loaded) {
-    const url = 'data:text/javascript;base64,' + Buffer.from(bundle.javascript).toString('base64');
-    loaded = import(url) as Promise<WidgetModule>;
-    modules.set(bundle.hash, loaded);
-  }
-  return loaded;
 }
 
 /**
@@ -196,56 +181,6 @@ export async function writeSyntheticLibrary(library: string): Promise<void> {
   await writeWidget(library, chatNotesManifest, notesModule);
 }
 
-/**
- * Replace the methods of a widget renderer object in place (the application
- * host holds the same object) with Node-side equivalents.
- */
-export function useNodeRenderer(renderer: object): void {
-  Object.assign(renderer, {
-    async describe(record: WidgetRecord, bundle: WidgetBundle) {
-      return String((await moduleOf(bundle)).describe(structuredClone(record.props)));
-    },
-    async reduce(
-      record: WidgetRecord,
-      bundle: WidgetBundle,
-      action: string,
-      args: JsonObject,
-      requestId: string,
-    ) {
-      const implementation = (await moduleOf(bundle)).actions?.[action];
-      if (!implementation) {
-        throw Error('Widget action is not implemented');
-      }
-      const value = implementation(structuredClone(record.props), structuredClone(args), {
-        requestId,
-      });
-      return { props: value.props ?? value.state, result: value.result ?? {} };
-    },
-    async query(record: WidgetRecord, bundle: WidgetBundle, name: string, args: JsonObject) {
-      const implementation = (await moduleOf(bundle)).queries?.[name];
-      if (!implementation) {
-        throw Error('Application query is not implemented');
-      }
-      return implementation(structuredClone(record.props), structuredClone(args));
-    },
-    async inspect(_record: WidgetRecord, bundle: WidgetBundle) {
-      const implementation = await moduleOf(bundle);
-      return {
-        mount: typeof implementation.mount === 'function',
-        describe: typeof implementation.describe === 'function',
-        actions: Object.keys(implementation.actions ?? {}),
-        queries: Object.keys(implementation.queries ?? {}),
-      };
-    },
-    async render() {},
-    async discard() {},
-    dimensions() {
-      return undefined;
-    },
-    async close() {},
-  });
-}
-
 export interface FrameFixtureOptions {
   /** Configure the frame origin (default true). */
   frames?: boolean;
@@ -255,6 +190,8 @@ export interface FrameFixtureOptions {
   appDirectory?: string;
   /** Point the frame origin at another widget socket (a fake upstream). */
   widgetSocket?: string;
+  /** Writes more widgets into the synthetic library (see `writeWidget`). */
+  library?: (directory: string) => Promise<void>;
   /** Run the listener in preview mode. */
   preview?: boolean;
 }
@@ -263,6 +200,9 @@ export interface FrameFixtureOptions {
 export async function frameFixture(options: FrameFixtureOptions = {}) {
   const library = await mkdtemp(join(tmpdir(), 'companion-frame-library-'));
   await writeSyntheticLibrary(library);
+  if (options.library) {
+    await options.library(library);
+  }
 
   const framePort = await freePort();
   const frameOrigin = `http://127.0.0.1:${framePort}`;
@@ -314,6 +254,19 @@ export async function frameFixture(options: FrameFixtureOptions = {}) {
     return JSON.parse(result.content[0].text).id as string;
   }
 
+  /** Publish any widget of the library from a run's lease; returns the widget id. */
+  async function publishWidget(
+    run: SyntheticRun,
+    widget: string,
+    props: JsonObject,
+  ): Promise<string> {
+    const result = await tools(run)('companion_widget').execute('publish-' + Math.random(), {
+      widget,
+      props,
+    });
+    return JSON.parse(result.content[0].text).id as string;
+  }
+
   /** Install (expectedVersion 0) or replace the notes (or another) application. */
   async function applyNotes(
     run: SyntheticRun,
@@ -359,6 +312,7 @@ export async function frameFixture(options: FrameFixtureOptions = {}) {
     framePort,
     conversation,
     publishCounter,
+    publishWidget,
     applyNotes,
     frameRequest,
     close,
