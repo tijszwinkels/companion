@@ -21,15 +21,17 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism, homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   collectTestInputs,
@@ -63,8 +65,19 @@ function stop(message: string): never {
   console.error(message);
   process.exit(2);
 }
-// The sandbox hides the checkout's own files, so the copies and results must be elsewhere.
-const cacheInCheckout = relative(root, cacheDirectory);
+// The sandbox hides the checkout's own files, so the copies and results must be elsewhere,
+// also when a symbolic link leads back into the checkout.
+function realPath(path: string): string {
+  if (existsSync(path)) {
+    return realpathSync(path);
+  }
+  const parent = dirname(path);
+  if (parent === path) {
+    return path;
+  }
+  return join(realPath(parent), basename(path)); // a directory that does not exist yet
+}
+const cacheInCheckout = relative(realPath(root), realPath(resolve(cacheDirectory)));
 const cacheOutside = cacheInCheckout === '..' || cacheInCheckout.startsWith('../');
 if (!cacheOutside && !isAbsolute(cacheInCheckout)) {
   stop(`The cache directory must be outside the checkout: ${cacheDirectory}`);
@@ -97,13 +110,16 @@ function listRepositoryFiles(): string[] {
   } catch {
     stop('npm run test:changed needs a git checkout to list the files. Use npm test instead.');
   }
+  // Everything but directories: a symbolic link counts by its name, also when it leads to a
+  // directory or nowhere, because a test that lists its directory sees it.
   return listed
     .split('\0')
     .filter(
       (file) =>
         file &&
-        !file.startsWith('node_modules') &&
-        statSync(join(root, file), { throwIfNoEntry: false })?.isFile(),
+        file !== 'node_modules' &&
+        !file.startsWith('node_modules/') &&
+        lstatSync(join(root, file), { throwIfNoEntry: false })?.isDirectory() === false,
     );
 }
 
@@ -128,7 +144,7 @@ async function snapshot(tests: string[]): Promise<Snapshot> {
   // The sandbox shows every file git lists by name (run-changed-process.ts), so a test can
   // observe which files exist; adding, removing or renaming a file changes every key.
   const names = createHash('sha256')
-    .update([...repositoryFiles].sort().join('\n'))
+    .update([...repositoryFiles].sort().join('\0'))
     .digest('hex');
   const everyTest = [
     FORMAT,
@@ -187,17 +203,6 @@ if (!sandboxWorks(root)) {
 const started = performance.now();
 const before = await snapshot(tests);
 
-mkdirSync(cacheDirectory, { recursive: true });
-// Saved passes and markers that no run has used for a month are removed.
-const oldest = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-for (const name of readdirSync(cacheDirectory)) {
-  const path = join(cacheDirectory, name);
-  const modified = statSync(path, { throwIfNoEntry: false })?.mtimeMs;
-  if (/^[0-9a-f]{64}$/.test(name) && modified !== undefined && modified < oldest) {
-    rmSync(path, { force: true });
-  }
-}
-
 // The marker that says a test file needs the whole repository is named after its computed
 // key, so it stops holding as soon as the computed inputs change.
 const markerOf = (computedKey: string): string =>
@@ -221,11 +226,19 @@ const keyOf = (state: Snapshot, test: string): string =>
 const saved = (test: string): string => join(cacheDirectory, keyOf(before, test));
 
 const toRun = tests.filter((test) => {
-  if (!before.inputs.get(test)!.complete) return true;
-  if (!touch(saved(test))) return true; // no saved pass
-  if (!flags.has('--all')) return false;
+  if (!before.inputs.get(test)!.complete) {
+    return true;
+  }
+  if (!touch(saved(test))) {
+    return true; // no saved pass
+  }
+  if (!flags.has('--all')) {
+    return false;
+  }
   // An interrupted --all run leaves no pass behind; --list changes nothing.
-  if (!flags.has('--list')) rmSync(saved(test), { force: true });
+  if (!flags.has('--list')) {
+    rmSync(saved(test), { force: true });
+  }
   return true;
 });
 console.log(
@@ -248,12 +261,23 @@ if (flags.has('--list')) {
   process.exit(0);
 }
 
+mkdirSync(cacheDirectory, { recursive: true });
+// Saved passes and markers that no run has used for a month are removed.
+const oldest = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
+for (const name of readdirSync(cacheDirectory)) {
+  const path = join(cacheDirectory, name);
+  const modified = statSync(path, { throwIfNoEntry: false })?.mtimeMs;
+  if (/^[0-9a-f]{64}$/.test(name) && modified !== undefined && modified < oldest) {
+    rmSync(path, { force: true });
+  }
+}
+
 // The sandbox copies of a run are in a directory named after its process ID. A directory
-// whose process is gone was left behind by an interrupted run.
+// whose process is gone was left behind by an interrupted run; other names are left alone.
 const sandboxDirectory = join(cacheDirectory, 'sandboxes');
 mkdirSync(sandboxDirectory, { recursive: true });
 for (const name of readdirSync(sandboxDirectory)) {
-  if (!processExists(Number(name))) {
+  if (/^[1-9][0-9]*$/.test(name) && !processExists(Number(name))) {
     rmSync(join(sandboxDirectory, name), { recursive: true, force: true });
   }
 }
@@ -273,18 +297,19 @@ function processExists(pid: number): boolean {
 }
 
 // The first file of the checkout that a test's output names and that was not in its sandbox:
-// an absolute path, or the quoted path of a failed file operation (relative to the checkout,
-// the working directory of the test).
+// the quoted path of a failed file operation (relative to the checkout, the working directory
+// of the test), or else an absolute path, as in a stack frame.
 function missingPath(output: string, sandboxFiles: Set<string>): string | undefined {
   const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const absolute = new RegExp(`${escapedRoot}/([^\\s'"\`),:]+)`, 'g');
   const operation = /(?:ENOENT|EACCES)[^'\n]*'([^'\n]+)'/g;
   const named = [
-    ...[...output.matchAll(absolute)].map((match) => match[1]),
     ...[...output.matchAll(operation)].map((match) => relative(root, resolve(root, match[1]))),
+    ...[...output.matchAll(absolute)].map((match) => match[1]),
   ];
   for (const file of named) {
-    if (!sandboxFiles.has(file) && existsSync(join(root, file))) {
+    const mounted = file === 'node_modules' || file.startsWith('node_modules/');
+    if (!mounted && !sandboxFiles.has(file) && existsSync(join(root, file))) {
       return file;
     }
   }

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -49,6 +50,11 @@ const FILES: Record<string, string> = {
     "import test from 'node:test';\nimport { readFileSync } from 'node:fs';\n" +
     "const name = 'txt.neddih/atad'.split('').reverse().join('');\n" +
     "test('reads the hidden file', () => { readFileSync(new URL('../../' + name, import.meta.url)); });\n",
+  // A template that starts at the checkout root makes every file an input.
+  'test/unit/root.test.ts':
+    "import test from 'node:test';\nimport { readFileSync } from 'node:fs';\n" +
+    'const read = (name: string) => readFileSync(new URL(`../../${name}`, import.meta.url));\n' +
+    "test('reads from the root', () => { read('data/hidden.txt'); });\n",
   // Reads the hidden file only when it exists: there it exists, but cannot be read.
   'test/unit/probes.test.ts':
     "import test from 'node:test';\nimport { existsSync, readFileSync } from 'node:fs';\n" +
@@ -74,7 +80,12 @@ for (const [file, text] of Object.entries(FILES)) {
 for (const script of SCRIPTS) {
   copyFileSync(join(checkoutRoot, script), join(root, script));
 }
-symlinkSync(join(checkoutRoot, 'node_modules'), join(root, 'node_modules'));
+// The node_modules this checkout uses: its own, or the one of a checkout above a worktree.
+let modules = join(checkoutRoot, 'node_modules');
+while (!existsSync(join(modules, 'tsx')) && dirname(dirname(modules)) !== dirname(modules)) {
+  modules = join(dirname(dirname(modules)), 'node_modules');
+}
+symlinkSync(modules, join(root, 'node_modules'));
 execFileSync('git', ['init', '--quiet'], { cwd: root });
 
 function testChanged(args: string[], path = process.env.PATH): { output: string; status: number } {
@@ -109,21 +120,23 @@ test('the sandbox holds only the inputs, and a missed input takes the fallback',
   assert.match(first.output, /^✔ test\/unit\/empty\.test\.ts .*none passed/m);
   assert.match(
     first.output,
-    /4 passes saved, 1 failed, 2 needed files outside .*, 1 passed but not saved/,
+    /5 passes saved, 1 failed, 2 needed files outside .*, 1 passed but not saved/,
   );
 
   // Only the failure runs again.
   const unchanged = testChanged(['--list']);
-  assert.match(unchanged.output, /4 already passed with these inputs, 2 to run/);
+  assert.match(unchanged.output, /5 already passed with these inputs, 2 to run/);
   assert.match(unchanged.output, /^ {2}test\/unit\/fails\.test\.ts /m);
 
-  // A file outside every computed input: only the test file that took the fallback runs.
+  // A file that only the root template reaches: that test file and the one that took the
+  // fallback run again, the others do not.
   writeFileSync(join(root, 'data/hidden.txt'), 'changed\n');
   const afterEdit = testChanged(['--list']);
   assert.match(
     afterEdit.output,
     /^ {2}test\/unit\/hidden\.test\.ts .*every file of the repository/m,
   );
+  assert.match(afterEdit.output, /^ {2}test\/unit\/root\.test\.ts /m);
   assert.doesNotMatch(afterEdit.output, /template\.test|plain\.test/);
 
   // A file found by the template rule runs the test that reads it.

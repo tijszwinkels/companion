@@ -160,14 +160,18 @@ export async function collectTestInputs(options: CollectOptions): Promise<Map<st
       }
     }
     // Only the directory part counts: 'widgets/' of `widgets/${name}.js`. './' and '../' name
-    // the file's own directory and the one above it, which consider() leaves out for quoted
-    // strings; the checkout root itself is not taken as a directory.
+    // the file's own directory or one above it, which consider() leaves out for quoted
+    // strings; when that is the checkout root, every file counts.
     for (const template of text.matchAll(TEMPLATE_START)) {
       const fixedStart = template[1];
       const directory = fixedStart.slice(0, fixedStart.lastIndexOf('/') + 1);
       if (/^(\.\.?\/)+$/.test(directory)) {
         const target = relative(root, resolve(here, directory));
-        if (target !== '' && !target.startsWith('..')) {
+        if (target === '') {
+          for (const inside of repositoryFiles) {
+            files.add(inside);
+          }
+        } else if (!target.startsWith('..')) {
           addDirectory(target);
         }
       } else {
