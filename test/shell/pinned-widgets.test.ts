@@ -327,7 +327,7 @@ test(
   'on the right the Activity column sits below the widget; the divider sets the width of both',
   { skip, timeout: 120_000 },
   async (context) => {
-    const { fixture, page } = await pinnedSetup(context, {
+    const { fixture, page, title } = await pinnedSetup(context, {
       placement: 'pinned',
       width: 1600,
       height: 900,
@@ -374,6 +374,28 @@ test(
       520,
     );
     assert.equal(await horizontalOverflow(page), 0);
+
+    // Auto counts the list at the width it has beside the shown Activity
+    // column: at 900 × 600 a full list of 350 px is 258 px wide there, so
+    // the space beside it (641 px) is wider than tall. With Activity
+    // hidden the list is 350 px and the space (549 px) taller than wide.
+    await page.evaluate(`(() => {
+      localStorage.setItem('companion.shell.layout.listWidth', JSON.stringify({ version: 1, value: 350 }));
+      localStorage.setItem('companion.shell.layout.activityWidth', JSON.stringify({ version: 1, value: 320 }));
+    })()`);
+    await setSize(page, 900, 600);
+    await reload(page, fixture.origin, title);
+    await shownAt(page, 'right');
+    assert.equal(
+      await page.evaluate(`document.querySelector('.conversations').getBoundingClientRect().width`),
+      258,
+    );
+    const hide = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = document.querySelector('.activity-column .activity-toggle').getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    await clickAt(page, hide);
+    await shownAt(page, 'top');
 
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);

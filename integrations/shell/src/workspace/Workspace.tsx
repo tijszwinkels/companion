@@ -139,13 +139,22 @@ export function Workspace(props: {
   const windowWidth = activity.windowWidth;
   const overlay = isNarrowWindow(windowWidth);
 
-  /** Where the pinned widget sits for the list's shown state and preferred width. */
+  /**
+   * Where the pinned widget sits for the list's shown state and preferred
+   * width, beside the Activity column when that is shown.
+   */
   function placeFor(listShown: boolean, listPreference: number): PinnedPlace {
     return pinnedPlace({
       windowWidth,
       windowHeight: pinnedLayout.windowHeight,
       listShown,
       listPreference,
+      activityReserved: activityReservedWidth(
+        activity.preference,
+        activity.shown,
+        windowWidth,
+        listShown,
+      ),
       preference: pinnedLayout.preference,
     });
   }

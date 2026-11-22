@@ -728,6 +728,10 @@ if (api) {
           status.textContent = '';
         }
         shellPollingError = null;
+        // A size report that could not be made is made again now.
+        if (shellEmbedded && reportedViewport === '') {
+          scheduleViewportReport();
+        }
         if (chatWatching && chatAllowed && !document.hidden) {
           readChat(null);
         }
@@ -831,10 +835,16 @@ function presentFromShell(placement) {
       if (current && typeof current === 'object' && !Array.isArray(current)) {
         presentation = { ...current, placement };
       }
+      // The revision read with it: a change made meanwhile (an agent's new
+      // height) is refused by the service rather than overwritten.
       return fetch(api + '/present', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ presentation, requestId: 'shell-' + requestId }),
+        body: JSON.stringify({
+          presentation,
+          revision: snapshot.revision,
+          requestId: 'shell-' + requestId,
+        }),
       });
     })
     .then(async (response) => {
@@ -856,7 +866,9 @@ function presentFromShell(placement) {
 // an agent sees the size the widget gets (`lastViewport`). Reported once the
 // shell first said the frame is visible, and again when the size changes
 // while it is visible, at most once per 120 ms (the desktop's interval).
-// The text scale is the one the shell's theme gives.
+// The text scale is the one the shell's theme gives. A report the gateway or
+// the service could not take for now (a 5xx or 429, or no answer) is made
+// again after the next successful poll; a refusal (another 4xx) is not.
 let viewportTimer = null;
 let reportedViewport = '';
 
@@ -888,8 +900,7 @@ function reportViewport() {
     body: key,
   })
     .then((response) => {
-      if (!response.ok) {
-        // Not recorded: the next change (or visibility) reports it again.
+      if (response.status >= 500 || response.status === 429) {
         reportedViewport = '';
       }
     })

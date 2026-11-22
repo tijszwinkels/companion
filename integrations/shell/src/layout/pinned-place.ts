@@ -10,8 +10,9 @@
  *   decides: wider than tall puts it in the right column, taller than wide
  *   (or exactly square) at the top. That space is the window less the list
  *   and its divider while the list is shown, as tall as the window. The
- *   list's width counted here is the one it has with nothing beside it, so
- *   the place never depends on the right column the place itself shows.
+ *   list's width counted here is the one it has beside the Activity column
+ *   when that is shown, and with nothing beside it otherwise, so the place
+ *   never depends on the right column the place itself opens.
  *
  * Band height at the top:
  * - A percentage of the height below the bar: the one this browser
@@ -59,6 +60,11 @@ export interface PlaceInputs {
   /** Whether the conversation list is shown, and its preferred width. */
   listShown: boolean;
   listPreference: number;
+  /**
+   * The width the shown Activity column and its divider take beside the
+   * chat (activity-width.ts `activityReservedWidth`), 0 while it is hidden.
+   */
+  activityReserved: number;
   /** The place fixed in this browser, or 'auto'. */
   preference: PinnedPlacePreference;
 }
@@ -69,11 +75,17 @@ export function isPinnedPlacePreference(value: unknown): value is PinnedPlacePre
 }
 
 /** The width of the space next to the conversation list (see the rule above). */
-export function spaceBesideList(windowWidth: number, listShown: boolean, listPreference: number) {
+export function spaceBesideList(
+  windowWidth: number,
+  listShown: boolean,
+  listPreference: number,
+  activityReserved: number,
+): number {
   if (!listShown) {
     return windowWidth;
   }
-  return windowWidth - shownListWidth(listPreference, windowWidth) - dividerLayoutWidth;
+  const listWidth = shownListWidth(listPreference, windowWidth - activityReserved);
+  return windowWidth - listWidth - dividerLayoutWidth;
 }
 
 /** Where the pinned widget is shown for these inputs. */
@@ -85,7 +97,12 @@ export function pinnedPlace(inputs: PlaceInputs): PinnedPlace {
     return inputs.preference;
   }
 
-  const spaceWidth = spaceBesideList(inputs.windowWidth, inputs.listShown, inputs.listPreference);
+  const spaceWidth = spaceBesideList(
+    inputs.windowWidth,
+    inputs.listShown,
+    inputs.listPreference,
+    inputs.activityReserved,
+  );
   if (spaceWidth > inputs.windowHeight) {
     return 'right';
   }

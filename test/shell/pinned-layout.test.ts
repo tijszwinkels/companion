@@ -22,6 +22,7 @@ import {
   type LayoutStorage,
 } from '../../integrations/shell/src/layout/stored-layout.ts';
 import { stripWidth } from '../../integrations/shell/src/layout/list-width.ts';
+import { activityReservedWidth } from '../../integrations/shell/src/layout/activity-width.ts';
 import { pinnedWidget, rowOfMessage } from '../../integrations/shell/src/widgets/pinned-widget.ts';
 
 /**
@@ -60,6 +61,8 @@ interface PlaceCase {
   list: 'strip' | 'hidden' | number;
   preference: PinnedPlacePreference;
   place: 'right' | 'top';
+  /** The Activity column shown at this preferred width (default hidden). */
+  activity?: number;
 }
 
 const placeCases: PlaceCase[] = [
@@ -191,6 +194,23 @@ const placeCases: PlaceCase[] = [
     preference: 'auto',
     place: 'top',
   },
+  {
+    case: 'Activity shown narrows the full list (900 − 259 = 641 > 600)',
+    width: 900,
+    height: 600,
+    list: 350,
+    activity: 320,
+    preference: 'auto',
+    place: 'right',
+  },
+  {
+    case: 'Activity hidden, the same list (900 − 351 = 549 < 600)',
+    width: 900,
+    height: 600,
+    list: 350,
+    preference: 'auto',
+    place: 'top',
+  },
 ];
 
 test('place: one case per row of the README table', () => {
@@ -199,11 +219,17 @@ test('place: one case per row of the README table', () => {
     if (typeof row.list === 'number') {
       listPreference = row.list;
     }
+    const listShown = row.list !== 'hidden';
+    let activityReserved = 0;
+    if (row.activity !== undefined) {
+      activityReserved = activityReservedWidth(row.activity, true, row.width, listShown);
+    }
     const place = pinnedPlace({
       windowWidth: row.width,
       windowHeight: row.height,
-      listShown: row.list !== 'hidden',
+      listShown,
       listPreference,
+      activityReserved,
       preference: row.preference,
     });
     assert.equal(place, row.place, row.case);
@@ -220,6 +246,7 @@ test('place: the window resized across each limit moves it at once; nothing reme
       windowHeight: height,
       listShown: true,
       listPreference: stripWidth,
+      activityReserved: 0,
       preference,
     });
   // The square limit, both ways.

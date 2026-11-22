@@ -70,6 +70,8 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   };
   // While set, `present` is refused (400) with this text.
   const presentRefused = { loopback: '', socket: '' };
+  // While set, `viewport` answers 503, as a gateway that is briefly busy.
+  const viewportFailing = { loopback: false, socket: false };
   const held: (() => void)[] = [];
   function release(): void {
     for (const answer of held.splice(0)) {
@@ -133,6 +135,11 @@ async function documentServer(documents: { loopback: string; socket: string }, s
           response.end(JSON.stringify({ error: presentRefused[route] }));
           return;
         }
+        if (operation[1] === 'viewport' && viewportFailing[route]) {
+          response.writeHead(503, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ error: 'Busy' }));
+          return;
+        }
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ recorded: true }));
       });
@@ -163,6 +170,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     ended,
     posted,
     presentRefused,
+    viewportFailing,
     release,
     server,
   };
@@ -601,6 +609,16 @@ test(
       textScale: 1,
     });
 
+    // A report the gateway could not take (503) is made again after the
+    // next successful poll; then not again.
+    documents.viewportFailing.socket = true;
+    await resize(shell, 540, 360);
+    await waitFor(() => viewports().length === 4, 5000);
+    documents.viewportFailing.socket = false;
+    await waitFor(() => viewports().length === 5, 5000);
+    assert.deepEqual(viewports()[4].body, viewports()[3].body);
+    assert.equal(await quiet(() => viewports().length, 1000), 5);
+
     // Pin and Unpin: the desktop Unpin's request, with the view's current
     // presentation (from its state) and only the placement changed.
     assert.deepEqual(state.presentation, {
@@ -610,7 +628,9 @@ test(
     });
     await post(shell, `{ type: 'present', placement: 'pinned' }`);
     await waitFor(() => presents().length === 1, 5000);
-    assert.deepEqual(Object.keys(presents()[0].body), ['presentation', 'requestId']);
+    assert.deepEqual(Object.keys(presents()[0].body), ['presentation', 'revision', 'requestId']);
+    // The revision it read with the presentation (a change in between is refused).
+    assert.equal(presents()[0].body.revision, state.revision);
     assert.deepEqual(presents()[0].body.presentation, {
       placement: 'pinned',
       heightPercent: 40,

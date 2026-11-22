@@ -1482,15 +1482,17 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    objects (not arrays); everything else is ignored. Embedded, it does not
    poll until the shell's first `visible: true`. A `present` makes it read
    its view's state and send its own view's `present` request with that
-   presentation and the new placement
-   (`{"presentation":{…,"placement":…},"requestId":…}`, the request the
-   desktop's Unpin makes, `../panel/WidgetSurface.qml`), one at a time; a
-   refusal is shown in its status line. Embedded, it also reports its own
+   presentation and the new placement, naming the revision it read
+   (`{"presentation":{…,"placement":…},"revision":N,"requestId":…}`, the
+   request the desktop's Unpin makes, `../panel/WidgetSurface.qml`), one at
+   a time; a refusal (also "Widget changed", when an agent changed it in
+   between) is shown in its status line. Embedded, it also reports its own
    size to its view (`viewport`: its window's CSS width and height and the
    theme's text scale, the report the desktop's native view makes), once
    the shell first says it is visible and again when the size changes while
    it is visible, at most once per 120 ms, so an agent sees the size the
-   widget gets (`lastViewport`). It posts with the
+   widget gets (`lastViewport`). A report that could not be taken for now
+   (5xx, 429 or no answer) is made again after its next successful poll. It posts with the
    target origin `*` (it cannot know the shell's origin: the shell frames it
    without a referrer), which reveals nothing: `frame-ancestors` lets only
    the gateway's pages frame it, and the messages carry only a height and
@@ -1769,8 +1771,9 @@ and `src/layout/usePinnedLayout.ts`):
 
 1. **The space next to the list** is the window's width less the list and
    its 1 px divider while the list is shown, and the window's height. The
-   list's width counted here is the one it has with nothing beside it, so
-   the place never depends on the right column it opens.
+   list's width counted here is the one it has beside the Activity column
+   while that is shown, and with nothing beside it otherwise, so the place
+   never depends on the right column it opens itself.
 2. In a window narrower than **640 px** the widget is always at the top.
 3. Otherwise a place fixed in this browser wins: **→ Right** fixes the
    right, **↑ Top** fixes the top. **Auto** returns to the shape.
@@ -1793,26 +1796,28 @@ and `src/layout/usePinnedLayout.ts`):
    two tabs that fix different places one after the other both show the
    last one.
 
-| Case                                                     | Place                                        |
-| -------------------------------------------------------- | -------------------------------------------- |
-| 1280 × 800, strip (space 1201 × 800)                     | Right                                        |
-| 900 × 1000, strip                                        | Top                                          |
-| 879 × 800, strip (space 800 × 800, exactly square)       | Top                                          |
-| 880 × 800, strip                                         | Right                                        |
-| 1100 × 900, strip / full list 300 px (space 1021 / 799)  | Right / top                                  |
-| 1000 × 950, list hidden / strip (space 1000 / 921)       | Right / top                                  |
-| 700 × 600, full list 420 px narrowed to 379 (space 320)  | Top                                          |
-| 600 × 300 (below 640 px), Auto or → Right fixed          | Top; no → Right offered                      |
-| 640 × 300 / 639 × 300, → Right fixed                     | Right / top                                  |
-| 900 × 1000, → Right fixed                                | Right                                        |
-| 1280 × 800, ↑ Top fixed                                  | Top                                          |
-| Auto again, 1280 × 800                                   | Right                                        |
-| Activity shown / hidden, widget at the right             | Activity below the widget / the widget alone |
-| The window resized across the square or the 640 px limit | Moves at once; nothing remembered changes    |
-| Reload                                                   | As remembered                                |
-| Two tabs fix different places one after the other        | The last one, in both                        |
-| Entry `"left"`, `3`, of version 2, not JSON              | Auto                                         |
-| Storage refuses writes; ↑ Top                            | Top for this page                            |
+| Case                                                      | Place                                        |
+| --------------------------------------------------------- | -------------------------------------------- |
+| 1280 × 800, strip (space 1201 × 800)                      | Right                                        |
+| 900 × 1000, strip                                         | Top                                          |
+| 879 × 800, strip (space 800 × 800, exactly square)        | Top                                          |
+| 880 × 800, strip                                          | Right                                        |
+| 1100 × 900, strip / full list 300 px (space 1021 / 799)   | Right / top                                  |
+| 1000 × 950, list hidden / strip (space 1000 / 921)        | Right / top                                  |
+| 700 × 600, full list 420 px narrowed to 379 (space 320)   | Top                                          |
+| 900 × 600, full list 350 px, Activity shown (list 258 px) | Right (space 641)                            |
+| 900 × 600, full list 350 px, Activity hidden              | Top (space 549)                              |
+| 600 × 300 (below 640 px), Auto or → Right fixed           | Top; no → Right offered                      |
+| 640 × 300 / 639 × 300, → Right fixed                      | Right / top                                  |
+| 900 × 1000, → Right fixed                                 | Right                                        |
+| 1280 × 800, ↑ Top fixed                                   | Top                                          |
+| Auto again, 1280 × 800                                    | Right                                        |
+| Activity shown / hidden, widget at the right              | Activity below the widget / the widget alone |
+| The window resized across the square or the 640 px limit  | Moves at once; nothing remembered changes    |
+| Reload                                                    | As remembered                                |
+| Two tabs fix different places one after the other         | The last one, in both                        |
+| Entry `"left"`, `3`, of version 2, not JSON               | Auto                                         |
+| Storage refuses writes; ↑ Top                             | Top for this page                            |
 
 ### Rule: the band at the top
 
@@ -1873,7 +1878,11 @@ Rule (`src/layout/pinned-place.ts`, `src/workspace/PinnedWidget.tsx`):
   presses may not move it. Showing the reached percentage would need the
   area below the bar measured.
 - The size an agent sees (`lastViewport`) is the last one any view
-  reported: the desktop's or a browser's.
+  reported: the desktop's or a browser's. The desktop's Chromium pop-out
+  follows the text scale of that report, so a pop-out open at the desktop
+  sidebar's 150 % text goes to 100 % once a browser shows the same widget,
+  until the desktop sidebar reports again. Keeping the two apart needs a
+  change in the widget service (`src/`), outside this step.
 - The desktop's full-height pinned widget (`heightPercent` 100, in place of
   the chat) is at most 70 % here, and its `replaceActivity` (the desktop
   hides its Activity strip under a pinned widget) does not apply: the
