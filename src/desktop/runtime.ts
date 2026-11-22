@@ -1148,7 +1148,7 @@ export class DesktopRuntime {
       // Listed only while its ordinary listening period actually runs: not
       // while switched off, between a lost recorder and its retry, or while
       // Record has the microphone.
-      if (microphones.computer.listening) {
+      if (microphones.computer.enabled && microphones.computer.listening) {
         listening.push({ ...computerMicrophoneEntry });
       }
       for (const browser of microphones.browsers.list) {

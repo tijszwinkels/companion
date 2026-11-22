@@ -651,8 +651,9 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
 5. **At most 1.5 times real time**: a token bucket in bytes per device, two
    seconds of sound deep (64,000 bytes, full when the device first streams),
    refilled at 48,000 bytes per second on the monotonic clock. Starting a new
-   stream or taking one over does not refill it; it is forgotten with the
-   device's last connection, as the request buckets are. Every piece costs
+   stream, taking one over or reconnecting does not refill it: when the
+   device's last connection closes it is forgotten only if it has refilled
+   completely (otherwise it is kept, one per paired device). Every piece costs
    at least 640 bytes (20 ms), so tiny pieces cannot multiply the work per
    second of sound. A piece that does not fit ends the stream (`too-fast`).
 6. **Counted apart from the request bucket.** Pieces take no request tokens;
@@ -671,7 +672,14 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
    from the listener that arrives before the answer to `audio-start` is kept:
    the client then gets the result and the `audio-ended`, and nothing stays
    open. A takeover or stop while a start is still on its way answers that
-   start with the reason.
+   start with the reason, and the gateway at once sends the listener an
+   `audio-stop` without a stream ID on the same socket, right behind that
+   start, so the listener never keeps the period while the answer is on its
+   way. A start that the connection's own pending-request bound would refuse
+   is refused before it takes the stream from another tab of the device.
+   The tab that is taken over is told when the new start is sent, not when
+   it succeeds (documented limit: if the listener then refuses the new
+   start, for example while paused, neither tab listens).
 10. **Revocation, a closed page and a lost connection end the stream**: the
     slot is freed at once, the listener ends the stream with its connection
     (revocation closes it within 5 seconds) or on the gateway's `audio-stop`,

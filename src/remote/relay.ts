@@ -107,7 +107,7 @@ const audioEndMessages: Record<AudioEndReason, string> = {
   'too-fast': 'Sound arrived faster than real time allows',
   'slow-listener': 'Companion did not keep up with the sound',
   paused: 'Listening is paused',
-  stalled: 'No sound arrived from this browser for three seconds',
+  stalled: 'Too little sound arrived from this browser',
   slow: 'Companion did not keep up with the sound',
   failed: 'Listening here failed on the computer',
   shutdown: 'Companion is stopping',
@@ -661,6 +661,12 @@ export class Relay {
       refuse('Listening here is not available on this computer');
       return;
     }
+    // Checked before the claim, which takes the stream from another tab of
+    // this device: a start that `forward` would refuse must not do that.
+    if (this.pending.size - this.pendingDraftEdits() >= maximumPendingRequests) {
+      refuse('Too many unfinished requests; wait for earlier ones');
+      return;
+    }
     if (streams.claim(this.options.deviceId, this.audioHolder) === 'total') {
       refuse(`Too many browsers are listening (at most ${maximumAudioStreams})`);
       return;
@@ -769,8 +775,14 @@ export class Relay {
     this.options.audioStreams?.release(this.audioHolder);
 
     if (audio.phase === 'starting') {
-      // Its answer will stop the listener's stream (audioStartAnswered).
+      // Its answer will stop the listener's stream by ID (audioStartAnswered).
+      // A start already written upstream is also stopped at once, without an
+      // ID: on this ordered socket the stop follows exactly that start, so the
+      // listener never keeps the period while the answer is on its way.
       this.abandonedStarts.set(audio.token, reason);
+      if (this.ready) {
+        this.writeUpstream({ action: 'audio-stop', requestId: audioStopRequestId });
+      }
       return;
     }
 

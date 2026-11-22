@@ -67,9 +67,16 @@ export class AudioStreamRegistry {
     return rate;
   }
 
-  /** Forget a device's budget once its last connection has closed. */
+  /**
+   * The device's last connection has closed: forget its budget, but only if
+   * it has refilled completely, so that reconnecting never restores a spent
+   * budget early. A budget that is not full yet is kept (at most one per
+   * paired device) and checked again at the device's next last close.
+   */
   forget(deviceId: string): void {
-    this.rates.delete(deviceId);
+    if (this.rates.get(deviceId)?.full()) {
+      this.rates.delete(deviceId);
+    }
   }
 
   /** Streams held or starting now. */
@@ -136,6 +143,23 @@ export class AudioRate {
   /** Take one message of `bytes`; false (taking nothing) when it is over the rate. */
   take(bytes: number): boolean {
     const cost = Math.max(bytes, minimumAudioPieceBytes);
+    this.refill();
+
+    if (cost > this.tokens) {
+      return false;
+    }
+    this.tokens -= cost;
+    return true;
+  }
+
+  /** Whether the bucket has refilled completely by now. */
+  full(): boolean {
+    this.refill();
+    return this.tokens >= this.capacityBytes;
+  }
+
+  /** Add what the time since the last refill earned, up to the capacity. */
+  private refill(): void {
     const now = this.now();
     // A clock that goes back must not drain the bucket.
     const elapsed = Math.max(0, now - this.updatedAt);
@@ -144,11 +168,5 @@ export class AudioRate {
       this.tokens + elapsed * this.refillBytesPerMillisecond,
     );
     this.updatedAt = now;
-
-    if (cost > this.tokens) {
-      return false;
-    }
-    this.tokens -= cost;
-    return true;
   }
 }

@@ -47,9 +47,12 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
 5. **A browser stream that ends simply ends its period**, whatever the
    reason: stopped by its page, replaced by a newer stream of the same
    connection, its connection closed (page closed, revocation, lost
-   gateway), its queue full, no sound for three seconds (`stalled`: a
-   phone's capture stopped while its page stays connected), its period
-   failed, or shutdown. The open candidate is discarded, also when the
+   gateway), its queue full, its sound more than three seconds behind real
+   time (`stalled`, with 1% allowed for clock drift: a phone's capture
+   stopped, or it delivers far too little sound, while its page stays
+   connected), its period failed, or shutdown. The stream's hold and
+   "hearing speech" are released the moment it ends, even while a frame is
+   still in its voice detector. The open candidate is discarded, also when the
    frame that would close it was still in the voice detector (the same now
    holds for Record's hand-over and for the computer's switch; before, a
    frame already in the detector at the hand-over could still close and

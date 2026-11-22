@@ -41,9 +41,15 @@ export class LevelDetector {
   closed = false;
   /** Resolves pending `probability` calls; set to hold the detector back. */
   gate?: Promise<void>;
+  /** Frames currently held back by `gate`. */
+  held = 0;
 
   async probability(frame: Float32Array): Promise<number> {
-    await this.gate;
+    if (this.gate) {
+      this.held++;
+      await this.gate;
+      this.held--;
+    }
     let peak = 0;
     for (const sample of frame) {
       peak = Math.max(peak, Math.abs(sample));
@@ -104,8 +110,8 @@ export interface Dispatch {
 }
 
 export interface MicrophonesFixtureOptions {
-  /** Longest gap between a stream's pieces before it ends as `stalled`. */
-  maximumGapMs?: number;
+  /** How far a stream's sound may fall behind real time before it ends as `stalled`. */
+  maximumLagMs?: number;
   /** Browser voice detectors finish loading only once this settles. */
   detectorsLoaded?: Promise<void>;
 }
@@ -166,7 +172,7 @@ export function microphonesFixture(
     activity,
     speech,
     log,
-    maximumGapMs: options.maximumGapMs,
+    maximumLagMs: options.maximumLagMs,
   });
   runtime.connectMicrophones({ computer, browsers });
 

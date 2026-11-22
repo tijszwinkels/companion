@@ -100,8 +100,9 @@ export const minimumAudioPieceBytes = 640;
  * - `slow-listener`: the listener did not keep up with the sound;
  * - `paused`: listening was paused; open a new stream once the state says
  *   listening again;
- * - `stalled`: no sound arrived for three seconds (the browser's capture
- *   stopped, for example a locked phone);
+ * - `stalled`: the stream's sound fell more than three seconds behind real
+ *   time (the browser's capture stopped or trickles, for example a locked
+ *   phone);
  * - `slow`, `failed`, `shutdown`, `replaced`: the listener ended it (its
  *   own queue was full, its listening period failed, it is stopping, or
  *   this connection's newer stream replaced it).

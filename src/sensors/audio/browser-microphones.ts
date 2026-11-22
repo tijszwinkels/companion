@@ -7,6 +7,7 @@ import type { PauseControl } from '../../core/pause-control.ts';
 import type { SensorPipeline } from '../../core/pipeline.ts';
 import { listen } from './listener.ts';
 import { NetworkAudioSource } from './network-source.ts';
+import { SAMPLE_RATE } from './segmenter.ts';
 import type { SpeechIndicator } from './speech-indicator.ts';
 import type { VoiceActivityDetector } from './vad.ts';
 
@@ -38,9 +39,11 @@ import type { VoiceActivityDetector } from './vad.ts';
  * is bounded by `maximumQueuedMs` (beyond it the stream ends as `slow`). At
  * most `maximumPeriods` periods exist at once, counting those of ended
  * streams whose detector is still loading or closing, so restarts can never
- * pile up detectors. A stream that receives no piece for `maximumGapMs` (a
- * phone whose capture stopped while its page stays connected) ends as
- * `stalled`, so its open candidate cannot hold the shared queue.
+ * pile up detectors. A stream whose sound falls more than `maximumLagMs`
+ * (plus 1% of its age, for clock drift) behind real time ends as `stalled`:
+ * a phone whose capture stopped, or that delivers far too little sound,
+ * while its page stays connected. Its open candidate could otherwise hold
+ * the shared queue.
  * Pause ends every stream (`paused`); the browser opens a new one when the
  * listener is listening again. Shutdown ends them all; `idle()` waits until
  * every period has ended and its detector is closed.
@@ -78,8 +81,11 @@ export interface BrowserMicrophonesOptions {
   maximumPeriods?: number;
   /** Sound that may wait for a stream's voice detector; 5 seconds by default. */
   maximumQueuedMs?: number;
-  /** Longest time without a piece before a stream ends as `stalled`; 3 seconds by default. */
-  maximumGapMs?: number;
+  /**
+   * How far a stream's sound may fall behind real time before it ends as
+   * `stalled`; 3 seconds by default.
+   */
+  maximumLagMs?: number;
 }
 
 /**
@@ -95,10 +101,14 @@ export const maximumBrowserPeriods = 8;
 export const maximumQueuedSoundMs = 5000;
 
 /**
- * Longest time without a piece by default, in milliseconds. A browser sends
- * a piece every 100 ms; three seconds without one means its capture stopped.
+ * How far a stream's sound may fall behind real time by default, in
+ * milliseconds. A browser sends a piece of 100 ms every 100 ms; being three
+ * seconds behind means its capture stopped or its connection cannot carry it.
  */
-export const maximumPieceGapMs = 3000;
+export const maximumSoundLagMs = 3000;
+
+/** Clock drift allowed between a browser's sound and the listener's clock: 1%. */
+const allowedDrift = 0.01;
 
 /** Names of ended streams kept for Activity entries still being processed. */
 const rememberedNames = 64;
@@ -110,8 +120,13 @@ interface Stream extends BrowserMicrophone {
   admission: CaptureAdmission;
   /** Aborted when the stream ends for any reason; ends the period's frames. */
   end: AbortController;
-  /** Ends the stream as `stalled` when no piece arrives in time. */
-  gapTimer?: ReturnType<typeof setTimeout>;
+  /** When the stream was accepted (performance.now), and the sound received since, in ms. */
+  startedAt: number;
+  receivedMs: number;
+  /** Ends the stream as `stalled` when its sound falls too far behind. */
+  lagTimer?: ReturnType<typeof setTimeout>;
+  /** This stream's "hearing speech" report (SpeechIndicator). */
+  speechChanged: (speaking: boolean) => void;
   /** Settles when the period has ended and its voice detector is closed. */
   period?: Promise<void>;
 }
@@ -123,7 +138,7 @@ export class BrowserMicrophones {
   private readonly names = new Map<string, string>();
   private readonly maximumPeriods: number;
   private readonly maximumQueuedMs: number;
-  private readonly maximumGapMs: number;
+  private readonly maximumLagMs: number;
 
   /** Called for every end of a stream; set by the owner of the control socket. */
   ended: (owner: number, id: string, reason: BrowserStreamEnd) => void = () => {};
@@ -133,7 +148,7 @@ export class BrowserMicrophones {
   constructor(private readonly options: BrowserMicrophonesOptions) {
     this.maximumPeriods = options.maximumPeriods ?? maximumBrowserPeriods;
     this.maximumQueuedMs = options.maximumQueuedMs ?? maximumQueuedSoundMs;
-    this.maximumGapMs = options.maximumGapMs ?? maximumPieceGapMs;
+    this.maximumLagMs = options.maximumLagMs ?? maximumSoundLagMs;
     options.pause.on('change', this.pauseChanged);
     options.signal.addEventListener('abort', this.shutdown, { once: true });
   }
@@ -180,10 +195,14 @@ export class BrowserMicrophones {
       source: new NetworkAudioSource(this.maximumQueuedMs),
       admission: this.options.activity.admitCapture?.() ?? notAdmitted,
       end: new AbortController(),
+      startedAt: performance.now(),
+      receivedMs: 0,
+      speechChanged: () => {},
     };
+    stream.speechChanged = this.options.speech.reporter(stream.id);
     this.streams.set(owner, stream);
     this.remember(stream);
-    this.watchGap(stream);
+    this.watchLag(stream);
 
     const period = this.run(stream).finally(() => {
       this.periods.delete(period);
@@ -215,21 +234,33 @@ export class BrowserMicrophones {
       this.finish(stream, 'slow');
       return;
     }
-    this.watchGap(stream);
+    stream.receivedMs += (bytes.length / 2 / SAMPLE_RATE) * 1000;
+    this.watchLag(stream);
   }
 
-  /** (Re)start the stream's gap timer: it ends the stream if no piece follows in time. */
-  private watchGap(stream: Stream): void {
-    clearTimeout(stream.gapTimer);
-    stream.gapTimer = setTimeout(() => {
-      this.options.log(
-        'microphone',
-        `Browser stream ${stream.name}: no sound for ${this.maximumGapMs} ms; ending it`,
-      );
-      this.finish(stream, 'stalled');
-    }, this.maximumGapMs);
+  /**
+   * (Re)start the stream's lag timer. It fires when the stream's sound would
+   * fall more than `maximumLagMs` (plus the allowed drift) behind real time:
+   * at the time t where (t - startedAt) * (1 - drift) - receivedMs equals
+   * `maximumLagMs`. Every piece moves it later by the sound it carried, so a
+   * stream that stops, or trickles, ends in time, and one that keeps up never.
+   */
+  private watchLag(stream: Stream): void {
+    clearTimeout(stream.lagTimer);
+    const deadline =
+      stream.startedAt + (this.maximumLagMs + stream.receivedMs) / (1 - allowedDrift);
+    stream.lagTimer = setTimeout(
+      () => {
+        this.options.log(
+          'microphone',
+          `Browser stream ${stream.name}: its sound fell ${this.maximumLagMs} ms behind; ending it`,
+        );
+        this.finish(stream, 'stalled');
+      },
+      Math.max(0, deadline - performance.now()),
+    );
     // A timer never keeps the listener process alive on its own.
-    stream.gapTimer.unref();
+    stream.lagTimer.unref();
   }
 
   /**
@@ -286,8 +317,19 @@ export class BrowserMicrophones {
     }
 
     this.streams.delete(stream.owner);
-    clearTimeout(stream.gapTimer);
+    clearTimeout(stream.lagTimer);
     stream.end.abort();
+
+    // Release the stream's hold and "hearing speech" now, not only when its
+    // period has unwound: a frame may still be in the voice detector, and
+    // other microphones' speech must not wait for it. Both are idempotent;
+    // the period does the same in `listen`'s cleanup.
+    this.options.pipeline.speechDiscarded(undefined, stream.id);
+    stream.speechChanged(false);
+    // Its last utterances may still be transcribed: keep its name among
+    // the most recent ones.
+    this.remember(stream);
+
     this.options.log('microphone', `Browser stream ended (${reason}): ${stream.name}`);
     this.ended(stream.owner, stream.id, reason);
     this.changed();
@@ -295,6 +337,7 @@ export class BrowserMicrophones {
 
   /** Keep a stream's name for its Activity entries, bounded to the latest streams. */
   private remember(stream: Stream): void {
+    this.names.delete(stream.id);
     this.names.set(stream.id, stream.name);
     while (this.names.size > rememberedNames) {
       const oldest = this.names.keys().next().value!;
@@ -311,7 +354,7 @@ export class BrowserMicrophones {
     const listeningSignal = AbortSignal.any([this.options.signal, this.options.pause.signal]);
     const activity: Activity = {
       ...this.options.activity,
-      speechChanged: this.options.speech.reporter(stream.id),
+      speechChanged: stream.speechChanged,
     };
     let vad: VoiceActivityDetector | undefined;
 
@@ -348,7 +391,16 @@ export class BrowserMicrophones {
       // (stopped, paused, failed above); otherwise its period ended without
       // a reason given here, and nothing reads it any more.
       this.finish(stream, 'failed');
-      await vad?.close();
+      try {
+        await vad?.close();
+      } catch (error) {
+        // A detached period must never reject: that would end the listener.
+        const message = error instanceof Error ? error.message : String(error);
+        log(
+          'microphone',
+          `Browser stream ${stream.name}: closing its voice detector failed: ${message}`,
+        );
+      }
     }
   }
 }

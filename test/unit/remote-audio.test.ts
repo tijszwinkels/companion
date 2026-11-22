@@ -402,62 +402,21 @@ test('an older listener: audio-start is answered "not available" and nothing els
 });
 
 test('a listener that stops reading ends the stream as slow-listener', async () => {
-  // A fake listener: confirms the role, offers streams, opens one, then
-  // stops reading its socket.
-  const directory = await mkdtemp(join(tmpdir(), 'companion-slow-listener-'));
-  const socketPath = join(directory, 'control.sock');
-  const sockets: Socket[] = [];
-  const server = createServer((socket) => {
-    sockets.push(socket);
-    socket.setEncoding('utf8');
-    let buffered = '';
-    socket.on('data', (chunk: string) => {
-      buffered += chunk;
-      let newline: number;
-      while ((newline = buffered.indexOf('\n')) >= 0) {
-        const request = JSON.parse(buffered.slice(0, newline));
-        buffered = buffered.slice(newline + 1);
-        if (request.action === 'client-role') {
-          socket.write(
-            JSON.stringify({
-              type: 'result',
-              requestId: request.requestId,
-              result: 'role-recorded',
-            }) + '\n',
-          );
-          socket.write(
-            JSON.stringify({
-              type: 'state',
-              paused: false,
-              microphones: { computer: true, listening: [], streams: true },
-            }) + '\n',
-          );
-        }
-        if (request.action === 'audio-start') {
-          socket.write(
-            JSON.stringify({
-              type: 'result',
-              requestId: request.requestId,
-              result: { streamId: randomUUID() },
-            }) + '\n',
-          );
-          socket.pause();
-        }
-      }
-    });
+  const listener = await fakeListener((request, reply, socket) => {
+    if (request.action === 'audio-start') {
+      reply({ type: 'result', requestId: request.requestId, result: { streamId: randomUUID() } });
+      // From now on the listener reads nothing.
+      socket.pause();
+    }
   });
-  server.listen(socketPath);
-  await once(server, 'listening');
 
   // Every read of the audio clock is a second later: the rate never binds.
   let seconds = 0;
   const fixture = await remoteFixture({
-    gateway: { controlSocket: socketPath, audioClock: () => ++seconds * 1000 },
+    gateway: { controlSocket: listener.socketPath, audioClock: () => ++seconds * 1000 },
   });
   try {
-    const { token } = await fixture.pair('Phone');
-    const phone = await fixture.phone(token, fixture.origin, true);
-    await phone.engine('state');
+    const phone = await fakeListenerPhone(fixture);
     phone.send({ requestId: 'start', action: 'audio-start' });
     const started = (await phone.reply('start')) as Json;
     assert.equal(started.type, 'result');
@@ -473,20 +432,15 @@ test('a listener that stops reading ends the stream as slow-listener', async () 
       phone.socket.send(JSON.stringify({ type: 'ping' }));
       await waitFor(() => count('pong') > pongs);
     }
-    const isEnded = () => count('audio-ended') > 0;
-    await waitFor(isEnded);
+    await waitFor(() => count('audio-ended') > 0);
     const endedMessage = (phone.messages as Json[]).find(
       (message) => message.type === 'audio-ended',
     )!;
     assert.equal(endedMessage.reason, 'slow-listener');
     assert.equal(phone.socket.readyState, phone.socket.OPEN);
   } finally {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
     await fixture.close();
-    server.close();
-    await rm(directory, { recursive: true, force: true });
+    await listener.close();
   }
 });
 
@@ -535,48 +489,18 @@ test('every piece costs at least 20 ms of sound: tiny pieces cannot multiply the
 });
 
 test('a stream the listener ended before answering its start is reported ended, not open', async () => {
-  // A fake listener that, like a Pause in the same moment, sends the end of
-  // the new stream before the answer to its start.
-  const directory = await mkdtemp(join(tmpdir(), 'companion-early-end-'));
-  const socketPath = join(directory, 'control.sock');
-  const sockets: Socket[] = [];
-  const received: Json[] = [];
-  const server = createServer((socket) => {
-    sockets.push(socket);
-    socket.setEncoding('utf8');
-    let buffered = '';
-    socket.on('data', (chunk: string) => {
-      buffered += chunk;
-      let newline: number;
-      while ((newline = buffered.indexOf('\n')) >= 0) {
-        const request = JSON.parse(buffered.slice(0, newline));
-        buffered = buffered.slice(newline + 1);
-        received.push(request);
-        const reply = (value: Json) => socket.write(JSON.stringify(value) + '\n');
-        if (request.action === 'client-role') {
-          reply({ type: 'result', requestId: request.requestId, result: 'role-recorded' });
-          reply({
-            type: 'state',
-            paused: false,
-            microphones: { computer: true, listening: [], streams: true },
-          });
-        }
-        if (request.action === 'audio-start') {
-          const streamId = randomUUID();
-          reply({ type: 'audio-ended', streamId, reason: 'paused' });
-          reply({ type: 'result', requestId: request.requestId, result: { streamId } });
-        }
-      }
-    });
+  // Like a Pause in the same moment: the end of the new stream arrives
+  // before the answer to its start.
+  const listener = await fakeListener((request, reply) => {
+    if (request.action === 'audio-start') {
+      const streamId = randomUUID();
+      reply({ type: 'audio-ended', streamId, reason: 'paused' });
+      reply({ type: 'result', requestId: request.requestId, result: { streamId } });
+    }
   });
-  server.listen(socketPath);
-  await once(server, 'listening');
-
-  const fixture = await remoteFixture({ gateway: { controlSocket: socketPath } });
+  const fixture = await remoteFixture({ gateway: { controlSocket: listener.socketPath } });
   try {
-    const { token } = await fixture.pair('Phone');
-    const phone = await fixture.phone(token, fixture.origin, true);
-    await phone.engine('state');
+    const phone = await fakeListenerPhone(fixture);
     phone.send({ requestId: 'start', action: 'audio-start' });
     const started = (await phone.reply('start')) as Json;
     assert.equal(started.type, 'result');
@@ -593,13 +517,131 @@ test('a stream the listener ended before answering its start is reported ended, 
         (message) => message.type === 'error' && message.message === 'Expected a text message',
       ),
     );
-    assert.equal(received.filter((request) => request.action === 'audio-chunk').length, 0);
+    assert.equal(listener.received.filter((request) => request.action === 'audio-chunk').length, 0);
   } finally {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
     await fixture.close();
-    server.close();
-    await rm(directory, { recursive: true, force: true });
+    await listener.close();
   }
 });
+
+test('a stop while the start is still unanswered stops the listener at once', async () => {
+  // A listener that opens the stream but answers the start only when told.
+  let answer!: () => void;
+  const listener = await fakeListener((request, reply) => {
+    if (request.action === 'audio-start') {
+      answer = () => reply({ type: 'result', requestId: request.requestId, result: { streamId } });
+    }
+  });
+  const streamId = randomUUID();
+  const fixture = await remoteFixture({ gateway: { controlSocket: listener.socketPath } });
+  try {
+    const phone = await fakeListenerPhone(fixture);
+    phone.send({ requestId: 'start', action: 'audio-start' });
+    await waitFor(() => listener.received.some((request) => request.action === 'audio-start'));
+
+    phone.send({ requestId: 'stop', action: 'audio-stop' });
+    assert.equal(((await phone.reply('stop')) as Json).result, 'stopped');
+    // The listener is told now, on the same socket, right after the start.
+    await waitFor(() => listener.received.some((request) => request.action === 'audio-stop'));
+    const stops = () => listener.received.filter((request) => request.action === 'audio-stop');
+    assert.equal(stops()[0].streamId, undefined);
+
+    // The late answer: the start is answered as ended, and the stream is
+    // stopped again by its ID (harmless when it has already ended).
+    answer();
+    const started = (await phone.reply('start')) as Json;
+    assert.equal(started.type, 'error');
+    await waitFor(() => stops().length === 2);
+    assert.equal(stops()[1].streamId, streamId);
+  } finally {
+    await fixture.close();
+    await listener.close();
+  }
+});
+
+test("reconnecting does not restore the device's spent audio budget", async () => {
+  const gateway = await setup();
+  try {
+    const phone = await gateway.device('Phone');
+    await gateway.listen(phone);
+    for (let sent = 0; sent < audioBytesPerSecond * 2; sent += 8000) {
+      phone.socket.send(Buffer.alloc(8000));
+    }
+    await gateway.handled(phone);
+    phone.socket.close();
+    await waitFor(() => gateway.listenerStreams().length === 0);
+    // The gateway has let go of the device's last connection (and so had
+    // its chance to forget the budget).
+    const relays = (gateway.fixture.gateway as unknown as { relays: Map<unknown, string> }).relays;
+    await waitFor(() => relays.size === 0);
+
+    const again = await gateway.device('Phone', phone.token);
+    await gateway.listen(again);
+    again.socket.send(Buffer.alloc(2));
+    await waitFor(() => gateway.ended(again).length === 1);
+    assert.equal(gateway.ended(again)[0].reason, 'too-fast');
+  } finally {
+    await gateway.close();
+  }
+});
+
+/**
+ * A fake listener control socket: confirms the remote role, sends a state
+ * that offers audio streams, and passes every other request to `handle`.
+ * Only for what a real listener never does on purpose.
+ */
+async function fakeListener(
+  handle: (request: Json, reply: (value: Json) => void, socket: Socket) => void,
+) {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-fake-listener-'));
+  const socketPath = join(directory, 'control.sock');
+  const sockets: Socket[] = [];
+  const received: Json[] = [];
+  const server = createServer((socket) => {
+    sockets.push(socket);
+    socket.setEncoding('utf8');
+    const reply = (value: Json) => socket.write(JSON.stringify(value) + '\n');
+    let buffered = '';
+    socket.on('data', (chunk: string) => {
+      buffered += chunk;
+      let newline: number;
+      while ((newline = buffered.indexOf('\n')) >= 0) {
+        const request = JSON.parse(buffered.slice(0, newline));
+        buffered = buffered.slice(newline + 1);
+        received.push(request);
+        if (request.action === 'client-role') {
+          reply({ type: 'result', requestId: request.requestId, result: 'role-recorded' });
+          reply({
+            type: 'state',
+            paused: false,
+            microphones: { computer: true, listening: [], streams: true },
+          });
+          continue;
+        }
+        handle(request, reply, socket);
+      }
+    });
+  });
+  server.listen(socketPath);
+  await once(server, 'listening');
+
+  return {
+    socketPath,
+    received,
+    async close() {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      server.close();
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+/** A paired phone of `fixture`, after the fake listener's state arrived. */
+async function fakeListenerPhone(fixture: Awaited<ReturnType<typeof remoteFixture>>) {
+  const { token } = await fixture.pair('Phone');
+  const phone = await fixture.phone(token, fixture.origin, true);
+  await phone.engine('state');
+  return phone;
+}

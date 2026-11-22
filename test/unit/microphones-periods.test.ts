@@ -222,6 +222,12 @@ test('browser only: the computer switched off hears nothing; with no browser eit
     await waitFor(() => !listener.microphones.computerListening);
     await waitFor(() => listener.listening().length === 0);
     assert.equal(listener.observer.state.microphones.computer, false);
+    // No state ever named the computer as listening once its switch was off.
+    for (const message of listener.observer.messages) {
+      if (message.type === 'state' && message.microphones?.computer === false) {
+        assert.deepEqual(message.microphones.listening, []);
+      }
+    }
     assert.equal(listener.microphones.sayOnComputer(utterance(0.3)), false, 'Nothing records');
 
     const phone = await listener.browser('Phone');
@@ -525,7 +531,7 @@ test('a stream begun with storage off stays unsaved, even if storage turns on be
 });
 
 test("a stalled stream ends, so its held attempt cannot block the other microphones' speech", async () => {
-  const listener = await setup({ maximumGapMs: 300 });
+  const listener = await setup({ maximumLagMs: 300 });
   try {
     const phone = await listener.browser('Phone');
     // A whole utterance, then speech that resumes (holding it) and stops
@@ -542,6 +548,55 @@ test("a stalled stream ends, so its held attempt cannot block the other micropho
       ['w5', 'w3'],
     );
   } finally {
+    await listener.close();
+  }
+});
+
+test('a stream that delivers far too little sound ends as stalled, though pieces keep arriving', async () => {
+  const listener = await setup({ maximumLagMs: 300 });
+  const tiny = Buffer.alloc(320); // 10 ms of sound
+  const trickle = setInterval(() => {
+    phone.client.send(tiny);
+  }, 50);
+  const phone = await listener.browser('Phone');
+  try {
+    await waitFor(() => phone.client.ended().length === 1, 5000);
+    assert.equal(phone.client.ended()[0].reason, 'stalled');
+  } finally {
+    clearInterval(trickle);
+    await listener.close();
+  }
+});
+
+test('an ended stream releases its hold at once, even while its detector is busy', async () => {
+  const listener = await setup();
+  let release = () => {};
+  try {
+    const phone = await listener.browser('Phone');
+    phone.client.send(Buffer.concat([utterance(0.5), utterance(0.5, 320, 0)]));
+    await waitFor(() => listener.microphones.logs.some((log) => log.stage === 'hold'));
+
+    // The phone's detector is stuck on its next frame when the stream ends.
+    listener.microphones.detectors[0].gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    phone.client.send(utterance(0.5, 64, 0));
+    await waitFor(() => listener.microphones.detectors[0].held > 0);
+    const stopped = await phone.client.request({ action: 'audio-stop' });
+    assert.equal(stopped.result, 'stopped');
+
+    listener.microphones.sayOnComputer(utterance(0.3));
+    await listener.waitForDispatches(2);
+    assert.deepEqual(
+      listener.microphones.dispatched.map((dispatch) => dispatch.utterance),
+      ['w5', 'w3'],
+    );
+    assert.equal(listener.microphones.detectors[0].closed, false, 'Its detector is still busy');
+    release();
+    await waitFor(() => listener.microphones.detectors[0].closed);
+  } finally {
+    // Never leave the detector held: cleanup waits for it.
+    release();
     await listener.close();
   }
 });
