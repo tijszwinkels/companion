@@ -475,3 +475,88 @@ test('a draft host whose phone closes during role negotiation is withdrawn after
   await delay(50);
   assert.equal(received.filter((message) => message.action === 'withdraw-visibility').length, 1);
 });
+
+/**
+ * The flush deadline after a stream ends (src/remote/README.md, "Rules:
+ * audio admission", rule 7): every flush marker has its own 15-second
+ * deadline, counted from when it was written. The relay's upstream is
+ * replaced by a stand-in whose writes are held until the test flushes them,
+ * and timers are mocked, so the times are exact.
+ */
+async function relayWithHeldUpstream(context: import('node:test').TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), 'remote-relay-flush-'));
+  const controlSocket = join(directory, 'control.sock');
+  const server = createServer(() => {});
+  await new Promise<void>((resolve) => server.listen(controlSocket, resolve));
+  const relay = new Relay(new FakePhone() as unknown as WebSocket, {
+    controlSocket,
+    sessionsDirectory: directory,
+    deviceId: 'device',
+    receipts: new ReceiptBook(),
+    takeToken: () => true,
+    takeDraftToken: () => true,
+    allowScreenshot: () => {},
+    onClosed: () => {},
+    log: () => {},
+  });
+  const internals = relay as unknown as Record<string, any>;
+  const realUpstream = internals.upstream;
+  const terminated: number[] = [];
+  const held: (() => void)[] = [];
+  internals.terminate = (code: number) => terminated.push(code);
+  // Something is buffered for a listener that does not read; every write
+  // completes only when the test flushes it, in order.
+  internals.upstream = {
+    destroyed: false,
+    writableLength: 4096,
+    write(_data: string, callback?: () => void) {
+      held.push(() => callback?.());
+      return false;
+    },
+  };
+  context.after(async () => {
+    realUpstream.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  });
+  return { internals, terminated, held };
+}
+
+test('a later stream end keeps its own 15 s flush deadline after an earlier marker flushes', async (context) => {
+  const { internals, terminated, held } = await relayWithHeldUpstream(context);
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+
+  internals.awaitUpstreamFlush(); // marker A at 0 s
+  context.mock.timers.tick(12_000);
+  internals.awaitUpstreamFlush(); // marker B at 12 s
+  context.mock.timers.tick(1_000);
+  held.shift()!(); // A flushed at 13 s
+
+  context.mock.timers.tick(2_000);
+  assert.deepEqual(terminated, [], 'At 15 s, B is only 3 s old');
+  context.mock.timers.tick(11_999);
+  assert.deepEqual(terminated, []);
+  context.mock.timers.tick(1);
+  assert.deepEqual(terminated, [4503], "B's own deadline, 15 s after it was written");
+});
+
+test('an end the listener reported before answering the start also starts the flush deadline', async (context) => {
+  const { internals, terminated } = await relayWithHeldUpstream(context);
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+
+  const streamId = '00000000-0000-4000-8000-000000000001';
+  internals.options.audioStreams = { release() {}, rate() {} };
+  internals.audio = { phase: 'starting', token: 1, ended: { streamId, reason: 'paused' } };
+  internals.audioStartAnswered(1, 'start', {
+    type: 'result',
+    requestId: 'start',
+    action: 'audio-start',
+    result: { streamId },
+  });
+
+  assert.equal(internals.audio.phase, 'none');
+  context.mock.timers.tick(14_999);
+  assert.deepEqual(terminated, []);
+  context.mock.timers.tick(1);
+  assert.deepEqual(terminated, [4503]);
+});

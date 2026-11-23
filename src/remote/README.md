@@ -668,7 +668,10 @@ Checked by the relay for every message ([`relay.ts`](relay.ts),
    whenever a stream ends (the client's `audio-stop`, a takeover, a closed
    page, a violation, or an end the listener reported) while anything is
    still buffered for the listener, however small: it runs until everything
-   written before that moment has been flushed. The listener itself ends a
+   written before that moment has been flushed. Each stream end has its own
+   deadline. Documented limit: Node may write that moment's marker in one
+   batch with requests written after it, so a batch still pending near the
+   deadline can close a connection whose listener did receive the stop. The listener itself ends a
    stream with more than 5 seconds of sound waiting (`slow`).
 8. A violation ends the **stream, not the connection**, and the client is
    told why. Text requests during a stream work as always.

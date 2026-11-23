@@ -243,10 +243,12 @@ export class Relay {
    * the reason the client is given when the answer arrives.
    */
   private readonly abandonedStarts = new Map<number, AudioEndReason | undefined>();
-  /** Closes the connection if a backed-up upstream is not flushed in time (awaitUpstreamFlush). */
-  private upstreamDrainTimer?: ReturnType<typeof setTimeout>;
-  /** Flush markers written and not yet flushed (awaitUpstreamFlush). */
-  private unflushedMarkers = 0;
+  /**
+   * One deadline per flush marker not yet flushed, oldest first (see
+   * awaitUpstreamFlush). Each closes the connection if its marker is not
+   * flushed in time.
+   */
+  private readonly flushDeadlines = new Set<ReturnType<typeof setTimeout>>();
   /** This relay as the registry sees it; taken over by another connection of the device. */
   private readonly audioHolder: AudioStreamHolder = {
     takenOver: () => this.endAudio('taken-over'),
@@ -719,6 +721,9 @@ export class Relay {
     if (endedEarly && endedEarly.streamId === streamId) {
       this.audio = { phase: 'none' };
       this.options.audioStreams?.release(this.audioHolder);
+      // As for every end the listener reports: what is still buffered for
+      // it must be flushed in time.
+      this.awaitUpstreamFlush();
       this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
       this.sendAudioEnded(streamId, endedEarly.reason);
       return;
@@ -740,26 +745,29 @@ export class Relay {
    * An empty write with a callback marks the end of what is buffered now:
    * writes are flushed in order, so its callback runs once everything before
    * it has reached the operating system. This covers every backlog, also one
-   * small enough that the socket never asked for `drain`. The timer runs from
-   * the oldest marker still unflushed.
+   * small enough that the socket never asked for `drain`. Every marker has
+   * its own deadline, counted from when it was written, so a later stream's
+   * end never inherits an earlier one's nearly expired deadline.
+   *
+   * Documented limit: Node may write a marker in one batch with requests
+   * written after it, and calls the marker's callback when that whole batch
+   * is written. A batch still pending near the deadline can therefore close
+   * a connection whose listener received the stop itself in time.
    */
   private awaitUpstreamFlush(): void {
     if (this.upstream.destroyed || this.upstream.writableLength === 0) {
       return;
     }
 
-    this.unflushedMarkers++;
-    this.upstreamDrainTimer ??= setTimeout(() => {
-      this.upstreamDrainTimer = undefined;
+    const deadline = setTimeout(() => {
+      this.flushDeadlines.delete(deadline);
       this.terminate(closeCodes.engineUnavailable, 'Companion did not keep up');
     }, requestMilliseconds);
+    this.flushDeadlines.add(deadline);
 
     this.upstream.write('', () => {
-      this.unflushedMarkers--;
-      if (this.unflushedMarkers === 0) {
-        clearTimeout(this.upstreamDrainTimer);
-        this.upstreamDrainTimer = undefined;
-      }
+      clearTimeout(deadline);
+      this.flushDeadlines.delete(deadline);
     });
   }
 
@@ -1105,7 +1113,10 @@ export class Relay {
   private upstreamClosed(): void {
     clearTimeout(this.roleTimer);
     clearTimeout(this.drainTimer);
-    clearTimeout(this.upstreamDrainTimer);
+    for (const deadline of this.flushDeadlines) {
+      clearTimeout(deadline);
+    }
+    this.flushDeadlines.clear();
 
     // The listener's stream ended with its connection.
     this.endAudio(this.phoneOpen ? 'failed' : undefined);

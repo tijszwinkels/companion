@@ -59,8 +59,9 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
    time (`stalled`, with 1% of the stream's age allowed for clock drift, at
    most 10 seconds; sound sent ahead of real time counts for at most two
    seconds; so a stream ends at most 15 seconds after its last piece, at
-   any age, and a browser whose sound clock runs 0.01% slow is ended, and
-   starts a new stream, after about 36 hours: a phone's capture stopped, or it
+   any age, and a browser whose sound clock runs 0.01% slow is ended after
+   about 36 hours, after which it must start a new stream to go on
+   listening: a phone's capture stopped, or it
    delivers far too little sound, while its page stays connected), its
    period failed, or shutdown. The stream's hold and "hearing speech" are
    released, and its unread sound dropped, the moment it ends, even while

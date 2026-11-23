@@ -120,8 +120,8 @@ const maximumAheadMs = 2000;
  * Why 10 seconds: real sound clocks differ by about 0.01% (100 ppm) at most,
  * so a browser whose clock runs that slow falls 13 seconds behind (3 s lag +
  * 10 s drift) only after about 36 hours of uninterrupted listening; it then
- * ends as `stalled` and the browser starts a new stream (its open candidate,
- * if any, is lost). Without a cap the allowance grows with the stream's
+ * ends as `stalled` (its open candidate, if any, is lost), and the browser
+ * must send a new `audio-start` to go on listening. Without a cap the allowance grows with the stream's
  * age: after eight hours a phone whose capture stopped would stay
  * "listening" (and could hold its open candidate in the shared queue) for
  * almost five minutes. With it, such a stream ends at most 15 seconds after
