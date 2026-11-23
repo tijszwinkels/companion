@@ -500,6 +500,9 @@ async function relayWithHeldUpstream(context: import('node:test').TestContext) {
     log: () => {},
   });
   const internals = relay as unknown as Record<string, any>;
+  // The real role-negotiation timer would outlive the test once timers are
+  // mocked: clear it before.
+  clearTimeout(internals.roleTimer);
   const realUpstream = internals.upstream;
   const terminated: number[] = [];
   const held: (() => void)[] = [];
