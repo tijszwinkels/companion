@@ -27,12 +27,16 @@
  *   state are remembered too (../layout/useActivityLayout.ts). In a wide
  *   window it sits beside the chat with its own divider; in a narrow one it
  *   lies over the chat (../layout/activity-width.ts).
+ * - The selected conversation's pinned widget (PinnedWidget.tsx), as a band
+ *   above the chat or in the right column above Activity, by the window's
+ *   shape or the place fixed in this browser (../layout/pinned-place.ts,
+ *   ../layout/usePinnedLayout.ts). Not while the settings screen is shown.
  *
  * The workspace also owns the new-activity marker and the Activity
  * requests on their way; both belong to this pairing and go with it.
  */
 
-import type { RefObject } from 'preact';
+import type { ComponentChildren, RefObject } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
@@ -59,8 +63,15 @@ import {
 import type { ActivityOverlay } from '../layout/activity-overlay.ts';
 import { Divider } from '../layout/Divider.tsx';
 import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width.ts';
+import {
+  bandPercent,
+  pinnedPlace,
+  type PinnedPlace,
+  type PinnedPlacePreference,
+} from '../layout/pinned-place.ts';
 import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
+import { usePinnedLayout } from '../layout/usePinnedLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
 import { ModelPicker } from '../models/ModelPicker.tsx';
 import { SettingsScreen } from '../settings/SettingsScreen.tsx';
@@ -68,8 +79,11 @@ import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
 import type { SettingsView } from '../settings/settings-view.ts';
 import type { PageTimes } from '../times/page-times.ts';
 import type { ChatCover } from '../widgets/chat-cover.ts';
+import type { InlineWidgetEnvironment } from '../widgets/InlineWidget.tsx';
+import { pinnedWidget } from '../widgets/pinned-widget.ts';
 import { BarState } from './BarState.tsx';
 import { ChatBar } from './ChatBar.tsx';
+import { PinnedWidgetPanel, pinnedWidgetId } from './PinnedWidget.tsx';
 import { PreviousSessions } from './PreviousSessions.tsx';
 
 /** The Activity parts of the bar: whether the column is shown, the marker, the ☰. */
@@ -94,6 +108,7 @@ export function Workspace(props: {
   settingsView: SettingsView;
   activityOverlay: ActivityOverlay;
   chatCover: ChatCover;
+  widgets: InlineWidgetEnvironment;
 }) {
   const store = useStore();
   const state = useAppState();
@@ -112,15 +127,62 @@ export function Workspace(props: {
     return unsubscribe;
   }, [settingsView]);
 
+  let selected: AgentSession | undefined;
+  if (state.selected) {
+    selected = state.sessions.get(state.selected);
+  }
+
+  // The selected conversation's pinned widget, if the browser can show it
+  // (../widgets/pinned-widget.ts). The settings screen takes its place.
+  let pinned = null;
+  if (selected && !settingsShown) {
+    pinned = pinnedWidget(selected);
+  }
+  const pinnedLayout = usePinnedLayout();
+
   const activity = useActivityLayout();
   const windowWidth = activity.windowWidth;
   const overlay = isNarrowWindow(windowWidth);
-  // In a wide window the column takes its width from the list's window
-  // first (activity-width.ts); the list's own rules apply to the rest.
-  const layout = useListLayout((listShown) =>
-    activityReservedWidth(activity.preference, activity.shown, windowWidth, listShown),
-  );
+
+  /**
+   * Where the pinned widget sits for the list's shown state and preferred
+   * width, beside the Activity column when that is shown. The window's
+   * width and height both come from the pinned layout's one listener
+   * (../layout/usePinnedLayout.ts), never one new and the other old.
+   */
+  function placeFor(listShown: boolean, listPreference: number): PinnedPlace {
+    const placeWidth = pinnedLayout.windowWidth;
+    return pinnedPlace({
+      windowWidth: placeWidth,
+      windowHeight: pinnedLayout.windowHeight,
+      listShown,
+      listPreference,
+      activityReserved: activityReservedWidth(
+        activity.preference,
+        activity.shown,
+        placeWidth,
+        listShown,
+      ),
+      preference: pinnedLayout.preference,
+    });
+  }
+
+  // The right column holds Activity, the pinned widget at the right, or
+  // both. In a wide window it takes its width from the list's window first
+  // (activity-width.ts); the list's own rules apply to the rest.
+  const layout = useListLayout((listShown, listPreference) => {
+    const pinnedRight = pinned !== null && placeFor(listShown, listPreference) === 'right';
+    return activityReservedWidth(
+      activity.preference,
+      activity.shown || pinnedRight,
+      windowWidth,
+      listShown,
+    );
+  });
   const columnWidth = sideColumnWidth(activity.preference, windowWidth, layout.shown);
+  const place = placeFor(layout.shown, layout.preference);
+  const pinnedRight = pinned !== null && place === 'right';
+  const sideShown = activity.shown || pinnedRight;
 
   // One marker and one set of pending requests per pairing: the workspace
   // is replaced on sign-out. The marker follows every render (each Store
@@ -279,9 +341,70 @@ export function Workspace(props: {
     }
   }
 
-  let selected: AgentSession | undefined;
-  if (state.selected) {
-    selected = state.sessions.get(state.selected);
+  // A place button of the pinned widget pressed: its panel is drawn anew,
+  // elsewhere or without that button, and the focus it had would fall to
+  // the page. It goes to a place button of the new header instead (the way
+  // back), else its first control, once, right after that drawing.
+  const focusPinnedControls = useRef(false);
+  function placePinned(preference: PinnedPlacePreference) {
+    focusPinnedControls.current = true;
+    pinnedLayout.setPreference(preference);
+  }
+  useLayoutEffect(() => {
+    if (!focusPinnedControls.current) {
+      return;
+    }
+    focusPinnedControls.current = false;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body) {
+      return;
+    }
+    const actions = `#${pinnedWidgetId} .inline-widget-actions`;
+    const target =
+      document.querySelector<HTMLElement>(`${actions} [data-place]`) ??
+      document.querySelector<HTMLElement>(`${actions} button`);
+    target?.focus();
+  });
+
+  let pinnedPanel = null;
+  if (pinned) {
+    pinnedPanel = (
+      <PinnedWidgetPanel
+        pinned={pinned}
+        place={place}
+        preference={pinnedLayout.preference}
+        windowWidth={windowWidth}
+        onPlace={placePinned}
+        percent={bandPercent(pinnedLayout.heightPercent, pinned.heightPercent)}
+        onPercent={pinnedLayout.setHeight}
+        onRememberPercent={pinnedLayout.remember}
+        folded={pinnedLayout.folded}
+        onFolded={pinnedLayout.setFolded}
+        environment={props.widgets}
+      />
+    );
+  }
+
+  // The right column: only Activity keeps its own arrangement (a flex item
+  // of the workspace, or over the chat in a narrow window); with the pinned
+  // widget at the right it is a column of that width, the widget above
+  // Activity (when shown).
+  let sideClass = 'side-column';
+  let sideStyle: Record<string, string> = {};
+  if (pinnedRight) {
+    sideClass += ' with-pinned';
+    sideStyle = { width: `${columnWidth}px` };
+    if (activity.shown) {
+      sideClass += ' with-activity';
+    }
+  }
+  let sideLabel = 'Activity width';
+  let sideTitle = 'Drag to change the width of Activity';
+  let sideControls = activityColumnId;
+  if (!activity.shown) {
+    sideLabel = 'Right column width';
+    sideTitle = 'Drag to change the width of the right column';
+    sideControls = pinnedWidgetId;
   }
 
   // Over the chat, the column starts right of the list and its divider.
@@ -350,18 +473,19 @@ export function Workspace(props: {
           }}
           times={props.times}
           requests={requests}
+          pinnedBand={place === 'top' ? pinnedPanel : null}
         />
       </main>
-      {activity.shown && !overlay && (
+      {sideShown && !overlay && (
         <Divider
           width={columnWidth}
           narrowest={activityMinimum}
           widest={sideColumnWidth(activityMaximum, windowWidth, layout.shown)}
-          label="Activity width"
-          title="Drag to change the width of Activity"
+          label={sideLabel}
+          title={sideTitle}
           valueText={activityValueText}
           className="activity-divider"
-          controls={activityColumnId}
+          controls={sideControls}
           fromPointer={(clientX, container) => activityWidthFromPointer(container.right - clientX)}
           fromKey={activityWidthFromKey}
           onWidth={activity.setWidth}
@@ -369,19 +493,24 @@ export function Workspace(props: {
           onFocusLost={activityDividerLostFocus}
         />
       )}
-      {activity.shown && (
-        <ActivityColumn
-          overlay={overlay}
-          width={columnWidth}
-          left={overlayLeft}
-          bridge={props.bridge}
-          requests={requests}
-          onHide={hideFromColumn}
-          hideButton={columnActivityButton}
-          onFocusLost={columnLostFocus}
-          startProfile={startProfile}
-          onStartProfile={setStartProfile}
-        />
+      {sideShown && (
+        <div class={sideClass} style={sideStyle}>
+          {pinnedRight && pinnedPanel}
+          {activity.shown && (
+            <ActivityColumn
+              overlay={overlay}
+              width={columnWidth}
+              left={overlayLeft}
+              bridge={props.bridge}
+              requests={requests}
+              onHide={hideFromColumn}
+              hideButton={columnActivityButton}
+              onFocusLost={columnLostFocus}
+              startProfile={startProfile}
+              onStartProfile={setStartProfile}
+            />
+          )}
+        </div>
       )}
     </div>
   );
@@ -407,6 +536,8 @@ function MainArea(props: {
   settings: SettingsBar;
   times: PageTimes;
   requests: ActivityRequests;
+  /** The pinned widget's band above the chat, or null. */
+  pinnedBand: ComponentChildren;
 }) {
   const { selected } = props;
   const display = useDisplaySettings(props.times.settings);
@@ -499,6 +630,7 @@ function MainArea(props: {
     <>
       {bar}
       <div class="main-body">
+        {selected ? props.pinnedBand : null}
         {content}
         {props.settings.shown && (
           <div key="settings" class="settings-layer">

@@ -30,7 +30,9 @@
  *
  * Inline widgets: the gateway also runs a frame origin on a second loopback
  * port, and the city-trip answer is followed by a synthetic packing-list
- * widget the reader can tick off in the chat. Its library is written into
+ * widget the reader can tick off in the chat. The weekend-budget conversation
+ * has a pinned widget, a small budget table above the chat or at the
+ * right (by the window's shape). The library is written into
  * the temporary directory, and its actions run in this process
  * (test/widget-node-renderer.ts), not in the isolated widget renderer;
  * the browser draws it from the same bundle.
@@ -336,6 +338,73 @@ export function mount(root, api) {
     join(packingList, 'style.css'),
     'ul { list-style: none; margin: 0; padding: 0; } li { padding: 4px 0; } p { margin: 8px 0 0; color: var(--muted); font-size: 0.85rem; } input { accent-color: var(--accent); }\n',
   );
+
+  // A second one, pinned by its conversation: the trip's budget as a table
+  // with its total (no actions).
+  const tripBudget = join(widgetLibrary, 'trip-budget');
+  await mkdir(tripBudget, { recursive: true });
+  await writeFile(
+    join(tripBudget, 'widget.json'),
+    JSON.stringify({
+      name: 'trip-budget',
+      version: 1,
+      description: 'A synthetic budget for the demo trip.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rows: {
+            type: 'array',
+            maxItems: 20,
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', minLength: 1, maxLength: 80 },
+                euros: { type: 'integer', minimum: 0, maximum: 100000 },
+              },
+              required: ['label', 'euros'],
+              additionalProperties: false,
+            },
+            default: [],
+          },
+        },
+        required: ['rows'],
+        additionalProperties: false,
+      },
+      actions: {},
+      example: { rows: [{ label: 'Hotel', euros: 180 }] },
+    }),
+  );
+  await writeFile(
+    join(tripBudget, 'widget.js'),
+    `export function describe(props) {
+  const total = props.rows.reduce((sum, row) => sum + row.euros, 0);
+  return 'Trip budget: ' + total + ' euros';
+}
+export function mount(root) {
+  const table = document.createElement('table');
+  root.append(table);
+  return {
+    update(props) {
+      table.replaceChildren();
+      for (const row of props.rows) {
+        const line = table.insertRow();
+        line.insertCell().textContent = row.label;
+        line.insertCell().textContent = row.euros + ' €';
+      }
+      const total = table.insertRow();
+      total.className = 'total';
+      total.insertCell().textContent = 'Total';
+      total.insertCell().textContent = props.rows.reduce((sum, row) => sum + row.euros, 0) + ' €';
+    },
+    dispose() {},
+  };
+}
+`,
+  );
+  await writeFile(
+    join(tripBudget, 'style.css'),
+    'table { width: 100%; border-collapse: collapse; } td { padding: 4px 0; } td + td { text-align: right; } tr.total td { border-top: 1px solid var(--muted); font-weight: 600; }\n',
+  );
   continueStartup();
 
   // ---- Scripted agent backend -------------------------------------------------
@@ -454,6 +523,25 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
             { text: 'Walking shoes', packed: true },
           ],
         },
+      });
+    }
+
+    // The budget conversation pins its widget above the chat.
+    if (/budget/i.test(question) && request.widgets) {
+      const publish = widgetTools(request.widgets.endpoint, request.widgets.token).find(
+        (tool) => tool.name === 'companion_widget',
+      );
+      await publish?.execute('demo-trip-budget', {
+        widget: 'trip-budget',
+        props: {
+          rows: [
+            { label: 'Train tickets', euros: 84 },
+            { label: 'Hotel, one night', euros: 135 },
+            { label: 'Museum', euros: 18 },
+            { label: 'Meals', euros: 90 },
+          ],
+        },
+        presentation: { placement: 'pinned', heightPercent: 30 },
       });
     }
 
@@ -708,6 +796,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     controller.signal,
     'quickQuestion',
   );
+  const budget = sessions.start(
+    frame('💶 Keep the weekend budget in view'),
+    controller.signal,
+    'quickQuestion',
+  );
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
   const rules = sessions.start(
     frame('Notification rules: summarise them'),
@@ -721,6 +814,7 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
       [bug, 1],
       [rules, 1],
       [trip, 1],
+      [budget, 1],
     ]),
     trip,
   );
@@ -759,7 +853,8 @@ Companion browser shell demo (synthetic data only)
 
   Open:          http://127.0.0.1:${port}/
   Pairing code:  ${code.slice(0, 5)}-${code.slice(5)}   (10 minutes, one browser)
-  Widget frames: ${frameOrigin}/ (the city trip shows an inline widget)
+  Widget frames: ${frameOrigin}/ (the city trip shows an inline widget, the
+                 weekend budget a pinned one)
 
 New pairing code:
   bin/companion-remote pair --state-directory ${stateDirectory}

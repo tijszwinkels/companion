@@ -6,6 +6,10 @@
  * focusable separator for the keyboard: each key the part's rules handle
  * changes the width by one step.
  *
+ * Laid `horizontal`, it is the lower edge of the pinned widget's band at
+ * the top of the chat (pinned-place.ts): the same rules, with the band's
+ * height (in percent) for the width and the pointer's vertical position.
+ *
  * During a drag the width follows the pointer without being remembered;
  * the release (or a cancelled pointer or lost capture, which keep the width
  * reached) writes it once. The pointer is captured by the divider, so the drag continues
@@ -17,7 +21,9 @@ import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 
 export function Divider(props: {
-  /** The resized part's shown width in CSS pixels. */
+  /** `vertical` (default) between columns; `horizontal` below the pinned band. */
+  orientation?: 'vertical' | 'horizontal';
+  /** The resized part's shown width in CSS pixels (horizontal: its height in percent). */
   width: number;
   /** The narrowest and widest width the window allows now (`aria-valuemin/max`). */
   narrowest: number;
@@ -33,10 +39,11 @@ export function Divider(props: {
   /** The element the divider resizes (`aria-controls`). */
   controls: string;
   /**
-   * The preferred width for the pointer at `clientX`, given the box of the
-   * element the divider is in (the workspace).
+   * The preferred width for the pointer at `position` (its `clientX`;
+   * horizontal: its `clientY`), given the box of the element the divider
+   * is in (the workspace; horizontal: the area below the bar).
    */
-  fromPointer: (clientX: number, container: DOMRect) => number;
+  fromPointer: (position: number, container: DOMRect) => number;
   /** The preferred width after `key` from the shown width, or null for other keys. */
   fromKey: (key: string, shownWidth: number) => number | null;
   /** Change the preferred width; `remember` writes it to storage. */
@@ -80,6 +87,9 @@ export function Divider(props: {
     let container = new DOMRect(0, 0, document.documentElement.clientWidth, 0);
     if (parent) {
       container = parent.getBoundingClientRect();
+    }
+    if (props.orientation === 'horizontal') {
+      return props.fromPointer(event.clientY, container);
     }
     return props.fromPointer(event.clientX, container);
   }
@@ -137,7 +147,12 @@ export function Divider(props: {
     props.onWidth(width, true);
   }
 
+  let orientation: 'vertical' | 'horizontal' = 'vertical';
   const classes = ['list-divider'];
+  if (props.orientation === 'horizontal') {
+    orientation = 'horizontal';
+    classes[0] = 'band-edge';
+  }
   if (props.className) {
     classes.push(props.className);
   }
@@ -150,7 +165,7 @@ export function Divider(props: {
       class={classes.join(' ')}
       ref={element}
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={orientation}
       aria-label={props.label}
       aria-controls={props.controls}
       aria-valuemin={props.narrowest}

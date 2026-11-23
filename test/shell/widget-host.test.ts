@@ -63,6 +63,17 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   const actions = { loopback: 0, socket: 0 };
   // While set, state polls answer 404, as for a frame address that ended.
   const ended = { loopback: false, socket: false };
+  // `present` (Pin, Unpin) and `viewport` requests, with their bodies.
+  const posted: Record<'loopback' | 'socket', { operation: string; body: Json; at: number }[]> = {
+    loopback: [],
+    socket: [],
+  };
+  // While set, `present` is refused (400) with this text.
+  const presentRefused = { loopback: '', socket: '' };
+  // While set, `viewport` answers 503, as a gateway that is briefly busy.
+  const viewportFailing = { loopback: false, socket: false };
+  // While set, `viewport` gets no answer until `release()`.
+  const viewportHolding = { loopback: false, socket: false };
   const held: (() => void)[] = [];
   function release(): void {
     for (const answer of held.splice(0)) {
@@ -112,6 +123,37 @@ async function documentServer(documents: { loopback: string; socket: string }, s
       response.end(JSON.stringify({ count: 1 }));
       return;
     }
+    const operation = /^\/(?:loopback|socket)\/(present|viewport)$/.exec(path);
+    if (operation) {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', (part) => {
+        body += part;
+      });
+      request.on('end', () => {
+        posted[route].push({ operation: operation[1], body: JSON.parse(body), at: Date.now() });
+        if (operation[1] === 'present' && presentRefused[route]) {
+          response.writeHead(400, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ error: presentRefused[route] }));
+          return;
+        }
+        if (operation[1] === 'viewport' && viewportHolding[route]) {
+          held.push(() => {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ recorded: true }));
+          });
+          return;
+        }
+        if (operation[1] === 'viewport' && viewportFailing[route]) {
+          response.writeHead(503, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ error: 'Busy' }));
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ recorded: true }));
+      });
+      return;
+    }
     if (path === '/frame-loopback.html' || path === '/frame-socket.html') {
       const source = path === '/frame-loopback.html' ? '/loopback/' : '/socket/';
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -135,6 +177,10 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     actionFailing,
     actions,
     ended,
+    posted,
+    presentRefused,
+    viewportFailing,
+    viewportHolding,
     release,
     server,
   };
@@ -469,3 +515,189 @@ test(
 function mainWorldInWidget(page: TestPage, address: string, expression: string) {
   return evaluateInFrame(page, address, expression, true, true);
 }
+
+test(
+  'Pin, Unpin and the viewport report: host.js asks for them only when embedded from the socket route',
+  { skip },
+  async (context) => {
+    const fixture = await frameFixture();
+    const browser = new TestBrowser();
+    await browser.start();
+    let documents: Awaited<ReturnType<typeof documentServer>> | undefined;
+    context.after(async () => {
+      await browser.close();
+      if (documents) {
+        await new Promise<void>((resolve) => documents!.server.close(() => resolve()));
+      }
+      await fixture.close();
+    });
+
+    const { run } = await fixture.conversation();
+    // A widget whose agent chose its own presentation (kept by Pin and Unpin).
+    // (The fixture's type names only placement and height; the widget tool
+    // takes the whole presentation.)
+    const presentation = { placement: 'inline', heightPercent: 40, replaceActivity: false };
+    const widgetId = await fixture.publishCounter(
+      run,
+      presentation as { placement: 'inline'; heightPercent: number },
+    );
+    const viewUrl = fixture.sessions
+      .snapshot()[0]
+      .messages.find((message) => message.widget?.id === widgetId)!.widget!.viewUrl!;
+    const { token } = await fixture.pair();
+    const phone = await fixture.phone(token);
+    const snapshot = await phone.engine('state', (message) =>
+      message.sessions?.[0]?.messages?.some((row: Json) => row.widget?.id === widgetId),
+    );
+    const frameUrl = snapshot.sessions[0].messages.find((row: Json) => row.widget).widget
+      .frameUrl as string;
+    const loopbackDocument = await (await fetch(viewUrl)).text();
+    const socketDocument = await (await fixture.frameRequest(frameUrl)).text();
+    const state = (await (await fixture.frameRequest(frameUrl + 'state')).json()) as Json;
+    documents = await documentServer({ loopback: loopbackDocument, socket: socketDocument }, state);
+
+    const post = (page: TestPage, message: string) =>
+      page.evaluate(`document.getElementById('widget').contentWindow.postMessage(${message}, '*')`);
+    const resize = (page: TestPage, width: number, height: number) =>
+      page.evaluate(
+        `Object.assign(document.getElementById('widget').style, { width: '${width}px', height: '${height}px' })`,
+      );
+
+    // The loopback route (the desktop's), framed: Pin, Unpin, visibility
+    // and a resize ask for nothing. Its polls show the page is running.
+    const desktop = await instrumentedPage(browser);
+    await desktop.navigate(`${documents.origin}/frame-loopback.html`);
+    const loopbackFrame = `${documents.origin}/loopback/`;
+    await waitInFrame(desktop, loopbackFrame, `document.getElementById('increment')`, true);
+    await post(desktop, `{ type: 'visible', visible: true }`);
+    await post(desktop, `{ type: 'present', placement: 'pinned' }`);
+    await post(desktop, `{ type: 'present', placement: 'inline' }`);
+    await resize(desktop, 500, 320);
+    await grows(() => documents!.polls.loopback, 3);
+    assert.deepEqual(documents.posted.loopback, []);
+
+    // The socket route, framed (the shell): no viewport before the shell
+    // says the frame is visible; then its size and the theme's text scale.
+    const shell = await instrumentedPage(browser);
+    await shell.navigate(`${documents.origin}/frame-socket.html`);
+    const socketFrame = `${documents.origin}/socket/`;
+    await waitInFrame(shell, socketFrame, `document.getElementById('increment')`, true);
+    const viewports = () =>
+      documents!.posted.socket.filter((entry) => entry.operation === 'viewport');
+    const presents = () =>
+      documents!.posted.socket.filter((entry) => entry.operation === 'present');
+    await quiet(() => documents!.posted.socket.length, 500);
+    assert.deepEqual(viewports(), []);
+    await post(shell, `{ type: 'visible', visible: true }`);
+    await waitFor(() => viewports().length === 1, 5000);
+    assert.deepEqual(viewports()[0].body, {
+      widthCssPixels: 480,
+      heightCssPixels: 300,
+      textScale: 1,
+    });
+
+    // A new size is reported once; an unchanged one is not reported again.
+    await resize(shell, 500, 320);
+    await waitFor(() => viewports().length === 2, 5000);
+    assert.deepEqual(viewports()[1].body, {
+      widthCssPixels: 500,
+      heightCssPixels: 320,
+      textScale: 1,
+    });
+    await post(shell, `{ type: 'visible', visible: false }`);
+    await post(shell, `{ type: 'visible', visible: true }`);
+    assert.equal(await quiet(() => viewports().length, 500), 2);
+    // While not visible a resize is not reported; visible again, it is.
+    await post(shell, `{ type: 'visible', visible: false }`);
+    await resize(shell, 520, 340);
+    assert.equal(await quiet(() => viewports().length, 500), 2);
+    await post(shell, `{ type: 'visible', visible: true }`);
+    await waitFor(() => viewports().length === 3, 5000);
+    assert.deepEqual(viewports()[2].body, {
+      widthCssPixels: 520,
+      heightCssPixels: 340,
+      textScale: 1,
+    });
+
+    // A report the gateway could not take (503) is made again after the
+    // next successful poll; then not again.
+    documents.viewportFailing.socket = true;
+    await resize(shell, 540, 360);
+    await waitFor(() => viewports().length === 4, 5000);
+    documents.viewportFailing.socket = false;
+    await waitFor(() => viewports().length === 5, 5000);
+    assert.deepEqual(viewports()[4].body, viewports()[3].body);
+    assert.equal(await quiet(() => viewports().length, 1000), 5);
+
+    // One report on its way at a time: sizes reached while it is unanswered
+    // are not sent until it settles; then only the latest.
+    documents.viewportHolding.socket = true;
+    await resize(shell, 560, 380);
+    await waitFor(() => viewports().length === 6, 5000);
+    await resize(shell, 580, 390);
+    await resize(shell, 600, 400);
+    assert.equal(await quiet(() => viewports().length, 500), 6);
+    documents.viewportHolding.socket = false;
+    const released = Date.now();
+    documents.release();
+    await waitFor(() => viewports().length === 7, 5000);
+    // Through the scheduler, as every report: not sooner than 120 ms later
+    // (less a little for the timer's granularity).
+    assert.ok(viewports()[6].at - released >= 100, String(viewports()[6].at - released));
+    assert.deepEqual(viewports()[6].body, {
+      widthCssPixels: 600,
+      heightCssPixels: 400,
+      textScale: 1,
+    });
+    assert.equal(await quiet(() => viewports().length, 500), 7);
+
+    // Pin and Unpin: the desktop Unpin's request, with the view's current
+    // presentation (from its state) and only the placement changed.
+    assert.deepEqual(state.presentation, {
+      placement: 'inline',
+      heightPercent: 40,
+      replaceActivity: false,
+    });
+    await post(shell, `{ type: 'present', placement: 'pinned' }`);
+    await waitFor(() => presents().length === 1, 5000);
+    assert.deepEqual(Object.keys(presents()[0].body), ['presentation', 'revision', 'requestId']);
+    // The revision it read with the presentation (a change in between is refused).
+    assert.equal(presents()[0].body.revision, state.revision);
+    assert.deepEqual(presents()[0].body.presentation, {
+      placement: 'pinned',
+      heightPercent: 40,
+      replaceActivity: false,
+    });
+    assert.match(presents()[0].body.requestId, /^shell-[0-9a-f]{32}$/);
+    await post(shell, `{ type: 'present', placement: 'inline' }`);
+    await waitFor(() => presents().length === 2, 5000);
+    assert.equal(presents()[1].body.presentation.placement, 'inline');
+
+    // Malformed ones, and one from the widget's own inner frame: ignored.
+    for (const message of [
+      `{ type: 'present', placement: 'full' }`,
+      `{ type: 'present', placement: 'pinned', heightPercent: 100 }`,
+      `{ type: 'present' }`,
+      `Object.assign([], { type: 'present', placement: 'pinned' })`,
+    ]) {
+      await post(shell, message);
+    }
+    await evaluateInFrame(
+      shell,
+      socketFrame,
+      `parent.postMessage({ type: 'present', placement: 'pinned' }, '*')`,
+      true,
+    );
+    assert.equal(await quiet(() => presents().length, 500), 2);
+
+    // A refusal is shown in the frame's status line, as an action's error.
+    documents.presentRefused.socket = 'Widget conversation is closed';
+    await post(shell, `{ type: 'present', placement: 'pinned' }`);
+    await waitInFrame(
+      shell,
+      socketFrame,
+      `document.querySelector('.error')?.textContent === 'Widget conversation is closed'`,
+    );
+    assert.deepEqual(shell.errors, []);
+  },
+);

@@ -728,6 +728,10 @@ if (api) {
           status.textContent = '';
         }
         shellPollingError = null;
+        // A size report that could not be made is made again now.
+        if (shellEmbedded && reportedViewport === '') {
+          scheduleViewportReport();
+        }
         if (chatWatching && chatAllowed && !document.hidden) {
           readChat(null);
         }
@@ -752,8 +756,9 @@ if (api) {
 //
 // To the shell: { type: 'geometry', height } and { type: 'error', text }.
 // From it: { type: 'theme', theme: { foreground, background, accent, muted,
-// scale } } and { type: 'visible', visible }. Nothing else is sent or
-// accepted; no message grants a permission or names another view. The
+// scale } }, { type: 'visible', visible } and { type: 'present', placement }
+// (Pin and Unpin: 'pinned' or 'inline'). Nothing else is sent or accepted;
+// no message grants a permission or names another view. The
 // target origin is '*' because this page cannot know its parent's origin
 // (the shell frames it without a referrer); `frame-ancestors` already limits
 // who can frame it to the gateway's pages, and these messages carry only a
@@ -805,7 +810,124 @@ function shellTheme(value) {
   return value;
 }
 
+// Pin and Unpin from the shell's header: this page's own view's `present`
+// request, the one the desktop's Unpin makes (integrations/panel/
+// WidgetSurface.qml), with only the placement changed: the view's current
+// presentation (its height and Activity choice, read with its state) is
+// kept. The listener then reports the change to every client, the shell
+// included, which moves the widget; nothing is shown as changed before
+// that. One request at a time; a refusal is shown in this page's status
+// line, as an action's error is.
+let presenting = false;
+
+function presentFromShell(placement) {
+  if (!api || presenting) {
+    return;
+  }
+  presenting = true;
+  const requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  void fetchState()
+    .then((snapshot) => {
+      const current = snapshot.presentation;
+      let presentation = { placement };
+      if (current && typeof current === 'object' && !Array.isArray(current)) {
+        presentation = { ...current, placement };
+      }
+      // The revision read with it: a change made meanwhile (an agent's new
+      // height) is refused by the service rather than overwritten.
+      return fetch(api + '/present', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          presentation,
+          revision: snapshot.revision,
+          requestId: 'shell-' + requestId,
+        }),
+      });
+    })
+    .then(async (response) => {
+      if (!response.ok) {
+        const value = await response.json().catch(() => ({}));
+        throw Error(typeof value.error === 'string' ? value.error : 'The widget could not move');
+      }
+    })
+    .catch((error) => {
+      status.textContent = String(error.message || error).slice(0, 200);
+    })
+    .finally(() => {
+      presenting = false;
+    });
+}
+
+// The size the shell gives this page, reported to the widget service as the
+// desktop's native view reports its own (`viewport`, WidgetSurface.qml), so
+// an agent sees the size the widget gets (`lastViewport`). Reported once the
+// shell first said the frame is visible, and again when the size changes
+// while it is visible, at most once per 120 ms (the desktop's interval).
+// The text scale is the one the shell's theme gives. A report the gateway or
+// the service could not take for now (a 5xx or 429, or no answer) is made
+// again after the next successful poll; a refusal (another 4xx) is not.
+// One report is on its way at a time, so an older size can never arrive
+// after a newer one: a change meanwhile is reported when it has settled.
+let viewportTimer = null;
+let reportedViewport = '';
+let viewportInFlight = false;
+
+function scheduleViewportReport() {
+  if (viewportTimer !== null) {
+    return;
+  }
+  viewportTimer = setTimeout(() => {
+    viewportTimer = null;
+    reportViewport();
+  }, 120);
+}
+
+function reportViewport() {
+  const width = Math.round(window.innerWidth);
+  const height = Math.round(window.innerHeight);
+  if (!api || !shellVisible || viewportInFlight || width < 1 || height < 1) {
+    return;
+  }
+  const body = { widthCssPixels: width, heightCssPixels: height, textScale: theme.scale };
+  const key = JSON.stringify(body);
+  if (key === reportedViewport) {
+    return;
+  }
+  reportedViewport = key;
+  viewportInFlight = true;
+  void fetch(api + '/viewport', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: key,
+  })
+    .then((response) => {
+      if (response.status >= 500 || response.status === 429) {
+        reportedViewport = '';
+      }
+    })
+    .catch(() => {
+      reportedViewport = '';
+    })
+    .finally(() => {
+      viewportInFlight = false;
+      // The size may have changed while this report was on its way: it is
+      // reported through the scheduler, as every report is. (A report that
+      // failed waits for the next successful poll instead.)
+      if (reportedViewport !== '') {
+        scheduleViewportReport();
+      }
+    });
+}
+
 if (shellEmbedded) {
+  window.addEventListener('resize', () => {
+    if (shellVisible) {
+      scheduleViewportReport();
+    }
+  });
   window.addEventListener('message', (event) => {
     if (
       event.source !== window.parent ||
@@ -819,6 +941,15 @@ if (shellEmbedded) {
     const exactly = (name) => Object.keys(message).length === 2 && Object.hasOwn(message, name);
     if (message.type === 'visible' && exactly('visible') && typeof message.visible === 'boolean') {
       shellVisible = message.visible;
+      if (shellVisible) {
+        scheduleViewportReport();
+      }
+    } else if (
+      message.type === 'present' &&
+      exactly('placement') &&
+      (message.placement === 'pinned' || message.placement === 'inline')
+    ) {
+      presentFromShell(message.placement);
     } else if (message.type === 'theme' && exactly('theme')) {
       const value = shellTheme(message.theme);
       if (value) {

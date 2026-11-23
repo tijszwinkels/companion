@@ -9,7 +9,12 @@
  * - `companion.shell.layout.listShown`: whether the list is shown;
  * - `companion.shell.layout.activityWidth`: the Activity column's preferred
  *   width in pixels;
- * - `companion.shell.layout.activityShown`: whether the column is shown.
+ * - `companion.shell.layout.activityShown`: whether the column is shown;
+ * - `companion.shell.layout.pinnedPlace`: where a pinned widget sits,
+ *   `"auto"`, `"right"` or `"top"` (pinned-place.ts);
+ * - `companion.shell.layout.pinnedHeight`: the height of the pinned widget's
+ *   band at the top, as a percentage, once its lower edge was dragged;
+ * - `companion.shell.layout.pinnedFolded`: whether that band is folded.
  *
  * They describe only the arrangement of this page, not the person or their
  * conversations, so they are not cleared on sign-out. Each change writes
@@ -18,14 +23,21 @@
  * value it did not change (useListLayout.ts follows the other tabs).
  *
  * An entry that is missing, unreadable, of another version or of the wrong
- * type gives that entry's default: the list as the strip, shown, and the
+ * type gives that entry's default: the list as the strip, shown, the
  * Activity column 320 px wide, hidden (the agreed design's starting
- * arrangement). A storage that cannot be read or written
+ * arrangement), and a pinned widget placed by the window's shape, as high
+ * as the widget asks, not folded. A storage that cannot be read or written
  * (disabled, full) keeps the layout for this page only.
  */
 
 import { activityDefaultWidth, validActivityWidth } from './activity-width.ts';
 import { stripWidth, validListWidth } from './list-width.ts';
+import {
+  defaultPinnedPlace,
+  isPinnedPlacePreference,
+  validBandPercent,
+  type PinnedPlacePreference,
+} from './pinned-place.ts';
 
 /** The entries' common prefix, for recognising them in `storage` events. */
 export const layoutStoragePrefix = 'companion.shell.layout.';
@@ -33,6 +45,9 @@ export const listWidthKey = `${layoutStoragePrefix}listWidth`;
 export const listShownKey = `${layoutStoragePrefix}listShown`;
 export const activityWidthKey = `${layoutStoragePrefix}activityWidth`;
 export const activityShownKey = `${layoutStoragePrefix}activityShown`;
+export const pinnedPlaceKey = `${layoutStoragePrefix}pinnedPlace`;
+export const pinnedHeightKey = `${layoutStoragePrefix}pinnedHeight`;
+export const pinnedFoldedKey = `${layoutStoragePrefix}pinnedFolded`;
 
 export interface ListLayout {
   /** Preferred width in CSS pixels: the strip's, or a full list's (see list-width.ts). */
@@ -53,6 +68,21 @@ export interface ActivityLayout {
 export const defaultActivityLayout: ActivityLayout = {
   activityWidth: activityDefaultWidth,
   activityShown: false,
+};
+
+export interface PinnedLayout {
+  /** Where a pinned widget sits: by the window's shape, or a fixed place. */
+  pinnedPlace: PinnedPlacePreference;
+  /** The band's height in percent once dragged, or null (the widget's own). */
+  pinnedHeight: number | null;
+  /** Whether the band at the top is folded to its header. */
+  pinnedFolded: boolean;
+}
+
+export const defaultPinnedLayout: PinnedLayout = {
+  pinnedPlace: defaultPinnedPlace,
+  pinnedHeight: null,
+  pinnedFolded: false,
 };
 
 /** The parts of `Storage` used here, so tests can pass a stand-in. */
@@ -94,7 +124,11 @@ export function readEntry(storage: LayoutStorage, key: string): unknown {
 }
 
 /** Write one entry; a storage that refuses keeps the value for this page only. */
-export function writeEntry(storage: LayoutStorage, key: string, value: number | boolean): void {
+export function writeEntry(
+  storage: LayoutStorage,
+  key: string,
+  value: number | boolean | string,
+): void {
   try {
     storage.setItem(key, JSON.stringify({ version: 1, value }));
   } catch {
@@ -148,4 +182,37 @@ export function writeActivityWidth(storage: LayoutStorage, width: number): void 
 /** Remember whether the Activity column is shown (and only that). */
 export function writeActivityShown(storage: LayoutStorage, shown: boolean): void {
   writeEntry(storage, activityShownKey, shown);
+}
+
+/** The remembered pinned widget layout; each entry that is missing or not valid gives its default. */
+export function readPinnedLayout(storage: LayoutStorage): PinnedLayout {
+  const layout = { ...defaultPinnedLayout };
+  const place = readEntry(storage, pinnedPlaceKey);
+  if (isPinnedPlacePreference(place)) {
+    layout.pinnedPlace = place;
+  }
+  const height = readEntry(storage, pinnedHeightKey);
+  if (typeof height === 'number' && Number.isFinite(height)) {
+    layout.pinnedHeight = validBandPercent(height);
+  }
+  const folded = readEntry(storage, pinnedFoldedKey);
+  if (typeof folded === 'boolean') {
+    layout.pinnedFolded = folded;
+  }
+  return layout;
+}
+
+/** Remember where a pinned widget sits (and only that). */
+export function writePinnedPlace(storage: LayoutStorage, place: PinnedPlacePreference): void {
+  writeEntry(storage, pinnedPlaceKey, place);
+}
+
+/** Remember the band's dragged height (and only it). */
+export function writePinnedHeight(storage: LayoutStorage, percent: number): void {
+  writeEntry(storage, pinnedHeightKey, validBandPercent(percent));
+}
+
+/** Remember whether the band is folded (and only that). */
+export function writePinnedFolded(storage: LayoutStorage, folded: boolean): void {
+  writeEntry(storage, pinnedFoldedKey, folded);
 }

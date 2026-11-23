@@ -135,7 +135,7 @@ for (const moment of ['while it starts', 'after it started'] as const) {
 }
 
 test(
-  'the demo shows the city trip with one inline widget on its frame origin',
+  'the demo shows the city trip with one inline widget and the weekend budget with one pinned widget, on its frame origin',
   { skip },
   async (context) => {
     const parent = await mkdtemp(join(tmpdir(), 'companion-demo-test-'));
@@ -207,10 +207,16 @@ test(
       assert.ok(Date.now() < widgetDeadline, 'no widget in the demo');
       const phone = await connectPhone(`ws://127.0.0.1:${port}/api/socket`, token, origin);
       try {
-        snapshot = await phone.engine('state', (message) =>
-          message.sessions?.some((session: { messages: { widget?: { frameUrl?: string } }[] }) =>
-            session.messages.some((row) => row.widget?.frameUrl),
-          ),
+        snapshot = await phone.engine(
+          'state',
+          (message) =>
+            message.sessions?.some((session: { messages: { widget?: { frameUrl?: string } }[] }) =>
+              session.messages.some((row) => row.widget?.frameUrl),
+            ) &&
+            message.sessions?.some(
+              (session: { pinnedMessage?: { widget?: { frameUrl?: string } } | null }) =>
+                session.pinnedMessage?.widget?.frameUrl,
+            ),
         );
       } catch {
         // Not published yet.
@@ -219,22 +225,36 @@ test(
       }
     }
 
-    // Exactly one widget, under the city trip, with a frame address that serves its page.
+    // Exactly two widgets: inline under the city trip, and pinned in the
+    // weekend budget; each with a frame address that serves its page.
+    type DemoWidget = {
+      name: string;
+      frameUrl?: string;
+      presentation: { placement: string };
+    };
     const widgets = snapshot.sessions.flatMap(
-      (session: { title: string; messages: { widget?: { name: string; frameUrl?: string } }[] }) =>
+      (session: { title: string; messages: { widget?: DemoWidget }[] }) =>
         session.messages
           .filter((row) => row.widget)
           .map((row) => ({ title: session.title, widget: row.widget! })),
     );
-    assert.equal(widgets.length, 1);
-    assert.match(widgets[0].title, /city trip/);
-    assert.equal(widgets[0].widget.name, 'packing-list');
-    assert.match(
-      widgets[0].widget.frameUrl!,
-      new RegExp('^' + frameOrigin + '/f/[A-Za-z0-9_-]{43}/$'),
+    assert.equal(widgets.length, 2);
+    const inline = widgets.find(
+      (entry: { widget: DemoWidget }) => entry.widget.presentation.placement === 'inline',
+    )!;
+    assert.match(inline.title, /city trip/);
+    assert.equal(inline.widget.name, 'packing-list');
+    const pinned = snapshot.sessions.filter(
+      (session: { pinnedMessage?: unknown }) => session.pinnedMessage,
     );
-    const page = await fetch(widgets[0].widget.frameUrl!);
-    assert.equal(page.status, 200);
-    assert.match(page.headers.get('content-type') ?? '', /^text\/html/);
+    assert.equal(pinned.length, 1);
+    assert.match(pinned[0].title, /weekend budget/);
+    assert.equal(pinned[0].pinnedMessage.widget.name, 'trip-budget');
+    for (const address of [inline.widget.frameUrl!, pinned[0].pinnedMessage.widget.frameUrl]) {
+      assert.match(address, new RegExp('^' + frameOrigin + '/f/[A-Za-z0-9_-]{43}/$'));
+      const page = await fetch(address);
+      assert.equal(page.status, 200);
+      assert.match(page.headers.get('content-type') ?? '', /^text\/html/);
+    }
   },
 );
