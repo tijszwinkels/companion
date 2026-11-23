@@ -243,8 +243,10 @@ export class Relay {
    * the reason the client is given when the answer arrives.
    */
   private readonly abandonedStarts = new Map<number, AudioEndReason | undefined>();
-  /** Closes the connection if a backed-up upstream does not drain (awaitUpstreamDrain). */
+  /** Closes the connection if a backed-up upstream is not flushed in time (awaitUpstreamFlush). */
   private upstreamDrainTimer?: ReturnType<typeof setTimeout>;
+  /** Flush markers written and not yet flushed (awaitUpstreamFlush). */
+  private unflushedMarkers = 0;
   /** This relay as the registry sees it; taken over by another connection of the device. */
   private readonly audioHolder: AudioStreamHolder = {
     takenOver: () => this.endAudio('taken-over'),
@@ -728,31 +730,37 @@ export class Relay {
   }
 
   /**
-   * After `slow-listener`, or when a stream's stop was written behind a
-   * backlog, sound (and the stream's stop) still wait in the upstream
-   * socket's buffer. A listener that never reads again would keep them there
-   * for as long as the connection lives, so the connection is closed as
-   * "engine unavailable" if the buffer has not drained within the request
-   * timeout, as for a request the listener never answers.
+   * When a stream ends (its stop written, or the listener ended it), sound
+   * may still wait in the upstream socket's buffer. A listener that never
+   * reads again would keep it there for as long as the connection lives, so
+   * the connection is closed as "engine unavailable" if that buffer has not
+   * been flushed within the request timeout, as for a request the listener
+   * never answers.
    *
-   * Only a buffer that is waiting for `drain` counts (a write returned
-   * false): Node emits `drain` only then, and a small rest that the socket
-   * accepted at once is flushed without it.
+   * An empty write with a callback marks the end of what is buffered now:
+   * writes are flushed in order, so its callback runs once everything before
+   * it has reached the operating system. This covers every backlog, also one
+   * small enough that the socket never asked for `drain`. The timer runs from
+   * the oldest marker still unflushed.
    */
-  private awaitUpstreamDrain(): void {
-    if (this.upstreamDrainTimer || this.upstream.destroyed || !this.upstream.writableNeedDrain) {
+  private awaitUpstreamFlush(): void {
+    if (this.upstream.destroyed || this.upstream.writableLength === 0) {
       return;
     }
-    const drained = () => {
-      clearTimeout(this.upstreamDrainTimer);
-      this.upstreamDrainTimer = undefined;
-    };
-    this.upstreamDrainTimer = setTimeout(() => {
-      this.upstream.off('drain', drained);
+
+    this.unflushedMarkers++;
+    this.upstreamDrainTimer ??= setTimeout(() => {
       this.upstreamDrainTimer = undefined;
       this.terminate(closeCodes.engineUnavailable, 'Companion did not keep up');
     }, requestMilliseconds);
-    this.upstream.once('drain', drained);
+
+    this.upstream.write('', () => {
+      this.unflushedMarkers--;
+      if (this.unflushedMarkers === 0) {
+        clearTimeout(this.upstreamDrainTimer);
+        this.upstreamDrainTimer = undefined;
+      }
+    });
   }
 
   /** The client asked to stop listening (`audio-stop`). */
@@ -782,8 +790,8 @@ export class Relay {
       return;
     }
     if (this.upstream.writableLength > maximumUpstreamAudioBacklogBytes) {
+      // Ending the stream also starts the flush deadline (endAudio).
       this.endAudio('slow-listener');
-      this.awaitUpstreamDrain();
       return;
     }
 
@@ -813,7 +821,7 @@ export class Relay {
       this.abandonedStarts.set(audio.token, reason);
       if (this.ready) {
         this.writeUpstream({ action: 'audio-stop', requestId: audioStopRequestId });
-        this.awaitUpstreamDrain();
+        this.awaitUpstreamFlush();
       }
       return;
     }
@@ -825,7 +833,7 @@ export class Relay {
     });
     // Sound still queued for a listener that stopped reading is released
     // within the request timeout, not only when the connection closes.
-    this.awaitUpstreamDrain();
+    this.awaitUpstreamFlush();
     if (reason) {
       this.sendAudioEnded(audio.streamId, reason);
     }
@@ -851,6 +859,8 @@ export class Relay {
 
     this.audio = { phase: 'none' };
     this.options.audioStreams?.release(this.audioHolder);
+    // Sound sent before the listener's end may still be buffered for it.
+    this.awaitUpstreamFlush();
     this.sendAudioEnded(audio.streamId, reason);
   }
 

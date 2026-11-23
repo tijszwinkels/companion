@@ -118,12 +118,15 @@ const maximumAheadMs = 2000;
  * of the stream's age, but never more than `maximumDriftMs` in all.
  *
  * Why 10 seconds: real sound clocks differ by about 0.01% (100 ppm) at most,
- * which takes some 28 hours to reach 10 seconds, so an honest stream never
- * meets the cap. Without a cap the allowance grows with the stream's age:
- * after eight hours of listening a phone whose capture stopped would stay
+ * so a browser whose clock runs that slow falls 13 seconds behind (3 s lag +
+ * 10 s drift) only after about 36 hours of uninterrupted listening; it then
+ * ends as `stalled` and the browser starts a new stream (its open candidate,
+ * if any, is lost). Without a cap the allowance grows with the stream's
+ * age: after eight hours a phone whose capture stopped would stay
  * "listening" (and could hold its open candidate in the shared queue) for
- * almost five minutes. With it, such a stream ends at most 13 seconds after
- * its sound stopped (3 s lag + 10 s drift), at any age.
+ * almost five minutes. With it, such a stream ends at most 15 seconds after
+ * its last piece, at any age: up to 2 s of sound credited ahead of real
+ * time (`maximumAheadMs`), 3 s lag and 10 s drift.
  */
 const allowedDrift = 0.01;
 export const maximumDriftMs = 10_000;

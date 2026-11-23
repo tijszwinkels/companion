@@ -581,12 +581,17 @@ export class SensorPipeline implements InspectableModule {
    */
   async idleForComputer(): Promise<void> {
     // Without a recorded Pause, everything admitted so far counts as earlier.
-    const firstLater = (this.pauseCutoff ?? this.nextId) + 1;
-    const waitedFor = (job: Job) =>
-      job.id < firstLater || job.microphone === undefined || job.microphone === computerMicrophone;
+    const admittedAtEntry = this.nextId;
 
-    // Re-check after each round: typed text may have been admitted meanwhile.
+    // Re-check after each round: typed text may have been admitted meanwhile,
+    // and a further Pause may have moved the cutoff (the latest one counts).
     while (true) {
+      const firstLater = (this.pauseCutoff ?? admittedAtEntry) + 1;
+      const waitedFor = (job: Job) =>
+        job.id < firstLater ||
+        job.microphone === undefined ||
+        job.microphone === computerMicrophone;
+
       const waiting = [...this.unfinished].filter(waitedFor);
       if (!waiting.length) {
         return;
