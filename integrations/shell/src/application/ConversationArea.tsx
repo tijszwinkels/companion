@@ -121,6 +121,20 @@ export function ConversationArea(props: {
     name = paneApplication.name;
   }
   modes.observe(id, applicationKey(paneApplication), name, blocker);
+
+  // The window narrowed from the split to the switch layout (a resize, a
+  // tiling window manager making room) while the reader types in the chat:
+  // the switch shows the chat, so the text box does not go away under the
+  // reader's hands.
+  const previousLayout = useRef(layout);
+  if (
+    previousLayout.current === 'split' &&
+    layout === 'switch' &&
+    composerFocused(chatColumn.current)
+  ) {
+    modes.choose(id, 'chat');
+  }
+  previousLayout.current = layout;
   const mode = modes.mode(id, paneApplication !== null);
 
   function choose(next: SurfaceMode) {

@@ -338,6 +338,13 @@ body {
   outline: none;
 }
 
+/* While a divider is dragged, no frame (a widget or an application, in
+   another process) takes the pointer: a drag across one would otherwise
+   stop where the pointer enters it. */
+body:has(.list-divider.dragging, .band-edge.dragging) iframe {
+  pointer-events: none;
+}
+
 /* ---- Conversation list ------------------------------------------------------------ */
 
 .conversations {

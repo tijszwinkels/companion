@@ -9,7 +9,9 @@
  *   a Read button (`api.chat.read()`, the frame origin's `chat-read`) and a
  *   Send button (`api.chat.prepareSend()` and `api.chat.send()`, then
  *   `api.chat.receipt()`: `chat-send` and `chat-receipt`), each writing its
- *   outcome into the page, and a text box to type into.
+ *   outcome into the page, and a text box to type into;
+ * - `broken-app`: an application whose page cannot draw its first state
+ *   (its mount throws), for the failed state.
  *
  * See integrations/shell/README.md, "Session applications".
  */
@@ -130,6 +132,18 @@ export async function applicationSetup(
     library: async (library) => {
       await writeShellWidgets(library);
       await writeWidget(library, chatProbeManifest, chatProbeModule);
+      await writeWidget(
+        library,
+        {
+          ...chatProbeManifest,
+          name: 'broken-app',
+          description: 'A synthetic application that cannot draw its first state.',
+        } as { name: string },
+        chatProbeModule.replace(
+          'export function mount(root, api) {',
+          "export function mount(root, api) {\n  throw Error('Synthetic mount failure');",
+        ),
+      );
     },
   });
   const browser = new TestBrowser();
@@ -219,3 +233,89 @@ export const drawn = `(() => {
     chat: Boolean(chat) && !chat.inert,
   };
 })()`;
+
+/**
+ * The desktop shows the conversation `id` and changes one of its
+ * application's permissions, as its native controls do (a second
+ * connection, besides the browser's). Returns the listener's answer.
+ */
+export async function desktopChange(
+  fixture: ApplicationFixture,
+  id: string,
+  permission: 'read' | 'send',
+  allowed: boolean,
+): Promise<Json> {
+  fixture.desktop.send({ action: 'panel-state', id, composerFocused: false, visible: true });
+  await fixture.desktop.reply('panel-state');
+  const application = listenerApplication(fixture, id)!;
+  fixture.desktop.send({
+    action: `set-application-chat-${permission}`,
+    id,
+    applicationId: application.id,
+    version: application.version,
+    revision: application.chatAccess.revision,
+    allowed,
+  });
+  return (await fixture.desktop.reply(`set-application-chat-${permission}`)) as Json;
+}
+
+/** Close every WebSocket of the gateway: the browser loses its connection and reconnects. */
+export function dropConnections(fixture: ApplicationFixture): void {
+  const sockets = (
+    fixture.gateway as unknown as { sockets: { clients: Set<{ terminate(): void }> } }
+  ).sockets;
+  for (const socket of sockets.clients) {
+    socket.terminate();
+  }
+}
+
+/**
+ * Start an application action that waits in the renderer, so the
+ * application's queue (actions and permission changes share it) waits
+ * behind it until the returned function lets it finish. As in
+ * test/app-consent-fixture.ts.
+ */
+export async function holdApplicationQueue(
+  fixture: ApplicationFixture,
+  id: string,
+): Promise<() => Promise<void>> {
+  const renderer = (
+    fixture.sessions as unknown as {
+      widgets: { renderer: { reduce: (...args: unknown[]) => Promise<unknown> } };
+    }
+  ).widgets.renderer;
+  const nodeReduce = renderer.reduce;
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  renderer.reduce = async (...args: unknown[]) => {
+    // Only the first call waits; the renderer is itself again for later ones.
+    renderer.reduce = nodeReduce;
+    entered();
+    await released;
+    return nodeReduce(...args);
+  };
+
+  const application = listenerApplication(fixture, id)!;
+  const action = fetch(application.viewUrl + '/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'add_note',
+      args: { text: 'Held' },
+      version: application.version,
+      requestId: 'hold-' + Math.random().toString(36).slice(2),
+    }),
+  });
+  await enteredPromise;
+
+  return async () => {
+    release();
+    await action;
+  };
+}
