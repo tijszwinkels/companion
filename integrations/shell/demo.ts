@@ -43,9 +43,17 @@
  * once reading is allowed it shows the agent's latest answer, and once
  * sending is allowed it can ask the agent for a summary.
  *
+ * Listen here: the gateway lets its page use the microphone
+ * (`--allow-microphone`) and the listener has microphones with the test
+ * recogniser (test/microphones-fixture.ts), so switching Listen here on in
+ * Activity sends the browser's microphone, and what it hears appears in
+ * Activity as words for its loudness ("w3 w5"), named after the browser.
+ *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
- * screen or microphone, or binds a non-loopback address. Ctrl+C stops
+ * screen, or binds a non-loopback address. The microphone is used only when
+ * the reader switches Listen here on in the browser; its sound then reaches
+ * this process (the test recogniser) and is never stored. Ctrl+C stops
  * everything and removes the temporary directory.
  *
  * Options: --port N (default 8788), --frame-port N (default the port + 1).
@@ -72,6 +80,7 @@ import { CaptureStoragePolicy, notAdmitted } from '../../src/capture-storage/pol
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { syntheticWindowPng } from './synthetic-window.ts';
+import { microphonesFixture } from '../../test/microphones-fixture.ts';
 import { useNodeRenderer } from '../../test/widget-node-renderer.ts';
 
 const { values } = parseArgs({
@@ -189,6 +198,7 @@ let sessions: AgentSessions | undefined;
 let runtime: DesktopRuntime | undefined;
 let runtimeStarted = false;
 let gateway: Gateway | undefined;
+let microphones: ReturnType<typeof microphonesFixture> | undefined;
 
 try {
   // The demo's own agent profile, so defaults name the scripted demo models.
@@ -203,7 +213,10 @@ try {
     { mode: 0o600 },
   );
 
-  let nextFrameId = 1;
+  // The demo's own synthetic frames are numbered far above the IDs the
+  // live microphone pipeline (Listen here) gives its utterances, which count
+  // from 1, so the two never share an Activity entry.
+  let nextFrameId = 1_000_000;
 
   /** A complete 1×1 PNG standing in for a captured window. */
   const syntheticPng = Buffer.from(
@@ -894,6 +907,39 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   activity.outcome?.(unsaved.id, 'started');
   activity.finished?.(unsaved.id);
 
+  // Listen here: the listener's microphones, composed as src/cli.ts composes
+  // them, with the test recogniser (test/microphones-fixture.ts): the
+  // computer's "microphone" is silent, and a listening browser's sound is
+  // transcribed as words for its loudness ("w3 w5"), so speaking into the
+  // browser makes Activity entries named after the paired browser. No model
+  // runs and nothing is typed anywhere. Switching Listen here on sends the
+  // browser's real microphone to this demo process.
+  //
+  // Live sound is never stored: capture storage is on in the demo (for its
+  // synthetic entries), but the microphones get an Activity whose
+  // capture-storage admission is always refused, so their entries say
+  // "Not saved" and no recording is written to the temporary directory.
+  const demoRuntime = runtime;
+  const liveActivity = { ...demoRuntime.activity, admitCapture: () => notAdmitted };
+  microphones = microphonesFixture(
+    {
+      activity: liveActivity,
+      connectMicrophones: (connected: Parameters<DesktopRuntime['connectMicrophones']>[0]) => {
+        demoRuntime.connectMicrophones(connected);
+      },
+    } as unknown as DesktopRuntime,
+    pause,
+  );
+
+  // The fixture keeps its diagnostics and transcripts for tests to inspect;
+  // a demo left listening for hours must not keep them all.
+  const forgetRecords = setInterval(() => {
+    microphones?.logs.splice(0);
+    microphones?.dispatched.splice(0);
+    microphones?.detectors.splice(0);
+  }, 60_000);
+  forgetRecords.unref();
+
   // Paused for media, as when music plays on the computer; Resume overrides it.
   pause.setMediaPlaying(true);
 
@@ -1013,6 +1059,8 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     sessionsDirectory: join(directory, '.companion-sessions'),
     appDirectory,
     log: (message) => console.error(`[remote] ${message}`),
+    // The page may ask for the microphone (Listen here).
+    allowMicrophone: true,
     frames: {
       listen: { host: '127.0.0.1', port: framePort },
       origin: frameOrigin,
@@ -1030,6 +1078,10 @@ Companion browser shell demo (synthetic data only)
   Pairing code:  ${code.slice(0, 5)}-${code.slice(5)}   (10 minutes, one browser)
   Widget frames: ${frameOrigin}/ (the city trip shows an inline widget, the
                  weekend budget a pinned one, the week plan an application)
+  Listen here:   Activity → This browser (Resume first: the demo starts
+                 paused for media). The browser asks for the microphone;
+                 a test recogniser turns its sound into words such as
+                 "w3 w5". Needs this loopback address (a secure page).
 
 New pairing code:
   bin/companion-remote pair --state-directory ${stateDirectory}
@@ -1051,6 +1103,9 @@ Press Ctrl+C to stop and delete it.
   // it releases whatever it took (as test/remote-fixture.ts does).
   if (gateway) {
     await gateway.close();
+  }
+  if (microphones) {
+    await microphones.close();
   }
   if (sessions) {
     await sessions.close();

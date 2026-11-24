@@ -84,6 +84,8 @@ import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
 import { usePinnedLayout } from '../layout/usePinnedLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
+import type { ListenHere } from '../listen/listen-here.ts';
+import { ListenMark } from '../listen/ListenControls.tsx';
 import { ModelPicker } from '../models/ModelPicker.tsx';
 import { SettingsScreen } from '../settings/SettingsScreen.tsx';
 import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
@@ -130,6 +132,7 @@ export function Workspace(props: {
   activityOverlay: ActivityOverlay;
   chatCover: ChatCover;
   widgets: InlineWidgetEnvironment;
+  listenHere: ListenHere;
 }) {
   const store = useStore();
   const state = useAppState();
@@ -517,6 +520,7 @@ export function Workspace(props: {
           }}
           times={props.times}
           requests={requests}
+          listenHere={props.listenHere}
           pinnedBand={place === 'top' ? pinnedPanel : null}
           application={{
             widgets: props.widgets,
@@ -560,6 +564,7 @@ export function Workspace(props: {
               onFocusLost={columnLostFocus}
               startProfile={startProfile}
               onStartProfile={setStartProfile}
+              listenHere={props.listenHere}
             />
           )}
         </div>
@@ -588,6 +593,7 @@ function MainArea(props: {
   settings: SettingsBar;
   times: PageTimes;
   requests: ActivityRequests;
+  listenHere: ListenHere;
   /** The pinned widget's band above the chat, or null. */
   pinnedBand: ComponentChildren;
   /** What the selected conversation's application needs (ConversationArea.tsx). */
@@ -607,6 +613,8 @@ function MainArea(props: {
     onActivityFocusLost: props.activity.onFocusLost,
     settingsShown: props.settings.shown,
     onToggleSettings: props.settings.onToggle,
+    // Listen here's mark: on every page's bar, the settings screen's too.
+    listenMark: <ListenMark listenHere={props.listenHere} onShowActivity={props.activity.onShow} />,
   };
 
   // What the Store selects, below the bar. Each kind has its own key, so a

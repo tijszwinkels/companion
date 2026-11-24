@@ -28,6 +28,12 @@ export class TestBrowser {
   >();
   private readonly listeners = new Set<(message: Json) => void>();
 
+  /**
+   * `extraArguments`: more Chromium switches, for example the browser shell's
+   * fake audio device (test/shell/listen-here.test.ts). None by default.
+   */
+  constructor(private readonly extraArguments: string[] = []) {}
+
   async start(): Promise<void> {
     this.profile = await mkdtemp(join(tmpdir(), 'companion-mobile-browser-'));
     this.child = spawn(
@@ -43,6 +49,7 @@ export class TestBrowser {
         '--disable-extensions',
         '--force-color-profile=srgb',
         '--user-data-dir=' + this.profile,
+        ...this.extraArguments,
         'about:blank',
       ],
       // Own process group, so close() also reaps renderer/helper processes.

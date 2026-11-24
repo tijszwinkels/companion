@@ -144,6 +144,15 @@ export class Connection {
   private lastMessageAt = 0;
   private stopped = false;
 
+  /**
+   * Optional: receives every gateway message that answers no request and is
+   * not handled here (no `requestId`, not `engine`, `authenticated` or
+   * `pong`), for example `audio-ended`. Used by the browser shell's Listen
+   * here; the phone panel sets none, and without one such messages are
+   * ignored as before.
+   */
+  onUnrequestedMessage?: (message: Record<string, unknown>) => void;
+
   // A paired phone starts as "connecting" so it never flashes the pairing form.
   state: ConnectionState = {
     status: this.credential ? 'connecting' : 'unpaired',
@@ -292,6 +301,25 @@ export class Connection {
     });
   }
 
+  /**
+   * Send one binary message on the open, authenticated socket (the browser
+   * shell's Listen here audio). Returns whether it was handed to the socket;
+   * false while not online. The phone panel never calls it.
+   */
+  sendBinary(data: ArrayBuffer): boolean {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN || this.state.status !== 'online') {
+      return false;
+    }
+    socket.send(data);
+    return true;
+  }
+
+  /** Bytes the open socket still holds to send (0 without one), as `WebSocket.bufferedAmount`. */
+  get bufferedAmount(): number {
+    return this.socket?.bufferedAmount ?? 0;
+  }
+
   private setState(change: Partial<ConnectionState>): void {
     this.state = {
       ...this.state,
@@ -392,6 +420,7 @@ export class Connection {
     }
 
     if (!message.requestId) {
+      this.onUnrequestedMessage?.(message as unknown as Record<string, unknown>);
       return;
     }
 

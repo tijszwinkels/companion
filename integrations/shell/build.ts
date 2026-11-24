@@ -2,7 +2,9 @@
  * Build the browser shell into integrations/shell/dist.
  *
  * Output is self-contained static files: index.html, app.js and app.css
- * (the desktop chat stylesheet plus the shell's own). There are no runtime
+ * (the desktop chat stylesheet plus the shell's own), and listen-worklet.js,
+ * the AudioWorklet of "Listen here" (src/listen/capture-worklet.ts), which
+ * the page loads from its own origin when it starts listening. There are no runtime
  * network dependencies (no CDN, fonts or analytics), matching the gateway's
  * `default-src 'none'` CSP. Serve it with
  * `companion-remote serve --app-directory integrations/shell/dist`.
@@ -20,7 +22,10 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 
 await build({
-  entryPoints: { app: join(root, 'src', 'main.tsx') },
+  entryPoints: {
+    app: join(root, 'src', 'main.tsx'),
+    'listen-worklet': join(root, 'src', 'listen', 'capture-worklet.ts'),
+  },
   outdir: output,
   bundle: true,
   format: 'esm',
