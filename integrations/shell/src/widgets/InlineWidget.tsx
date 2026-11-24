@@ -79,6 +79,13 @@ export interface InlineWidgetEnvironment {
    * shell shows pinned (pinned-widget.ts), or ''.
    */
   pinnedMessageId(sessionId: string): string;
+  /**
+   * Whether the shell can show a pinned widget for the conversation: not
+   * while it has a session application (pinned-widget.ts). Otherwise Pin
+   * is not offered, since it would change the pin for every client while
+   * nothing moves here.
+   */
+  pinningShown(sessionId: string): boolean;
 }
 
 /**
@@ -132,6 +139,9 @@ export function createInlineWidget(
     const pinnedMessageId = useSyncExternalStore(environment.subscribe, () =>
       environment.pinnedMessageId(sessionId),
     );
+    const pinningShown = useSyncExternalStore(environment.subscribe, () =>
+      environment.pinningShown(sessionId),
+    );
 
     const widget = props.row.widget;
     if (!widget) {
@@ -159,6 +169,7 @@ export function createInlineWidget(
         time={time}
         address={address}
         environment={environment}
+        noPin={!pinningShown}
       />
     );
   }
@@ -224,6 +235,8 @@ export function WidgetFrame(props: {
   concealed?: boolean;
   /** An application's failed state: more below Try again (its description, the way to the chat). */
   failedExtra?: ComponentChildren;
+  /** An inline widget whose conversation cannot show a pinned widget here: no Pin. */
+  noPin?: boolean;
 }) {
   const { mode, name, time, address, environment } = props;
   const origin = frameOriginOf(address);
@@ -246,7 +259,14 @@ export function WidgetFrame(props: {
     (listener: () => void) => cover.subscribe(listener),
     [cover],
   );
-  const covered = useSyncExternalStore(subscribeToCover, () => cover.covered);
+  // An application is in the chat's place when the chat is concealed, so
+  // only the page's own screens cover it.
+  const covered = useSyncExternalStore(subscribeToCover, () => {
+    if (mode === 'application') {
+      return cover.coversApplication;
+    }
+    return cover.covered;
+  });
   const pageHidden = usePageHidden();
   const [inView, setInView] = useState(false);
   // A folded pinned widget is out of sight, as one scrolled out of view;
@@ -447,7 +467,7 @@ export function WidgetFrame(props: {
     presentText = 'Unpin';
   }
   let presentButton = null;
-  if (state.phase !== 'failed' && mode !== 'application') {
+  if (state.phase !== 'failed' && mode !== 'application' && props.noPin !== true) {
     presentButton = (
       <ActionButton
         available={presentable}

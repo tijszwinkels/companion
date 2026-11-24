@@ -97,6 +97,18 @@ export class ApplicationModes {
     this.notices.delete(sessionId);
   }
 
+  /**
+   * Show the chat or the application without it being the reader's choice
+   * (the desktop's `keepMode`): a ready notice stays. Used when the window
+   * narrows to the switch layout while the reader types.
+   */
+  keep(sessionId: string, mode: SurfaceMode): void {
+    if (sessionId === '') {
+      return;
+    }
+    this.modes.set(sessionId, mode);
+  }
+
   /** What the switch layout shows for the conversation (the chat without an application). */
   mode(sessionId: string, hasApplication: boolean): SurfaceMode {
     if (!hasApplication) {

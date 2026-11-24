@@ -27,6 +27,7 @@ import {
   drawn,
   dropConnections,
   holdApplicationQueue,
+  listenerApplication,
   setSize,
   type ApplicationFixture,
 } from './application-page.ts';
@@ -58,6 +59,18 @@ function assertTwoOrigins(fixture: ApplicationFixture, page: TestPage): void {
       `request to another origin: ${url}`,
     );
   }
+}
+
+/**
+ * The conversations the listener's remote connections show on a visible
+ * page (read from the runtime, as test/app-consent-fixture.ts does), to
+ * know when the page's visible report has reached the listener.
+ */
+function remoteVisibleSelections(fixture: ApplicationFixture): string[] {
+  const runtime = fixture.desktop.runtime as unknown as {
+    remoteClients: Map<number, { visibleSelection: string }>;
+  };
+  return [...runtime.remoteClients.values()].map((remote) => remote.visibleSelection);
 }
 
 /** Press the button whose text is `label` inside `scope` (a page expression). */
@@ -307,6 +320,18 @@ test(
     await page.waitFor(`${drawn}.layout === 'split'`);
     await second.page.close();
 
+    // The switch last showed the chat here: ▣ App only shows the application.
+    await press(page, '▣ App only', bar);
+    await page.waitFor(`${drawn}.layout === 'switch'`);
+    await press(page, 'Chat', bar);
+    await page.waitFor(`${drawn}.chat && !${drawn}.app`);
+    await press(page, '◫ Chat at the right', bar);
+    await page.waitFor(`${drawn}.layout === 'split'`);
+    await press(page, '▣ App only', bar);
+    await page.waitFor(`${drawn}.layout === 'switch' && ${drawn}.app && !${drawn}.chat`);
+    await press(page, '◫ Chat at the right', bar);
+    await page.waitFor(`${drawn}.layout === 'split'`);
+
     // Activity beside the chat at 1280 px: one more column; the area
     // narrows (1280 - 79 - 321 = 880), the chat keeps its width.
     await click(page, '.chat-bar .activity-toggle');
@@ -389,6 +414,16 @@ test(
     await page.waitFor(
       `[...document.querySelectorAll('#application-chat .panel-action')].some((button) => button.textContent.trim() === 'chat-probe')`,
     );
+
+    // Wide, the application is beside the chat: no notice there. Narrow
+    // again (still typing): the switch keeps the chat, the notice is back.
+    await setSize(page, 1280, 800);
+    await page.waitFor(`${drawn}.layout === 'split'`);
+    assert.equal(await page.evaluate(notice), '');
+    await setSize(page, 900, 800);
+    await page.waitFor(`${drawn}.layout === 'switch'`);
+    await page.waitFor(`${notice}.includes('is ready')`);
+    assert.equal(await page.evaluate(composerFocused), true);
 
     // The reader opens it: shown; the notice goes.
     await press(page, 'chat-probe · v1', bar);
@@ -603,6 +638,22 @@ test(
     assert.equal(revoked.type, 'result', JSON.stringify(revoked));
     await page.waitFor(`${readStatusText} === 'Chat reading off'`, 10_000);
 
+    // A review open when the reader leaves for Previous sessions and comes
+    // back: closed, the rows hidden; Allow is not offered.
+    await press(page, 'Review app sending', rowsElement);
+    await page.waitFor(`${rowsElement}.textContent.includes('Allow 5 app messages')`);
+    await click(page, '.previous-entry');
+    await page.waitFor(`document.querySelector('.application-bar') === null`);
+    await openConversation(page, 'Application fixture');
+    await page.waitFor(`Boolean(${bar})`);
+    assert.equal(await page.evaluate(`Boolean(${rowsElement})`), false);
+    await press(page, 'Permissions…', bar);
+    await page.waitFor(`Boolean(${rowsElement})`);
+    assert.doesNotMatch(
+      await page.evaluate<string>(`${rowsElement}.textContent`),
+      /Allow 5 app messages/,
+    );
+
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);
   },
@@ -654,6 +705,47 @@ test(
         1,
       );
 
+      assertTwoOrigins(fixture, page);
+      await assertNoViolations(page);
+    } finally {
+      await release();
+    }
+  },
+);
+
+test(
+  'permissions: refused by the listener (the page stopped showing the conversation before the change ran): the refusal shown, nothing changed',
+  { skip, timeout: 120_000 },
+  async (context) => {
+    const { fixture, page, id } = await applicationConversation(context, { width: 1280 });
+    await applicationShown(page);
+    await press(page, 'Permissions…', bar);
+    await press(page, 'Review chat access', rowsElement);
+
+    const release = await holdApplicationQueue(fixture, id);
+    try {
+      // Admitted while the page shows the conversation; it waits.
+      await press(page, 'Allow reading', rowsElement);
+      await page.waitFor(
+        `${rowsElement}.textContent.includes('Waiting for permission confirmation…')`,
+      );
+      // The settings screen covers it: the page reports it as not visible.
+      await click(page, '.chat-bar .settings-toggle');
+      await waitFor(() => !remoteVisibleSelections(fixture).includes(id), 5000);
+      await release();
+      await page.waitFor(
+        `${rowsElement}.textContent.includes('Show this conversation on this device first')`,
+        10_000,
+      );
+      assert.equal(await page.evaluate(readStatusText), 'Chat reading off');
+      assert.equal(listenerApplication(fixture, id)?.chatAccess.read, false);
+      // Back from the settings screen: the refusal is still there to read.
+      await click(page, '.chat-bar .settings-toggle');
+      await page.waitFor(`!${rowsElement}.closest('[inert]')`);
+      assert.match(
+        await page.evaluate<string>(`${rowsElement}.textContent`),
+        /Show this conversation on this device first/,
+      );
       assertTwoOrigins(fixture, page);
       await assertNoViolations(page);
     } finally {
@@ -743,6 +835,83 @@ test(
     }))()`);
     assert.equal(sizes.frame, sizes.pane);
 
+    assertTwoOrigins(fixture, page);
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'an inline widget in a conversation with an application: no Pin, and not visible while the application is in the chat\u2019s place',
+  { skip, timeout: 120_000 },
+  async (context) => {
+    const { fixture, browser } = await applicationSetup(context);
+    const { run } = await conversation(fixture, 'Widget and application');
+    run.emit(chatMessage('answer', 'assistant', 'A counter, and an application.'));
+    await fixture.publishCounter(run);
+    await applyApplication(run, 'chat-probe');
+    run.finish();
+    const { page } = await pairedPage(fixture, browser, 900, 800);
+    await attachFrames(browser, page);
+    await openConversation(page, 'Widget and application');
+
+    const counter = `[...document.querySelectorAll('#application-chat .inline-widget')].find((panel) => panel.querySelector('.inline-widget-name')?.textContent === 'counter')`;
+    // The switch shows the application: the counter is out of sight.
+    await page.waitFor(`${drawn}.app && !${drawn}.chat`);
+    await page.waitFor(`${counter}?.dataset.visible === 'false'`);
+    // Chat: the counter is shown and visible, without Pin.
+    await press(page, 'Chat', bar);
+    await page.waitFor(
+      `${counter}?.dataset.phase === 'shown' && ${counter}?.dataset.visible === 'true'`,
+      15_000,
+    );
+    assert.equal(
+      await page.evaluate(
+        `[...${counter}.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Pin')`,
+      ),
+      false,
+    );
+    // The application again: the counter out of sight; its own frame visible.
+    await press(page, 'chat-probe · v1', bar);
+    await page.waitFor(`${counter}?.dataset.visible === 'false'`);
+    await page.waitFor(`${applicationPanel}?.dataset.visible === 'true'`, 15_000);
+    // The chat at the right: both visible.
+    await setSize(page, 1280, 800);
+    await page.waitFor(`${drawn}.layout === 'split'`);
+    await page.waitFor(`${counter}?.dataset.visible === 'true'`);
+    assert.equal(await page.evaluate(`${applicationPanel}.dataset.visible`), 'true');
+    assertTwoOrigins(fixture, page);
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'typing in another conversation does not hold back an application shown with browser Back',
+  { skip, timeout: 120_000 },
+  async (context) => {
+    const { fixture, browser } = await applicationSetup(context);
+    const first = await conversation(fixture, 'First with application');
+    first.run.emit(chatMessage('answer', 'assistant', 'An application.'));
+    await applyApplication(first.run, 'chat-probe', 0);
+    const second = await conversation(fixture, 'Second conversation');
+    second.run.finish();
+    const { page } = await pairedPage(fixture, browser, 900, 800);
+    await attachFrames(browser, page);
+
+    // The first conversation, its chat chosen; then the second, typing there.
+    await openConversation(page, 'First with application');
+    await page.waitFor(`${drawn}.app`);
+    await press(page, 'Chat', bar);
+    await openConversation(page, 'Second conversation');
+    await typeInComposer(page, 'Typing here');
+    // The first one's application is replaced meanwhile; Back shows it:
+    // its new version comes forward, no notice (the typing was elsewhere).
+    await applyApplication(first.run, 'chat-probe', 1);
+    await waitFor(() => listenerApplication(fixture, first.id)?.version === 2);
+    await page.evaluate(`history.back()`);
+    await page.waitFor(`${bar}?.textContent.includes('chat-probe · v2')`, 10_000);
+    await page.waitFor(`${drawn}.app && !${drawn}.chat`);
+    assert.equal(await page.evaluate(notice), '');
+    first.run.finish();
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);
   },

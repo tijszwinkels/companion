@@ -112,9 +112,17 @@ export function ConversationArea(props: {
   // the conversation drawn. With the chat at the right nothing is replaced
   // under the reader's hands, so nothing blocks there.
   const chatColumn = useRef<HTMLDivElement>(null);
+  // The conversation the chat column showed in the last drawing: right
+  // after a switch it still holds the previous conversation's text box,
+  // whose focus is not typing in this one.
+  const drawnConversation = useRef('');
+  useLayoutEffect(() => {
+    drawnConversation.current = id;
+  });
+  const typing = drawnConversation.current === id && composerFocused(chatColumn.current);
   let blocker = '';
   if (layout === 'switch') {
-    blocker = bridge.applicationBlocker(id, composerFocused(chatColumn.current));
+    blocker = bridge.applicationBlocker(id, typing);
   }
   let name = '';
   if (paneApplication) {
@@ -127,12 +135,8 @@ export function ConversationArea(props: {
   // the switch shows the chat, so the text box does not go away under the
   // reader's hands.
   const previousLayout = useRef(layout);
-  if (
-    previousLayout.current === 'split' &&
-    layout === 'switch' &&
-    composerFocused(chatColumn.current)
-  ) {
-    modes.choose(id, 'chat');
+  if (previousLayout.current === 'split' && layout === 'switch' && typing) {
+    modes.keep(id, 'chat');
   }
   previousLayout.current = layout;
   const mode = modes.mode(id, paneApplication !== null);
@@ -211,7 +215,14 @@ export function ConversationArea(props: {
         mode={mode}
         onMode={choose}
         splitPossible={possible}
-        onSplit={(split) => props.layout.setChoice(split ? 'split' : 'app-only')}
+        onSplit={(split) => {
+          // ▣ App only shows the application alone, also when the switch
+          // last showed the chat here.
+          if (!split) {
+            modes.choose(id, 'app');
+          }
+          props.layout.setChoice(split ? 'split' : 'app-only');
+        }}
         summary={permissionSummary(access, admitted)}
         permissions={asks}
         permissionsOpen={rows.open}
@@ -223,7 +234,7 @@ export function ConversationArea(props: {
             permissions.collapse();
           }
         }}
-        notice={modes.notice(id)}
+        notice={layout === 'switch' ? modes.notice(id) : ''}
       />
     );
   } else if (application) {
@@ -249,6 +260,16 @@ export function ConversationArea(props: {
 
   const appShown = paneApplication !== null && (layout === 'split' || mode === 'app');
   const chatShown = paneApplication === null || layout === 'split' || mode === 'chat';
+
+  // The chat's inline widgets are out of sight while the application is in
+  // its place (../widgets/chat-cover.ts); the application's frame is not.
+  const cover = props.environment.cover;
+  useLayoutEffect(() => {
+    cover.setChatConcealed(!chatShown);
+  }, [cover, chatShown]);
+  useEffect(() => {
+    return () => cover.setChatConcealed(false);
+  }, [cover]);
 
   let pane = null;
   if (paneApplication) {

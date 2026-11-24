@@ -52,12 +52,20 @@ function pinnedMessage(session: AgentSession): AgentMessage | null {
   return null;
 }
 
+/**
+ * Whether the browser shows a pinned widget for the conversation at all:
+ * not while it has a session application (see the module comment).
+ */
+export function pinningShown(session: AgentSession | undefined): boolean {
+  return session !== undefined && !session.application;
+}
+
 /** The conversation's pinned widget as the browser shows it, or null. */
 export function pinnedWidget(session: AgentSession | undefined): PinnedWidget | null {
   if (!session) {
     return null;
   }
-  if (session.application) {
+  if (!pinningShown(session)) {
     return null;
   }
   const message = pinnedMessage(session);

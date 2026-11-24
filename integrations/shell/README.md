@@ -1555,19 +1555,20 @@ starts no polls (a poll already on its way still completes, and the
 browser's lazy loading may fetch the page of a frame near the view before
 it is visible). A conversation that is not shown has no frames at all.
 
-| Case                                   | Visible | Polls                           |
-| -------------------------------------- | ------- | ------------------------------- |
-| In view                                | yes     | yes                             |
-| Scrolled out of view                   | no      | no, until scrolled back         |
-| Hidden tab                             | no      | no, until the tab is shown      |
-| Behind the settings screen             | no      | no, until the settings are left |
-| Behind the narrow Activity overlay     | no      | no, until the column is hidden  |
-| Behind the open screenshot viewer      | no      | no, until the viewer is closed  |
-| Activity beside the chat (wide window) | yes     | yes                             |
-| A different conversation shown         | —       | no (the frame is removed)       |
-| Disconnected                           | no      | no, until admitted again        |
-| Pinned and folded                      | no      | no, until unfolded              |
-| Pinned, behind the narrow Activity     | no      | no, until the column is hidden  |
+| Case                                         | Visible | Polls                           |
+| -------------------------------------------- | ------- | ------------------------------- |
+| In view                                      | yes     | yes                             |
+| Scrolled out of view                         | no      | no, until scrolled back         |
+| Hidden tab                                   | no      | no, until the tab is shown      |
+| Behind the settings screen                   | no      | no, until the settings are left |
+| Behind the narrow Activity overlay           | no      | no, until the column is hidden  |
+| Behind the open screenshot viewer            | no      | no, until the viewer is closed  |
+| Behind a session application (switch layout) | no      | no, until the chat is shown     |
+| Activity beside the chat (wide window)       | yes     | yes                             |
+| A different conversation shown               | —       | no (the frame is removed)       |
+| Disconnected                                 | no      | no, until admitted again        |
+| Pinned and folded                            | no      | no, until unfolded              |
+| Pinned, behind the narrow Activity           | no      | no, until the column is hidden  |
 
 The pinned widget's frame follows the same rule ([pinned widgets](#pinned-widgets)):
 in view is its place being on screen, and folded counts as out of view.
@@ -1950,8 +1951,9 @@ drawn by `src/application/ConversationArea.tsx`):
    address").
 2. The reader chooses, in this browser, between **the chat at the right**
    (`split`, the default) and **App only** (`app-only`): **▣ App only** in
-   the bar of the split layout, **◫ Chat at the right** in the bar of the
-   switch layout.
+   the bar of the split layout (which also makes the switch show the
+   application, whatever it showed for this conversation before), **◫ Chat
+   at the right** in the bar of the switch layout.
 3. The **split layout** is drawn when the choice is the chat at the right,
    the window is at least **1100 px** wide, and the area beside the list and
    the right column (as their own rules leave it) is at least **641 px**:
@@ -1976,12 +1978,14 @@ drawn by `src/application/ConversationArea.tsx`):
    fills the area. Which one, per conversation, follows the
    application-change rule and the reader's choice; and when the window
    narrows from the split layout while the reader types in the chat (a
-   tiling window manager making room for another window), the switch shows
-   the chat, so the text box does not go away under the reader's hands. While the chat is
+   tiling window manager making room for another window), the switch shows the chat, so the text box does not go away under the
+   reader's hands (not the reader's choice: a ready notice stays). While the chat is
    shown, the chat page offers the application as its footer button, as on
    the desktop. The part that is not shown stays drawn, hidden and inert:
    the chat keeps its scroll position and editor, and the application's
-   frame stays loaded but counts as not visible (it stops polling).
+   frame stays loaded but counts as not visible (it stops polling, and it
+   can neither read chat nor prepare a send meanwhile); so do the chat's
+   inline widgets while the application is in its place.
 6. The element tree of a conversation is the same in every case (bar,
    rows, the application's pane, the divider and the chat, absent where not
    drawn), so neither an arriving or removed application nor a change of
@@ -1996,7 +2000,9 @@ drawn by `src/application/ConversationArea.tsx`):
    application and the chat, which are inert and not visible meanwhile. The
    conversation list as strip or full list likewise only changes the area.
 8. A conversation with an application has **no pinned widget** in the
-   browser: its pinned widget's message shows its inline frame in the chat.
+   browser: its pinned widget's message shows its inline frame in the chat,
+   and its inline widgets offer no Pin (it would change the pin for every
+   client while nothing moves here).
    The desktop has no rule for the two together (its HTML surface shows
    pinned widgets only in its Classic view), so this is the simplest one.
 9. Remembered as `companion.shell.layout.applicationLayout`
@@ -2034,7 +2040,7 @@ drawn by `src/application/ConversationArea.tsx`):
 | Two tabs; App only in one, then Chat at the right in the other    | The last choice, in both                                          |
 | Activity shown beside (wide window)                               | One more column; the area narrower (rule 3)                       |
 | Activity shown in a narrow window                                 | Over the bar, the application and the chat; the frame not visible |
-| A conversation with an application and a pinned widget            | No pinned widget; its message shows its inline frame              |
+| A conversation with an application and a pinned widget (no Pin)   | No pinned widget; its message shows its inline frame              |
 
 ### Rule: application changes
 
@@ -2054,15 +2060,16 @@ application ID and code version it last saw shown here, and a notice:
    here before** (also while another conversation was shown, noticed when it
    is shown again): it comes forward, unless that would interrupt input: a
    send or a choice awaiting its answer ("a message is still being sent",
-   "a choice is still being confirmed") or the reader typing (the chat's
-   text box has the focus: "you are typing"). Then what is shown stays (the
+   "a choice is still being confirmed") or the reader typing (this conversation's text box has the focus: "you
+   are typing"). Then what is shown stays (the
    chat, for a first application) and the bar says
    `“notes” is ready. It opens when you choose it; you are typing.` until
    the reader chooses Chat or the application. The desktop also waits for
    recording into the text box, which the browser does not have.
 4. **With the chat at the right** (the split layout) the composer never
    moves: nothing blocks there, an arriving application comes forward
-   (beside the chat) and no notice is shown.
+   (beside the chat) and no notice is shown (a notice from the switch
+   layout is not shown there either: the application is on screen).
 5. The reader's choice (the switch, the chat page's application button,
    Show the chat) is kept and clears the notice.
 6. A waiting permission change does not hold an application back (as on
@@ -2076,8 +2083,10 @@ application ID and code version it last saw shown here, and a notice:
    not load." with the reason (the frame's error, or "Its page did not
    answer within 10 seconds."), "The conversation and the application's
    saved data are unchanged.", **Try again**, its text description and, in
-   the switch layout, **Show the chat**; an address that ended (404) says
-   "Its address has ended, …"; a page loaded before the frame origin was
+   the switch layout, **Show the chat**; an address that ended after the page was shown (its state answers 404)
+   says "Its address has ended, …", while an address that had already
+   ended when the frame loaded (its document answers 404, so no page runs
+   to report it) fails after the 10 seconds; a page loaded before the frame origin was
    set up says "This page was opened before applications were set up for
    it. Reload the page to show them."
 9. **Unavailable** (the listener could not restore it, `error`): "The notes
@@ -2109,7 +2118,8 @@ application ID and code version it last saw shown here, and a notice:
 | Another conversation shown, and back                                | Its frame loads again; the choice kept                                                         |
 | A new version while another conversation is shown, then back        | Rule 3 when shown again                                                                        |
 | The conversation closes                                             | It leaves with its conversation, as before                                                     |
-| The frame's address ends (404)                                      | Failed: "… Its address has ended, …", Try again                                                |
+| The frame's address ends after it was shown (state 404)             | Failed: "… Its address has ended, …", Try again                                                |
+| The address had ended when the frame loaded (document 404)          | Failed after 10 s visible: "… Its page did not answer within 10 seconds."                      |
 | A reconnect with a new frame address                                | A new frame for it                                                                             |
 | Disconnected                                                        | Greyed, "Disconnected · reconnecting…"; "· Disconnected"; changes unavailable                  |
 | The frame does not answer within 10 s visible / sends `error`       | Failed, with its reason, Try again, its description; Show the chat (switch)                    |
@@ -2162,10 +2172,14 @@ host`, `· app message active`); **Review app sending** (**Review new
    waited): the request is never sent again (the phone Connection's rule for
    requests whose answer was lost), and the rows say "No confirmation
    received. Permission may have changed; check its current status before
-   trying again." They show the state the reconnect's snapshot brings and
-   then the listener's outcome: a waiting Revoke is carried out (stopping
-   needs only the selection, which the departed connection kept); a waiting
-   Allow is refused there, since the connection that asked has gone.
+   trying again." The outcome is unknown: the change may not have reached
+   the listener, or may have been made before the answer was lost. The
+   rows keep showing what the listener last said, then the state the
+   reconnect's snapshot brings and every later change, so the reader sees
+   the outcome there. (One case is known in advance: a change still
+   waiting in the application's queue when the connection went is checked
+   against the departed connection, which may still stop but no longer
+   allow.)
 8. A change made **elsewhere** (the desktop, another tab or device) is
    shown with the conversation's next version, at once.
 9. The rows are drawn by the shell in its own page, never by the
@@ -2211,6 +2225,15 @@ host`, `· app message active`); **Review app sending** (**Review new
   its view, as on the desktop, and reading and sending go through the
   frame origin's `chat-read`, `chat-send` and `chat-receipt`, which the
   listener checks against the grant.
+- **A hidden application.** Embedded (the socket route only), host.js
+  treats a frame the shell does not show as hidden, as a hidden tab: while
+  the shell says `visible: false` (the application behind its chat in the
+  switch layout, under the settings screen or the narrow Activity column,
+  out of view, disconnected) `api.chat.read()` and `api.chat.prepareSend()`
+  are refused, read delivery is withdrawn, and reading resumes only after
+  it is shown again and its next state poll observed the grant. On the
+  loopback route (the desktop's) it never receives `visible`, so nothing
+  changes there.
 
 ### Known limits and what is left out
 
@@ -2219,8 +2242,7 @@ host`, `· app message active`); **Review app sending** (**Review new
   what the old page held only in itself is lost, as on the desktop.
 - **Size reports:** host.js reports an embedded frame's size (`viewport`)
   for widgets; the gateway answers 404 for an application (its views do not
-  implement it), without forwarding or ending anything. host.js is
-  unchanged.
+  implement it), without forwarding or ending anything.
 - **Unavailable or not set up:** no permission rows; a grant made on the
   desktop can be revoked there.
 - **Event status:** the desktop's bar also shows the delivery state of the
@@ -2228,6 +2250,19 @@ host`, `· app message active`); **Review app sending** (**Review new
   Chat."; the browser does not, in this step.
 - Left out on purpose: a pop-out, pinned applications, animations, the
   phone panel, replacing the 400 ms polling.
+
+### Changes outside this directory
+
+Only `../widgets/host.js`, embedded mode only (see Security, "A hidden
+application"): a `viewHidden()` helper (`document.hidden`, or the shell's
+last `visible: false`), used in place of `document.hidden` where chat
+reading and send preparation check visibility (`sendChatOperation`,
+`observeChatAccess`, `readChat` and its in-flight check), and, on
+`visible: false` from the shell for an application, the same
+`withdrawChat` a hidden tab causes. On the loopback route `shellVisible` is
+always true, so its behaviour is unchanged; `widget-host.test.ts` checks
+both routes. Nothing under `src/`, no QML, no change to the shared chat
+page.
 
 ## How it works
 
@@ -2817,13 +2852,25 @@ The [session application](#session-applications) rules have one table each:
   with the probe refused before and after and served while allowed (its
   message arriving in the chat), the desktop changing a permission while a
   review is open; a change waiting when the connection drops (reported as
-  unknown, sent once, shown when the listener carried it out); the frame
+  unknown, sent once, shown when the listener carried it out); a real
+  refusal from the listener (an Allow that waited while the settings
+  screen covered the conversation: "Show this conversation on this device
+  first", nothing changed); the frame
   unable to read the shell's storage or reach its document, its posted
   messages changing nothing, the page's policy unchanged; could not load
-  (Show the chat, Try again) and no frame address. Every test checks that
+  (Show the chat, Try again) and no frame address; an inline widget beside an
+  application (no Pin; not visible while the application is in the chat's
+  place); a review closed by Previous sessions; ▣ App only after the switch
+  showed the chat; the ready notice only in the switch layout; and browser
+  Back from typing in another conversation not holding a new version back. Every test checks that
   no request left the two origins and no policy was violated. With
   `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the layouts, the
   rows and the failure states at 420, 1280 and 1600 px.
+- `widget-host.test.ts` checks host.js's change for applications on both
+  routes: embedded, a shown application reads chat; told `visible: false`
+  it refuses reading and send preparation and makes no chat read; shown
+  again it reads; on the loopback route, framed, `visible: false` changes
+  nothing (it reads and prepares a send).
 - `demo.test.ts` checks that the demo's week plan has its application, on
   the frame origin.
 

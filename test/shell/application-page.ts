@@ -27,7 +27,7 @@ import { writeShellWidgets } from './widget-page.ts';
 type Json = Record<string, any>;
 
 /** The probe application's manifest (a note list that asks for chat access). */
-const chatProbeManifest = {
+export const chatProbeManifest = {
   name: 'chat-probe',
   version: 1,
   description: 'A synthetic application that reads and sends chat only when allowed.',
@@ -60,7 +60,7 @@ const chatProbeManifest = {
   example: { notes: [] },
 };
 
-const chatProbeModule = `
+export const chatProbeModule = `
 export function describe(state) {
   return 'Probe notes: ' + state.notes.length;
 }

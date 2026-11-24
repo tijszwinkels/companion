@@ -538,6 +538,19 @@ test('application-change rule: the desktop’s cases, step by step', () => {
   }
 });
 
+test('application-change rule: narrowing while typing keeps the chat and the notice (not the reader’s choice)', () => {
+  const modes = new ApplicationModes();
+  modes.observe('s1', '', 'notes', '');
+  modes.observe('s1', 'a:1', 'notes', typing);
+  // Wide: the application beside the chat; the reader had not chosen.
+  modes.keep('s1', 'chat');
+  assert.equal(modes.mode('s1', true), 'chat');
+  assert.equal(modes.notice('s1'), ready('you are typing'));
+  // The reader's own choice clears it.
+  modes.choose('s1', 'app');
+  assert.equal(modes.notice('s1'), '');
+});
+
 test('application-change rule: the blockers, in the desktop’s words and order', () => {
   const rows: [boolean, boolean, boolean, string][] = [
     [false, false, false, ''],

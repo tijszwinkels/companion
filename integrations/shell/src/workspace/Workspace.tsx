@@ -221,6 +221,12 @@ export function Workspace(props: {
   const [applicationModes] = useState(() => new ApplicationModes());
   const [chatPermissions] = useState(() => new ChatPermissions());
   const applicationLayout = useApplicationLayout();
+  // No conversation shown (Previous sessions, nothing selected): the rows'
+  // reviews and a waiting change belong to none, as on the desktop. The
+  // conversation's own area observes it while one is shown.
+  if (!selected) {
+    chatPermissions.observe('', '');
+  }
 
   // The kind of conversation Start asks for, kept while the column is
   // hidden (its text is the Store's draft, kept too).

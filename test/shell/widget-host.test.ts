@@ -19,9 +19,10 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import test from 'node:test';
 
-import { frameFixture } from '../frame-fixture.ts';
+import { frameFixture, writeWidget } from '../frame-fixture.ts';
 import { waitFor } from '../remote-fixture.ts';
 import { TestBrowser, TestPage } from '../mobile/browser.ts';
+import { applyApplication, chatProbeManifest, chatProbeModule } from './application-page.ts';
 import { skip } from './page.ts';
 import { attachFrames, evaluateInFrame, quiet, waitInFrame } from './widget-page.ts';
 
@@ -74,6 +75,9 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   const viewportFailing = { loopback: false, socket: false };
   // While set, `viewport` gets no answer until `release()`.
   const viewportHolding = { loopback: false, socket: false };
+  // Chat reads of an application view (`chat-read`), answered with one
+  // synthetic message.
+  const chatReads = { loopback: 0, socket: 0 };
   const held: (() => void)[] = [];
   function release(): void {
     for (const answer of held.splice(0)) {
@@ -121,6 +125,30 @@ async function documentServer(documents: { loopback: string; socket: string }, s
       }
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ count: 1 }));
+      return;
+    }
+    if (path === '/loopback/chat-read' || path === '/socket/chat-read') {
+      chatReads[route]++;
+      request.resume();
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          changed: true,
+          revision: 'synthetic-' + chatReads[route],
+          status: 'completed',
+          truncated: false,
+          messages: [
+            {
+              id: 'm1',
+              role: 'assistant',
+              source: 'assistant',
+              text: 'A synthetic answer',
+              state: 'done',
+              truncated: false,
+            },
+          ],
+        }),
+      );
       return;
     }
     const operation = /^\/(?:loopback|socket)\/(present|viewport)$/.exec(path);
@@ -181,6 +209,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     presentRefused,
     viewportFailing,
     viewportHolding,
+    chatReads,
     release,
     server,
   };
@@ -699,5 +728,131 @@ test(
       `document.querySelector('.error')?.textContent === 'Widget conversation is closed'`,
     );
     assert.deepEqual(shell.errors, []);
+  },
+);
+
+test(
+  'host.js: an embedded application the shell does not show cannot read chat or prepare a send; on the loopback route visibility messages change nothing',
+  { skip, timeout: 60_000 },
+  async (context) => {
+    const fixture = await frameFixture({
+      library: (library) => writeWidget(library, chatProbeManifest, chatProbeModule),
+    });
+    const browser = new TestBrowser();
+    await browser.start();
+    let documents: Awaited<ReturnType<typeof documentServer>> | undefined;
+    context.after(async () => {
+      await browser.close();
+      if (documents) {
+        await new Promise<void>((resolve) => documents!.server.close(() => resolve()));
+      }
+      await fixture.close();
+    });
+
+    // The probe application, with its loopback address (desktop) and its
+    // frame address (what a paired browser receives).
+    const { id, run } = await fixture.conversation();
+    await applyApplication(run, 'chat-probe');
+    const session = fixture.sessions.snapshot().find((candidate) => candidate.id === id)!;
+    const viewUrl = session.application!.viewUrl!;
+    const { token } = await fixture.pair();
+    const phone = await fixture.phone(token);
+    const snapshot = await phone.engine('state', (message) =>
+      message.sessions?.some((each: Json) => each.application?.frameUrl),
+    );
+    const frameUrl = snapshot.sessions.find((each: Json) => each.application).application
+      .frameUrl as string;
+
+    // Both documents, served framed by a test page whose state says reading
+    // and sending are allowed (the test server stands in for the listener).
+    const loopbackDocument = await (await fetch(viewUrl)).text();
+    const socketDocument = await (await fixture.frameRequest(frameUrl)).text();
+    const state = (await (await fixture.frameRequest(frameUrl + 'state')).json()) as Json;
+    state.chatReadAllowed = true;
+    state.chatSend = {
+      grantId: '11111111-2222-4333-8444-555555555555',
+      allowed: true,
+      remaining: 5,
+      busy: false,
+    };
+    documents = await documentServer({ loopback: loopbackDocument, socket: socketDocument }, state);
+
+    /** Press the probe's Read or Send in `frame` and return its outcome line. */
+    async function probe(page: TestPage, frame: string, button: 'read' | 'send'): Promise<string> {
+      await evaluateInFrame(
+        page,
+        frame,
+        `document.querySelector('#${button}-result').textContent = ''`,
+        true,
+      );
+      await evaluateInFrame(page, frame, `document.querySelector('#${button}').click()`, true);
+      await waitInFrame(
+        page,
+        frame,
+        `!['', 'reading', 'sending'].includes(document.querySelector('#${button}-result').textContent)`,
+        true,
+      );
+      return evaluateInFrame<string>(
+        page,
+        frame,
+        `document.querySelector('#${button}-result').textContent`,
+        true,
+      );
+    }
+
+    /** Press Read until it reads (the page learns its grant with a poll). */
+    async function reads(page: TestPage, frame: string): Promise<void> {
+      const until = Date.now() + 5000;
+      let last = '';
+      while (Date.now() < until) {
+        last = await probe(page, frame, 'read');
+        if (last.startsWith('read:')) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw Error(`Never read: ${last}`);
+    }
+
+    function post(page: TestPage, visible: boolean): Promise<unknown> {
+      return page.evaluate(
+        `document.getElementById('widget').contentWindow.postMessage({ type: 'visible', visible: ${visible} }, '*')`,
+      );
+    }
+
+    // Embedded (the shell's case): shown, it reads; not shown (behind the
+    // chat in the switch layout), reading and preparing a send are refused,
+    // and no chat read is made; shown again, it reads after its next poll.
+    const shell = await instrumentedPage(browser);
+    await shell.navigate(`${documents.origin}/frame-socket.html`);
+    const socketFrame = `${documents.origin}/socket/`;
+    await waitInFrame(shell, socketFrame, `document.getElementById('read')`, true);
+    await post(shell, true);
+    await grows(() => documents!.polls.socket, 1);
+    await reads(shell, socketFrame);
+    await post(shell, false);
+    const readsBefore = documents.chatReads.socket;
+    assert.equal(
+      await probe(shell, socketFrame, 'read'),
+      'refused: Chat reading is not currently permitted',
+    );
+    assert.equal(
+      await probe(shell, socketFrame, 'send'),
+      'refused: Preparing a send needs a visible live application',
+    );
+    assert.equal(documents.chatReads.socket, readsBefore);
+    await post(shell, true);
+    await reads(shell, socketFrame);
+
+    // The loopback route (the desktop's), framed: it has no listener for its
+    // parent, so `visible: false` changes nothing: it still reads and
+    // prepares a send (which this test server then cannot take).
+    const desktop = await instrumentedPage(browser);
+    await desktop.navigate(`${documents.origin}/frame-loopback.html`);
+    const loopbackFrame = `${documents.origin}/loopback/`;
+    await waitInFrame(desktop, loopbackFrame, `document.getElementById('read')`, true);
+    await post(desktop, false);
+    await reads(desktop, loopbackFrame);
+    assert.match(await probe(desktop, loopbackFrame, 'send'), /^send failed/);
   },
 );

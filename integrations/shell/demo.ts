@@ -483,13 +483,28 @@ export function mount(root, api) {
   reply.className = 'reply';
   const ask = document.createElement('button');
   ask.textContent = 'Ask the agent for a summary';
+  // The prepared handle of a send whose outcome is not known: kept, and
+  // checked with its receipt, never replaced by a new send.
+  let unconfirmed = null;
   ask.onclick = async () => {
+    if (unconfirmed) {
+      const receipt = await api.chat.receipt(unconfirmed).catch(() => null);
+      ask.textContent = receipt ? 'Asked (' + receipt.state + ')' : 'Still unknown; check again';
+      return;
+    }
+    let handle;
     try {
-      const handle = await api.chat.prepareSend();
+      handle = await api.chat.prepareSend();
+    } catch (error) {
+      ask.textContent = 'Not sent: ' + error.message;
+      return;
+    }
+    try {
       await api.chat.send(handle, 'Please summarise the board.');
       ask.textContent = 'Asked';
     } catch (error) {
-      ask.textContent = 'Not sent: ' + error.message;
+      unconfirmed = handle;
+      ask.textContent = 'Not confirmed; press to check';
     }
   };
   root.append(board, reply, ask);
