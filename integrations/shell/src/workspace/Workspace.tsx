@@ -31,6 +31,10 @@
  *   above the chat or in the right column above Activity, by the window's
  *   shape or the place fixed in this browser (../layout/pinned-place.ts,
  *   ../layout/usePinnedLayout.ts). Not while the settings screen is shown.
+ * - The selected conversation's session application, with the chat at its
+ *   right or a Chat | application switch, its bar and its permission rows
+ *   (../application/ConversationArea.tsx). Which of the two the switch
+ *   shows and the rows' state belong to this pairing, as the marker does.
  *
  * The workspace also owns the new-activity marker and the Activity
  * requests on their way; both belong to this pairing and go with it.
@@ -41,7 +45,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
-import { Chat } from '../../../session-apps/chat/Chat.tsx';
 import type { ChatStore } from '../../../session-apps/chat/store.ts';
 import {
   ActivityColumn,
@@ -50,6 +53,14 @@ import {
 } from '../activity/ActivityColumn.tsx';
 import { NewActivity } from '../activity/new-activity.ts';
 import { ActivityRequests } from '../activity/requests.ts';
+import { areaWidth } from '../application/application-layout.ts';
+import { ApplicationModes } from '../application/application-view.ts';
+import { ChatPermissions } from '../application/chat-permissions.ts';
+import { ConversationArea } from '../application/ConversationArea.tsx';
+import {
+  useApplicationLayout,
+  type ApplicationLayoutView,
+} from '../application/useApplicationLayout.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
 import {
   activityMaximum,
@@ -95,6 +106,16 @@ interface ActivityBar {
   onShow: () => void;
   button: RefObject<HTMLButtonElement>;
   onFocusLost: () => void;
+}
+
+/** What the main area passes on to a conversation's application (ConversationArea.tsx). */
+interface ApplicationContext {
+  widgets: InlineWidgetEnvironment;
+  windowWidth: number;
+  areaWidth: number;
+  modes: ApplicationModes;
+  permissions: ChatPermissions;
+  layout: ApplicationLayoutView;
 }
 
 /** The settings screen's part of the bar: whether it is shown, and the gear. */
@@ -197,6 +218,19 @@ export function Workspace(props: {
   const [requests] = useState(() => new ActivityRequests());
   // Confirmations of entries that left the history are not kept.
   requests.forgetConfirmations(state.activity.entries);
+  // Which of chat and application the switch layout shows, per
+  // conversation, and the application permission rows' state: both belong
+  // to this pairing (../application/).
+  const [applicationModes] = useState(() => new ApplicationModes());
+  const [chatPermissions] = useState(() => new ChatPermissions());
+  const applicationLayout = useApplicationLayout();
+  // No conversation shown (Previous sessions, nothing selected): the rows'
+  // reviews and a waiting change belong to none, as on the desktop. The
+  // conversation's own area observes it while one is shown.
+  if (!selected) {
+    chatPermissions.observe('', '');
+  }
+
   // The kind of conversation Start asks for, kept while the column is
   // hidden (its text is the Store's draft, kept too).
   const [startProfile, setStartProfile] = useState<StartProfile>('coding');
@@ -416,6 +450,16 @@ export function Workspace(props: {
     overlayLeft = layout.width + 1;
   }
 
+  // The width beside the list and the right column, where a conversation's
+  // application and its chat share the room (../application/application-layout.ts).
+  const conversationWidth = areaWidth({
+    windowWidth,
+    listShown: layout.shown,
+    listWidth: layout.width,
+    rightColumnBeside: sideShown && !overlay,
+    rightColumnWidth: columnWidth,
+  });
+
   let activityValueText = `${columnWidth} pixels`;
   if (columnWidth === activityMinimum) {
     activityValueText = `${columnWidth} pixels, the narrowest`;
@@ -478,6 +522,14 @@ export function Workspace(props: {
           requests={requests}
           listenHere={props.listenHere}
           pinnedBand={place === 'top' ? pinnedPanel : null}
+          application={{
+            widgets: props.widgets,
+            windowWidth,
+            areaWidth: conversationWidth,
+            modes: applicationModes,
+            permissions: chatPermissions,
+            layout: applicationLayout,
+          }}
         />
       </main>
       {sideShown && !overlay && (
@@ -544,6 +596,8 @@ function MainArea(props: {
   listenHere: ListenHere;
   /** The pinned widget's band above the chat, or null. */
   pinnedBand: ComponentChildren;
+  /** What the selected conversation's application needs (ConversationArea.tsx). */
+  application: ApplicationContext;
 }) {
   const { selected } = props;
   const display = useDisplaySettings(props.times.settings);
@@ -603,12 +657,19 @@ function MainArea(props: {
       />
     );
     content = (
-      <div key="chat" class="chat-column" inert={props.settings.shown}>
-        {/* A new chat view for each conversation lifetime: the same ID
-            reopened elsewhere (a new tool epoch) starts at its live end
-            with a fresh editor, like a different conversation. */}
-        <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
-      </div>
+      <ConversationArea
+        key="chat"
+        session={selected}
+        chat={props.chat}
+        bridge={props.bridge}
+        environment={props.application.widgets}
+        covered={props.settings.shown}
+        windowWidth={props.application.windowWidth}
+        areaWidth={props.application.areaWidth}
+        modes={props.application.modes}
+        permissions={props.application.permissions}
+        layout={props.application.layout}
+      />
     );
   } else if (props.showingPrevious) {
     bar = <ChatBar title="Previous sessions" state={null} {...barControls} />;

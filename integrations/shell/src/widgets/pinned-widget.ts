@@ -15,6 +15,13 @@
  * gateway's frame origin (frame-address.ts). Without one (no frame origin
  * configured) nothing is pinned in the browser and its message keeps its
  * "not set up" card in the chat.
+ *
+ * A conversation with a session application has no pinned widget in the
+ * browser: its pinned widget's message shows its inline frame in the chat
+ * (README "Session applications"). The desktop's HTML surface has no rule
+ * for the two together (it shows pinned widgets only in its Classic view),
+ * so the browser takes the simplest one: the application fills the place,
+ * the widget stays in its message.
  */
 
 import type { AgentMessage, AgentSession } from '../../../../src/agents/types.ts';
@@ -45,9 +52,20 @@ function pinnedMessage(session: AgentSession): AgentMessage | null {
   return null;
 }
 
+/**
+ * Whether the browser shows a pinned widget for the conversation at all:
+ * not while it has a session application (see the module comment).
+ */
+export function pinningShown(session: AgentSession | undefined): boolean {
+  return session !== undefined && !session.application;
+}
+
 /** The conversation's pinned widget as the browser shows it, or null. */
 export function pinnedWidget(session: AgentSession | undefined): PinnedWidget | null {
   if (!session) {
+    return null;
+  }
+  if (!pinningShown(session)) {
     return null;
   }
   const message = pinnedMessage(session);

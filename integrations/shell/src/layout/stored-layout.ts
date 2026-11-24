@@ -2,7 +2,7 @@
  * The layout this browser remembers: the conversation list's preferred
  * width and whether it is shown, and the same two for the Activity column.
  *
- * Kept in `localStorage` as four independent entries, each JSON
+ * Kept in `localStorage` as independent entries, each JSON
  * `{ "version": 1, "value": … }`:
  *
  * - `companion.shell.layout.listWidth`: the list's preferred width in pixels;
@@ -14,7 +14,12 @@
  *   `"auto"`, `"right"` or `"top"` (pinned-place.ts);
  * - `companion.shell.layout.pinnedHeight`: the height of the pinned widget's
  *   band at the top, as a percentage, once its lower edge was dragged;
- * - `companion.shell.layout.pinnedFolded`: whether that band is folded.
+ * - `companion.shell.layout.pinnedFolded`: whether that band is folded;
+ * - `companion.shell.layout.applicationLayout`: for a conversation with a
+ *   session application, the chat at the right of it (`"split"`) or App
+ *   only (`"app-only"`) (../application/application-layout.ts);
+ * - `companion.shell.layout.applicationChatWidth`: the width of the chat at
+ *   the right of an application, in pixels.
  *
  * They describe only the arrangement of this page, not the person or their
  * conversations, so they are not cleared on sign-out. Each change writes
@@ -26,10 +31,18 @@
  * type gives that entry's default: the list as the strip, shown, the
  * Activity column 320 px wide, hidden (the agreed design's starting
  * arrangement), and a pinned widget placed by the window's shape, as high
- * as the widget asks, not folded. A storage that cannot be read or written
+ * as the widget asks, not folded, and an application with the chat at its
+ * right, 420 px wide. A storage that cannot be read or written
  * (disabled, full) keeps the layout for this page only.
  */
 
+import {
+  defaultApplicationLayoutChoice,
+  isApplicationLayoutChoice,
+  validChatPaneWidth,
+  chatPaneDefault,
+  type ApplicationLayoutChoice,
+} from '../application/application-layout.ts';
 import { activityDefaultWidth, validActivityWidth } from './activity-width.ts';
 import { stripWidth, validListWidth } from './list-width.ts';
 import {
@@ -48,6 +61,8 @@ export const activityShownKey = `${layoutStoragePrefix}activityShown`;
 export const pinnedPlaceKey = `${layoutStoragePrefix}pinnedPlace`;
 export const pinnedHeightKey = `${layoutStoragePrefix}pinnedHeight`;
 export const pinnedFoldedKey = `${layoutStoragePrefix}pinnedFolded`;
+export const applicationLayoutKey = `${layoutStoragePrefix}applicationLayout`;
+export const applicationChatWidthKey = `${layoutStoragePrefix}applicationChatWidth`;
 
 export interface ListLayout {
   /** Preferred width in CSS pixels: the strip's, or a full list's (see list-width.ts). */
@@ -83,6 +98,18 @@ export const defaultPinnedLayout: PinnedLayout = {
   pinnedPlace: defaultPinnedPlace,
   pinnedHeight: null,
   pinnedFolded: false,
+};
+
+export interface ApplicationLayoutPreference {
+  /** The chat at the right of the application, or App only. */
+  applicationLayout: ApplicationLayoutChoice;
+  /** Preferred width of the chat at the right, in CSS pixels. */
+  applicationChatWidth: number;
+}
+
+export const defaultApplicationLayout: ApplicationLayoutPreference = {
+  applicationLayout: defaultApplicationLayoutChoice,
+  applicationChatWidth: chatPaneDefault,
 };
 
 /** The parts of `Storage` used here, so tests can pass a stand-in. */
@@ -215,4 +242,31 @@ export function writePinnedHeight(storage: LayoutStorage, percent: number): void
 /** Remember whether the band is folded (and only that). */
 export function writePinnedFolded(storage: LayoutStorage, folded: boolean): void {
   writeEntry(storage, pinnedFoldedKey, folded);
+}
+
+/** The remembered application layout; each entry that is missing or not valid gives its default. */
+export function readApplicationLayout(storage: LayoutStorage): ApplicationLayoutPreference {
+  const layout = { ...defaultApplicationLayout };
+  const choice = readEntry(storage, applicationLayoutKey);
+  if (isApplicationLayoutChoice(choice)) {
+    layout.applicationLayout = choice;
+  }
+  const width = readEntry(storage, applicationChatWidthKey);
+  if (typeof width === 'number' && Number.isFinite(width)) {
+    layout.applicationChatWidth = validChatPaneWidth(width);
+  }
+  return layout;
+}
+
+/** Remember the chat at the right or App only (and only that). */
+export function writeApplicationLayout(
+  storage: LayoutStorage,
+  choice: ApplicationLayoutChoice,
+): void {
+  writeEntry(storage, applicationLayoutKey, choice);
+}
+
+/** Remember the width of the chat at the right (and only it). */
+export function writeApplicationChatWidth(storage: LayoutStorage, width: number): void {
+  writeEntry(storage, applicationChatWidthKey, validChatPaneWidth(width));
 }

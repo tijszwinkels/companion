@@ -76,6 +76,16 @@ let shellVisible = !shellEmbedded;
 // change.
 let shellShown = false;
 let shellHeight = null;
+// Whether this view counts as hidden for chat reading and send preparation:
+// a hidden tab, or (embedded only) a frame the shell does not show, for
+// example an application behind its chat in the shell's switch layout
+// (integrations/shell/README.md, "Session applications"). On the loopback
+// route `shellVisible` is always true, so this is `document.hidden`, as
+// before.
+function viewHidden() {
+  return document.hidden || !shellVisible;
+}
+
 // The status line's text node a polling failure wrote, or null. Any other
 // write of the status line (an action's error, even with the same text)
 // replaces that node, so it is no longer the one a later poll may clear.
@@ -280,7 +290,7 @@ async function sendChatOperation(message) {
     refuse('Expected an exact send handle and bounded text; no origin or permission arguments');
     return;
   }
-  if (!application || !api || (prepare && document.hidden)) {
+  if (!application || !api || (prepare && viewHidden())) {
     refuse('Preparing a send needs a visible live application');
     return;
   }
@@ -299,7 +309,7 @@ async function sendChatOperation(message) {
       const state = await fetchState({ signal: abort.signal });
       const grant = state.chatSend;
       if (
-        document.hidden ||
+        viewHidden() ||
         state.version !== application.version ||
         grant?.allowed !== true ||
         !(grant.remaining > 0)
@@ -444,7 +454,7 @@ function observeChatAccess(snapshot) {
   const allowed = snapshot.version === application.version && snapshot.chatReadAllowed === true;
   if (!allowed && chatAllowed) {
     withdrawChat();
-  } else if (allowed && !chatAllowed && !document.hidden) {
+  } else if (allowed && !chatAllowed && !viewHidden()) {
     chatEpoch++;
     chatAllowed = true;
     publishChat(false);
@@ -457,7 +467,7 @@ function readChat(id) {
       reply(id, null, error, false);
     }
   };
-  if (!application || !api || !chatAllowed || document.hidden) {
+  if (!application || !api || !chatAllowed || viewHidden()) {
     refuse('Chat reading is not currently permitted');
     return;
   }
@@ -512,7 +522,7 @@ function readChat(id) {
         throw Error('Chat response exceeds the text limit');
       }
       const value = JSON.parse(text);
-      if (document.hidden && flight.epoch === chatEpoch) {
+      if (viewHidden() && flight.epoch === chatEpoch) {
         withdrawChat('Chat reading is paused while the application is hidden');
       }
       if (flight.epoch !== chatEpoch || !chatAllowed) {
@@ -943,6 +953,10 @@ if (shellEmbedded) {
       shellVisible = message.visible;
       if (shellVisible) {
         scheduleViewportReport();
+      } else if (application) {
+        // Not shown by the shell: as a hidden tab, delivery stops and
+        // permission is observed again on the next visible refresh.
+        withdrawChat('Chat reading is paused while the application is hidden');
       }
     } else if (
       message.type === 'present' &&

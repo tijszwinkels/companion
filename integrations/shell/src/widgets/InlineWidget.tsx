@@ -25,7 +25,11 @@
  * The same frame component (`WidgetFrame`) draws the pinned widget, in its
  * `pinned` mode: it fills the place it is given instead of fitting its
  * content, its header carries the pinned widget's controls and Unpin, and
- * it can be folded to its header.
+ * it can be folded to its header. In its `application` mode it draws a
+ * conversation's session application (../application/ApplicationPane.tsx):
+ * it fills its pane, has no header (the application's bar is the shell's,
+ * above it) and no Pin, and says "application" where a widget says
+ * "widget".
  *
  * Resources: each panel owns one `message` listener on this window, one
  * IntersectionObserver, one visibility listener, one load deadline timer and
@@ -75,6 +79,13 @@ export interface InlineWidgetEnvironment {
    * shell shows pinned (pinned-widget.ts), or ''.
    */
   pinnedMessageId(sessionId: string): string;
+  /**
+   * Whether the shell can show a pinned widget for the conversation: not
+   * while it has a session application (pinned-widget.ts). Otherwise Pin
+   * is not offered, since it would change the pin for every client while
+   * nothing moves here.
+   */
+  pinningShown(sessionId: string): boolean;
 }
 
 /**
@@ -107,8 +118,9 @@ function rememberHeight(address: string, height: number): void {
 }
 
 /** Why a frame the page's own policy refused could not load, and what helps. */
-const policyRefusal =
-  'This page was opened before widgets were set up for it. Reload the page to show them.';
+function policyRefusal(noun: string): string {
+  return `This page was opened before ${noun}s were set up for it. Reload the page to show them.`;
+}
 
 const pageTimers: ThrottleTimers = {
   now: () => performance.now(),
@@ -126,6 +138,9 @@ export function createInlineWidget(
     const sessionId = props.sessionId;
     const pinnedMessageId = useSyncExternalStore(environment.subscribe, () =>
       environment.pinnedMessageId(sessionId),
+    );
+    const pinningShown = useSyncExternalStore(environment.subscribe, () =>
+      environment.pinningShown(sessionId),
     );
 
     const widget = props.row.widget;
@@ -154,6 +169,7 @@ export function createInlineWidget(
         time={time}
         address={address}
         environment={environment}
+        noPin={!pinningShown}
       />
     );
   }
@@ -195,14 +211,15 @@ function WidgetHeader(props: { name: string; time: string; children?: ComponentC
 
 /**
  * One widget frame with its header and states: an inline widget in the
- * chat, or the pinned widget (`mode`).
+ * chat, the pinned widget, or a session application (`mode`).
  */
 export function WidgetFrame(props: {
   /**
    * `inline`: in the chat, as tall as its content (100-420 px), with Pin.
    * `pinned`: fills the place it is given, with `controls` and Unpin.
+   * `application`: fills its pane, without a header or Pin.
    */
-  mode: 'inline' | 'pinned';
+  mode: 'inline' | 'pinned' | 'application';
   name: string;
   time: string;
   address: string;
@@ -211,10 +228,25 @@ export function WidgetFrame(props: {
   controls?: ComponentChildren;
   /** The pinned band is folded to its header: the frame stays, out of sight. */
   folded?: boolean;
+  /**
+   * The frame is kept in the page but not shown (an application while the
+   * switch layout shows the chat): it counts as not visible, as folded.
+   */
+  concealed?: boolean;
+  /** An application's failed state: more below Try again (its description, the way to the chat). */
+  failedExtra?: ComponentChildren;
+  /** An inline widget whose conversation cannot show a pinned widget here: no Pin. */
+  noPin?: boolean;
 }) {
   const { mode, name, time, address, environment } = props;
   const origin = frameOriginOf(address);
   const folded = props.folded === true;
+  const concealed = props.concealed === true;
+  // What the texts call it.
+  let noun = 'widget';
+  if (mode === 'application') {
+    noun = 'application';
+  }
 
   const [state, dispatch] = useReducer(nextFrameState, undefined, () =>
     initialFrameState(rememberedHeights.get(address)),
@@ -227,11 +259,19 @@ export function WidgetFrame(props: {
     (listener: () => void) => cover.subscribe(listener),
     [cover],
   );
-  const covered = useSyncExternalStore(subscribeToCover, () => cover.covered);
+  // An application is in the chat's place when the chat is concealed, so
+  // only the page's own screens cover it.
+  const covered = useSyncExternalStore(subscribeToCover, () => {
+    if (mode === 'application') {
+      return cover.coversApplication;
+    }
+    return cover.covered;
+  });
   const pageHidden = usePageHidden();
   const [inView, setInView] = useState(false);
-  // A folded pinned widget is out of sight, as one scrolled out of view.
-  const visible = frameVisible({ inView, pageHidden, covered, connected }) && !folded;
+  // A folded pinned widget is out of sight, as one scrolled out of view;
+  // so is a concealed application.
+  const visible = frameVisible({ inView, pageHidden, covered, connected }) && !folded && !concealed;
 
   const panel = useRef<HTMLDivElement>(null);
   const iframe = useRef<HTMLIFrameElement>(null);
@@ -354,7 +394,7 @@ export function WidgetFrame(props: {
     // because the frame origin was set up or changed after the page loaded.
     function onPolicyViolation(event: SecurityPolicyViolationEvent) {
       if (policyRefusedFrame(event, origin)) {
-        dispatch({ type: 'error', text: policyRefusal });
+        dispatch({ type: 'error', text: policyRefusal(noun) });
       }
     }
 
@@ -365,7 +405,7 @@ export function WidgetFrame(props: {
       document.removeEventListener('securitypolicyviolation', onPolicyViolation);
       throttle.dispose();
     };
-  }, [frameShown, frameKey, origin]);
+  }, [frameShown, frameKey, origin, noun]);
 
   // A loading frame has ten seconds to report its first height, counted
   // only while it is visible: a frame out of view, in a hidden tab, under
@@ -392,8 +432,12 @@ export function WidgetFrame(props: {
     }
   }, [mode, state.phase, state.height, address]);
 
-  // Tell the loaded frame when its visibility changes.
-  useEffect(() => {
+  // Tell the loaded frame when its visibility changes. A layout effect: the
+  // message is posted in the same task as the drawing that hides or covers
+  // the frame, before the browser paints it, so a frame the reader can no
+  // longer see learns it as early as the shell can tell it (an application
+  // stops reading chat then; host.js).
+  useLayoutEffect(() => {
     if (!loaded) {
       return;
     }
@@ -427,7 +471,7 @@ export function WidgetFrame(props: {
     presentText = 'Unpin';
   }
   let presentButton = null;
-  if (state.phase !== 'failed') {
+  if (state.phase !== 'failed' && mode !== 'application' && props.noPin !== true) {
     presentButton = (
       <ActionButton
         available={presentable}
@@ -440,16 +484,23 @@ export function WidgetFrame(props: {
       </ActionButton>
     );
   }
-  const header = (
-    <WidgetHeader name={name} time={time}>
-      {props.controls}
-      {presentButton}
-    </WidgetHeader>
-  );
+  // An application has no header: its bar is the shell's, above its pane.
+  let header = null;
+  if (mode !== 'application') {
+    header = (
+      <WidgetHeader name={name} time={time}>
+        {props.controls}
+        {presentButton}
+      </WidgetHeader>
+    );
+  }
 
   let panelClass = 'panel inline-widget';
   if (mode === 'pinned') {
     panelClass += ' pinned-widget';
+  }
+  if (mode === 'application') {
+    panelClass += ' application-frame';
   }
   if (folded) {
     panelClass += ' folded';
@@ -479,10 +530,13 @@ export function WidgetFrame(props: {
         {header}
         <div class="inline-widget-failed" hidden={folded}>
           <p>
-            <strong>The {name} widget could not load.</strong> {state.reason}
+            <strong>
+              The {name} {noun} could not load.
+            </strong>{' '}
+            {state.reason}
           </p>
           <p class="inline-widget-note">
-            The conversation and the widget's saved data are unchanged.
+            The conversation and the {noun}'s saved data are unchanged.
           </p>
           <div>
             {/* A new frame needs requests admitted, as its first load does. */}
@@ -494,6 +548,7 @@ export function WidgetFrame(props: {
               Try again
             </button>
           </div>
+          {props.failedExtra}
         </div>
       </div>
     );
@@ -503,9 +558,10 @@ export function WidgetFrame(props: {
     panelClass += ' disconnected';
   }
 
-  // Inline, the frame is as tall as its content; pinned, as its place.
+  // Inline, the frame is as tall as its content; pinned, as its place; an
+  // application, as its pane.
   let frameStyle: Record<string, string> = { height: `${state.height}px` };
-  if (mode === 'pinned') {
+  if (mode !== 'inline') {
     frameStyle = {};
   }
 
@@ -529,7 +585,7 @@ export function WidgetFrame(props: {
             <iframe
               key={frameKey}
               ref={iframe}
-              title={`${name} widget`}
+              title={`${name} ${noun}`}
               sandbox="allow-scripts allow-same-origin allow-forms"
               allow={noPermissions}
               referrerpolicy="no-referrer"
@@ -544,7 +600,7 @@ export function WidgetFrame(props: {
         </div>
         {state.phase === 'loading' && connected && (
           <div class="inline-widget-cover" role="status">
-            Loading the {name} widget…
+            Loading the {name} {noun}…
           </div>
         )}
         {!connected && (

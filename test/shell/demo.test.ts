@@ -135,7 +135,7 @@ for (const moment of ['while it starts', 'after it started'] as const) {
 }
 
 test(
-  'the demo shows the city trip with one inline widget and the weekend budget with one pinned widget, on its frame origin',
+  'the demo shows the city trip with one inline widget, the weekend budget with one pinned widget and the week plan with an application, on its frame origin',
   { skip },
   async (context) => {
     const parent = await mkdtemp(join(tmpdir(), 'companion-demo-test-'));
@@ -216,6 +216,9 @@ test(
             message.sessions?.some(
               (session: { pinnedMessage?: { widget?: { frameUrl?: string } } | null }) =>
                 session.pinnedMessage?.widget?.frameUrl,
+            ) &&
+            message.sessions?.some(
+              (session: { application?: { frameUrl?: string } }) => session.application?.frameUrl,
             ),
         );
       } catch {
@@ -250,7 +253,23 @@ test(
     assert.equal(pinned.length, 1);
     assert.match(pinned[0].title, /weekend budget/);
     assert.equal(pinned[0].pinnedMessage.widget.name, 'trip-budget');
-    for (const address of [inline.widget.frameUrl!, pinned[0].pinnedMessage.widget.frameUrl]) {
+    // Exactly one session application: the week plan's task board, which
+    // asks to read and send chat (granted nothing yet).
+    const applications = snapshot.sessions.filter(
+      (session: { application?: unknown }) => session.application,
+    );
+    assert.equal(applications.length, 1);
+    assert.match(applications[0].title, /week as a task board/);
+    const application = applications[0].application;
+    assert.equal(application.name, 'task-board');
+    assert.deepEqual(application.chatAccess.requested, ['chat.read', 'chat.send']);
+    assert.equal(application.chatAccess.read, false);
+    assert.equal(application.chatAccess.send.allowed, false);
+    for (const address of [
+      inline.widget.frameUrl!,
+      pinned[0].pinnedMessage.widget.frameUrl,
+      application.frameUrl,
+    ]) {
       assert.match(address, new RegExp('^' + frameOrigin + '/f/[A-Za-z0-9_-]{43}/$'));
       const page = await fetch(address);
       assert.equal(page.status, 200);
