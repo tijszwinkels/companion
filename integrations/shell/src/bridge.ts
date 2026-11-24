@@ -28,11 +28,15 @@
  *   (its Store saves it in this browser's storage). There is no
  *   listener-owned or agent-proposed draft, so `draftUnsaved` is always
  *   empty and Save/Discard have nothing to do.
- * - Recording, voice target, focus shortcut, session applications, widgets
- *   and the classic view are not available. Recording, applications and the
- *   Classic view button are hidden through `status` (`classicView: false`);
- *   widget cards, whose link would open the classic view, show a notice in
- *   `inputError` instead.
+ * - Recording, voice target, focus shortcut and the classic view are not
+ *   available. Recording and the Classic view button are hidden through
+ *   `status` (`classicView: false`); widget cards, whose link would open
+ *   the classic view, show a notice in `inputError` instead.
+ * - Session applications are drawn by the shell beside or instead of the
+ *   page (../application/). The page's own application button (`status.
+ *   application`) is offered only while the shell's switch layout shows
+ *   the chat in place of the application (`offerApplication`), as the
+ *   desktop's chat page offers it; it switches to the application.
  * - Tool details open in place in the page (`ChatRow.tools`, an optional
  *   field the Qt host does not send), by the desktop classic view's rules
  *   (./tools/tool-details.ts).
@@ -75,6 +79,7 @@ import type {
   NativeBridge,
   ToolDetailsAction,
 } from '../../session-apps/chat/protocol.ts';
+import { switchBlocker } from './application/application-view.ts';
 import { ResidentHistory, type PageRequest } from './history.ts';
 import { pageRow, screenshotPath } from './rows.ts';
 import type { ScreenshotRequest } from './screenshots/screenshot-viewer.ts';
@@ -223,6 +228,14 @@ export class GatewayChatBridge implements NativeBridge {
   private unresolved: { sessionId: string; length: number } | null = null;
   // The conversation list, told when `unresolved` names another conversation.
   private readonly heldInputListeners = new Set<() => void>();
+  // The application the page's own button switches to (only while the
+  // shell's switch layout shows the chat), and what that button does.
+  private applicationOffer: {
+    sessionId: string;
+    name: string;
+    version: number;
+    open: (sessionId: string) => void;
+  } | null = null;
 
   constructor(
     private readonly store: Store,
@@ -683,10 +696,19 @@ export class GatewayChatBridge implements NativeBridge {
       voiceStatus: '',
       history: this.resident.status(),
       focusShortcut: '',
-      application: null,
+      application: this.offeredApplication(id),
       // There is no classic view in the browser: the page hides its button.
       classicView: false,
     };
+  }
+
+  /** The application the page's button names for `sessionId`, or null. */
+  private offeredApplication(sessionId: string): { name: string; version: number } | null {
+    const offer = this.applicationOffer;
+    if (!offer || offer.sessionId !== sessionId) {
+      return null;
+    }
+    return { name: offer.name, version: offer.version };
   }
 
   private running(session: AgentSession): boolean {
@@ -1370,8 +1392,57 @@ export class GatewayChatBridge implements NativeBridge {
   }
 
   openApp(): void {
-    if (this.shownSession) {
-      this.setNotice(this.shownSession.id, applicationUnavailable);
+    const session = this.shownSession;
+    if (!session) {
+      return;
     }
+    const offer = this.applicationOffer;
+    if (offer && offer.sessionId === session.id) {
+      offer.open(session.id);
+      return;
+    }
+    this.setNotice(session.id, applicationUnavailable);
+  }
+
+  /**
+   * The shell's switch layout shows the chat of `sessionId` in place of its
+   * application named `name` (version `version`): the page offers the
+   * application as its footer button, which calls `open`. `null` (the
+   * application shown, the chat at its right, or none) withdraws it.
+   */
+  offerApplication(
+    offer: {
+      sessionId: string;
+      name: string;
+      version: number;
+      open: (sessionId: string) => void;
+    } | null,
+  ): void {
+    const before = this.applicationOffer;
+    this.applicationOffer = offer;
+    const same =
+      before !== null &&
+      offer !== null &&
+      before.sessionId === offer.sessionId &&
+      before.name === offer.name &&
+      before.version === offer.version;
+    if (same || (before === null && offer === null)) {
+      return;
+    }
+    this.scheduleStatus();
+  }
+
+  /**
+   * Why bringing an application of `sessionId` forward in place of its chat
+   * would interrupt input now ('' when nothing would): a send or a choice
+   * awaiting its answer, or `composerFocused` (the reader is typing), in
+   * the desktop's words (../application/application-view.ts).
+   */
+  applicationBlocker(sessionId: string, composerFocused: boolean): string {
+    return switchBlocker({
+      pendingSend: this.pendingSend(sessionId),
+      pendingChoice: this.choicePending(sessionId),
+      composerFocused,
+    });
   }
 }
