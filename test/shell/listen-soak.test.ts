@@ -57,11 +57,19 @@ test(
     let utterancesBeforeLastMinute = utterancesAtStart;
 
     // Wait out the run, checking once a minute that the page stays hidden.
+    // Every 10 seconds the desktop fixture's record of the messages its
+    // own desktop client received is emptied: every state broadcast carries
+    // the recent history, and the test recogniser's long transcripts would
+    // otherwise fill the test process's memory within half an hour (a
+    // property of the fixture, not of the listener).
     for (let minute = 1; minute <= minutes; minute++) {
       if (minute === minutes) {
         utterancesBeforeLastMinute = microphones.dispatched.length;
       }
-      await delay(60_000);
+      for (let tick = 0; tick < 6; tick++) {
+        await delay(10_000);
+        fixture.desktop.messages.length = 0;
+      }
       hiddenChecks.push(await page.evaluate<string>(`document.visibilityState`));
     }
 

@@ -1607,6 +1607,8 @@ body {
 .microphone-title {
   color: var(--foreground);
   font-size: 13.5px;
+  /* A device name without spaces (a host name) wraps instead of being cut. */
+  overflow-wrap: anywhere;
 }
 
 .microphone-status {

@@ -955,7 +955,9 @@ Further rules:
    meanwhile) → taken over; `stalled` → lost; `failed`, `shutdown`,
    `replaced` or an unknown reason → stopped with the gateway's message.
    The browser ending the track, or keeping it muted for 3 seconds (an
-   interruption by a call or another application), → lost.
+   interruption by a call or another application), → lost. A worklet that
+   fails, or has not started 10 seconds after the browser granted the
+   microphone, → stopped, and the microphone is released.
 4. A start whose answer is lost with the connection is not a problem: the
    page starts again after the reconnect.
 5. "No microphone is on" is shown while Companion runs, is not paused, no
@@ -969,14 +971,14 @@ Further rules:
 
 ### Rule: sending
 
-| Case                                                                                       | What happens                                                                                                                                                                                                                                                                  |
-| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Normal                                                                                     | Each 100 ms piece is sent while the stream is open, in order. Pieces from before the start's answer belong to no stream and are not sent.                                                                                                                                     |
-| More than 2 seconds of sound wait in the socket (`bufferedAmount`)                         | The piece is not sent; `audio-stop`; nothing is sent until its answer (it comes after everything sent before it); then a new `audio-start`. "Connection too slow: some speech was lost" shows as a toast and for 10 seconds in this browser's row. The microphone stays open. |
-| The gateway ends the stream for a limit (`too-large`, `too-fast`, `slow-listener`, `slow`) | A new stream at once, with "Some speech was lost: …" as a toast and in the row. A second such end within 10 seconds of the last automatic restart switches Listen here off with the reason.                                                                                   |
-| The connection drops in the middle of a piece                                              | A WebSocket message is sent whole or not at all; the gateway ends the stream with the connection. Nothing more is sent; the microphone is released, and a new stream starts after the reconnect.                                                                              |
-| An `audio-ended` arrives before the start's answer                                         | Kept, and applied when the answer names the same stream.                                                                                                                                                                                                                      |
-| An `audio-ended` of an earlier stream                                                      | Ignored.                                                                                                                                                                                                                                                                      |
+| Case                                                                                       | What happens                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Normal                                                                                     | Each 100 ms piece is sent while the stream is open, in order. Pieces from before the start's answer belong to no stream and are not sent.                                                                                                                                                                                                              |
+| More than 2 seconds of sound wait in the socket (`bufferedAmount`)                         | The piece is not sent; `audio-stop`; nothing is sent until its answer (it comes after everything sent before it); then a new `audio-start`. "Connection too slow: some speech was lost" shows as a toast and for 10 seconds in this browser's row. The microphone stays open.                                                                          |
+| The gateway ends the stream for a limit (`too-large`, `too-fast`, `slow-listener`, `slow`) | A new stream at once, with "Some speech was lost: …" as a toast and in the row. A second such end within 10 seconds of the last automatic restart switches Listen here off with the reason. While the page's own stop for a slow connection is on its way, a limit or a stall is part of the same congestion: the stop's answer starts the new stream. |
+| The connection drops in the middle of a piece                                              | A WebSocket message is sent whole or not at all; the gateway ends the stream with the connection. Nothing more is sent; the microphone is released, and a new stream starts after the reconnect.                                                                                                                                                       |
+| An `audio-ended` arrives before the start's answer                                         | Kept, and applied when the answer names the same stream.                                                                                                                                                                                                                                                                                               |
+| An `audio-ended` of an earlier stream                                                      | Ignored.                                                                                                                                                                                                                                                                                                                                               |
 
 Sound is never dropped inside a stream: what was handed to the socket is
 delivered, or the connection, and with it the stream, ends.
@@ -1008,6 +1010,13 @@ unchanged:
 - No microphone found: the switch goes off with "No microphone found.
   Connect one, then switch Listen here on again." The page does not watch
   for a microphone being plugged in.
+- A browser that cannot report the page's policy (only Chromium does)
+  learns of a gateway without `--allow-microphone` only as a refusal. The
+  refusal notice therefore names both causes: the site's permission and the
+  gateway's option.
+- An older gateway in front of a newer listener forwards the computer's
+  switch but refuses `set-computer-microphone`: each press shows the
+  refusal as a toast. This happens only with mixed versions.
 - One stream per paired device: a second tab takes it over. At most four
   browsers listen at once. When three microphones speak at the same moment,
   one utterance can be dropped (the listener's limit).

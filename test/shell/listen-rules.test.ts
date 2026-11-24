@@ -23,6 +23,7 @@ import {
   automaticRestartInterval,
   ListenHere,
   maximumBacklogBytes,
+  startupLimitMs,
   type ListenEngine,
   type ListenHost,
 } from '../../integrations/shell/src/listen/listen-here.ts';
@@ -145,6 +146,8 @@ interface FakeOpening {
   grantOnly(): void;
   /** The worklet finished loading after `grantOnly`. */
   ready(): void;
+  /** The worklet failed to load after `grantOnly`. */
+  fail(): void;
   deny(error: CaptureError): void;
   /** The browser granted it: its track was live at some point. */
   granted: boolean;
@@ -199,6 +202,10 @@ class FakeEnvironment implements CaptureEnvironment {
         grant: () => {
           opening.grantOnly();
           opening.ready();
+        },
+        fail: () => {
+          opening.closed = true;
+          reject(new CaptureError('failed', 'The microphone could not be used: no worklet'));
         },
         deny: (error) => reject(error),
       };
@@ -630,6 +637,29 @@ test('a start refused because another tab took over meanwhile: off with "moved"'
   assert.equal(environment.latest.closed, true);
 });
 
+test('the worklet fails after the grant: off with the reason; the mark and "●" go with the microphone', async () => {
+  const parts = setup();
+  parts.listen.setWanted(true);
+  parts.environment.latest.grantOnly();
+  assert.equal(parts.environment.capturing, true);
+  parts.environment.latest.fail();
+  await settle();
+  assert.equal(parts.listen.view.problem?.kind, 'stopped');
+  assertClosed(parts);
+});
+
+test('the worklet does not start within the limit after the grant: released, off with the reason', async () => {
+  const parts = setup();
+  parts.listen.setWanted(true);
+  parts.environment.latest.grantOnly();
+  parts.environment.advance(startupLimitMs - 1);
+  assert.equal(parts.listen.view.phase, 'listening');
+  parts.environment.advance(1);
+  assert.equal(parts.listen.view.problem?.kind, 'stopped');
+  assertClosed(parts);
+  assert.deepEqual(parts.host.actions(), []);
+});
+
 // ---- Rule: sending -------------------------------------------------------------
 
 test('sending: normal pieces go out in order while the stream is open', async () => {
@@ -672,6 +702,38 @@ test('sending: a backlog over two seconds ends the stream, says so and starts a 
 
   environment.advance(10_000);
   assert.equal(listen.view.notice, '', 'the notice passes');
+});
+
+test('sending: a limit or a stall reported while the slow-connection stop is on its way leaves the restart to that stop', async () => {
+  for (const reason of ['too-fast', 'stalled'] as const) {
+    const { host, environment, listen } = await listening();
+    host.buffered = maximumBacklogBytes + 1;
+    environment.latest.onPiece(piece());
+    assert.deepEqual(host.actions(), ['audio-stop'], reason);
+    host.audioEnded('s1', reason);
+    assert.deepEqual(
+      host.actions(),
+      ['audio-stop'],
+      `${reason}: no start before the stop's answer`,
+    );
+    assert.equal(listen.view.phase, 'listening', reason);
+    host.buffered = 0;
+    host.answer('audio-stop', 'not-streaming');
+    await settle();
+    assert.deepEqual(host.actions(), ['audio-start'], reason);
+  }
+});
+
+test('sending: Pause or a takeover while the slow-connection stop is on its way apply at once', async () => {
+  const parts = await listening();
+  parts.host.buffered = maximumBacklogBytes + 1;
+  parts.environment.latest.onPiece(piece());
+  parts.host.audioEnded('s1', 'taken-over');
+  assert.equal(parts.listen.view.problem?.kind, 'moved');
+  assertClosed(parts);
+  parts.host.answer('audio-stop', 'not-streaming');
+  await settle();
+  assert.deepEqual(parts.host.actions(), []);
 });
 
 test('sending: the gateway ends the stream for a limit: a new stream at once, then off if it happens again soon', async () => {

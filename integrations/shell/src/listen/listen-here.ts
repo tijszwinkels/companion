@@ -109,6 +109,14 @@ export const automaticRestartInterval = 10_000;
 /** How long a passing notice stays. */
 const noticeMilliseconds = 10_000;
 
+/**
+ * How long the worklet may take to start once the browser granted the
+ * microphone. Longer (a stalled download, an audio context the browser
+ * keeps suspended) and the page gives up and releases the microphone,
+ * instead of holding it while nothing can be sent.
+ */
+export const startupLimitMs = 10_000;
+
 /** The listener's refusal of `audio-start` while paused (src/sensors/audio/browser-microphones.ts). */
 const pausedRefusal = 'Listening is paused';
 
@@ -357,6 +365,14 @@ export class ListenHere {
           if (this.capture === capture && !capture.granted) {
             capture.granted = true;
             this.environment.setCapturing(true);
+            this.environment.setTimeout(() => {
+              if (this.capture === capture && !capture.open) {
+                this.turnOff({
+                  kind: 'stopped',
+                  message: 'The microphone could not be started in time',
+                });
+              }
+            }, startupLimitMs);
             this.emit();
           }
         },
@@ -390,7 +406,12 @@ export class ListenHere {
         if (this.capture !== capture) {
           return;
         }
+        // The signs go with the microphone (the worklet failed after the
+        // browser had granted it).
         this.capture = undefined;
+        if (capture.granted) {
+          this.environment.setCapturing(false);
+        }
         let failure = new CaptureError('failed', String(error));
         if (error instanceof CaptureError) {
           failure = error;
@@ -542,6 +563,13 @@ export class ListenHere {
     }
     if (message.streamId !== stream.streamId) {
       // An earlier stream of this page.
+      return;
+    }
+    // A stream the page is already ending for a slow connection: a limit
+    // or a stall is part of the same congestion, and the stop's answer
+    // starts the new stream. Pause, takeover and the rest apply as always.
+    const congestion = ['too-large', 'too-fast', 'slow-listener', 'slow', 'stalled'];
+    if (stream.phase === 'stopping' && congestion.includes(message.reason)) {
       return;
     }
     this.stream = undefined;

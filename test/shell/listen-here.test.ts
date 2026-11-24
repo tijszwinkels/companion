@@ -119,7 +119,7 @@ test(
     assert.equal(await switchState(page), 'true', 'the choice stays on while paused');
     assert.match(
       await page.evaluate<string>(
-        `document.querySelector('.activity-header .listen-mark').getAttribute('aria-label')`,
+        `document.querySelector('.chat-bar .listen-mark').getAttribute('aria-label')`,
       ),
       /paused/,
     );
@@ -204,10 +204,15 @@ test(
     assert.equal(await liveTracks(second.page), 1);
     await second.page.waitFor(markOn);
 
-    // The first tab never takes it back by itself.
-    const startsBefore = await first.page.evaluate<number>(`window.__streams.length`);
-    await waitFor(() => microphones.dispatched.length >= 1, 15_000);
-    assert.equal(await first.page.evaluate<number>(`window.__streams.length`), startsBefore);
+    // The first tab never takes it back by itself: while the second tab's
+    // speech keeps arriving, the first sends no new start and opens no
+    // microphone.
+    const microphonesBefore = await first.page.evaluate<number>(`window.__streams.length`);
+    const startsBefore = await first.page.evaluate<number>(`window.__audioStarts`);
+    const dispatchedBefore = microphones.dispatched.length;
+    await waitFor(() => microphones.dispatched.length > dispatchedBefore + 1, 15_000);
+    assert.equal(await first.page.evaluate<number>(`window.__streams.length`), microphonesBefore);
+    assert.equal(await first.page.evaluate<number>(`window.__audioStarts`), startsBefore);
   },
 );
 
@@ -220,15 +225,17 @@ test(
       const { page, sockets } = await listeningPage(fixture, browser, { width, height: 820 });
       await startListening(page);
 
-      // With Activity shown (over the chat at 420 px): its header carries
-      // the mark too.
+      // With Activity shown: at 420 px it lies over the chat and its header
+      // carries the mark; at 1600 px the bar's mark stays visible beside it.
       assert.equal(await horizontalOverflow(page), 0, `${width} px, Activity shown`);
-      await page.waitFor(`document.querySelector('.activity-header .listen-mark.on') !== null`);
-      const headerMarkInside = await page.evaluate<boolean>(`(() => {
-        const box = document.querySelector('.activity-header .listen-mark').getBoundingClientRect();
+      const visibleMark =
+        width === 420 ? '.activity-header .listen-mark' : '.chat-bar .listen-mark';
+      await page.waitFor(`document.querySelector('${visibleMark}.on') !== null`);
+      const markShown = await page.evaluate<boolean>(`(() => {
+        const box = document.querySelector('${visibleMark}').getBoundingClientRect();
         return box.width > 0 && box.left >= 0 && box.right <= window.innerWidth && box.top >= 0;
       })()`);
-      assert.ok(headerMarkInside, `${width} px: Activity's header shows the mark`);
+      assert.ok(markShown, `${width} px: the mark is shown with Activity`);
       const rowsFit = await page.evaluate<boolean>(`(() => {
       const rows = document.querySelector('.microphone-rows');
       return rows.scrollWidth <= rows.clientWidth;

@@ -290,7 +290,8 @@ function ProblemNotice(props: { view: ListenView }) {
     return (
       <p class="listen-notice bad">
         <b>Microphone not allowed.</b> Allow it for this site with the icon in the address bar, then
-        switch Listen here on again.
+        switch Listen here on again. If it is allowed there, Companion’s gateway does not permit it
+        (it needs <code>--allow-microphone</code>).
       </p>
     );
   }

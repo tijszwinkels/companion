@@ -762,6 +762,14 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     pause,
   );
 
+  // The fixture keeps its diagnostics and transcripts for tests to inspect;
+  // a demo left listening for hours must not keep them all.
+  const forgetRecords = setInterval(() => {
+    microphones?.logs.splice(0);
+    microphones?.dispatched.splice(0);
+  }, 60_000);
+  forgetRecords.unref();
+
   // Paused for media, as when music plays on the computer; Resume overrides it.
   pause.setMediaPlaying(true);
 
