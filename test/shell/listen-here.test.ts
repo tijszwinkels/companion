@@ -45,7 +45,7 @@ const noMark = `document.querySelector('.listen-mark') === null`;
 /** The bar's mark lies inside the window. */
 async function markInside(page: TestPage): Promise<boolean> {
   return page.evaluate<boolean>(`(() => {
-    const box = document.querySelector('.listen-mark').getBoundingClientRect();
+    const box = document.querySelector('.chat-bar .listen-mark').getBoundingClientRect();
     return box.width > 0 && box.left >= 0 && box.right <= window.innerWidth && box.top >= 0;
   })()`);
 }
@@ -118,7 +118,9 @@ test(
     assert.match(await browserRow(page), /Paused with everything else/);
     assert.equal(await switchState(page), 'true', 'the choice stays on while paused');
     assert.match(
-      await page.evaluate<string>(`document.querySelector('.listen-mark').textContent`),
+      await page.evaluate<string>(
+        `document.querySelector('.activity-header .listen-mark').getAttribute('aria-label')`,
+      ),
       /paused/,
     );
 
@@ -218,8 +220,15 @@ test(
       const { page, sockets } = await listeningPage(fixture, browser, { width, height: 820 });
       await startListening(page);
 
-      // With Activity shown (over the chat at 420 px).
+      // With Activity shown (over the chat at 420 px): its header carries
+      // the mark too.
       assert.equal(await horizontalOverflow(page), 0, `${width} px, Activity shown`);
+      await page.waitFor(`document.querySelector('.activity-header .listen-mark.on') !== null`);
+      const headerMarkInside = await page.evaluate<boolean>(`(() => {
+        const box = document.querySelector('.activity-header .listen-mark').getBoundingClientRect();
+        return box.width > 0 && box.left >= 0 && box.right <= window.innerWidth && box.top >= 0;
+      })()`);
+      assert.ok(headerMarkInside, `${width} px: Activity's header shows the mark`);
       const rowsFit = await page.evaluate<boolean>(`(() => {
       const rows = document.querySelector('.microphone-rows');
       return rows.scrollWidth <= rows.clientWidth;
@@ -234,7 +243,7 @@ test(
       assert.equal(await horizontalOverflow(page), 0, `${width} px, Activity hidden`);
 
       // Pressing the mark shows Activity.
-      await click(page, '.listen-mark');
+      await click(page, '.chat-bar .listen-mark');
       await page.waitFor(`Boolean(document.querySelector('.activity-column'))`);
 
       await click(page, '#microphone-this-browser');

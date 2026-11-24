@@ -67,6 +67,8 @@ export interface ListenHost {
   bufferedAmount(): number;
   /** Receives each `audio-ended` of this page's connection. */
   onAudioEnded(listener: (message: AudioEndedMessage) => void): void;
+  /** A page-level warning (the Store's toast), seen also with Activity hidden. */
+  warn(text: string): void;
 }
 
 /** Why the page switched Listen here off by itself. */
@@ -110,6 +112,12 @@ const noticeMilliseconds = 10_000;
 /** The listener's refusal of `audio-start` while paused (src/sensors/audio/browser-microphones.ts). */
 const pausedRefusal = 'Listening is paused';
 
+/**
+ * The gateway's refusal of an unanswered `audio-start` that another tab of
+ * this device took over meanwhile (src/remote/relay.ts, `audioEndMessages`).
+ */
+const takenOverRefusal = 'Listening moved to another tab or window of this device';
+
 const notAvailableHere = 'Listening here is not available on this computer';
 
 interface Stream {
@@ -121,7 +129,11 @@ interface Stream {
 }
 
 interface Capture {
-  /** Set once the browser opened the microphone. */
+  /** Gives up the opening: the microphone is released at once. */
+  abort: AbortController;
+  /** The browser granted the microphone: its track is live (the mark shows). */
+  granted: boolean;
+  /** Set once the worklet runs: pieces arrive, a stream may start. */
   open?: OpenCapture;
 }
 
@@ -178,9 +190,9 @@ export class ListenHere {
       view.phase = 'unavailable';
     } else if (!this.wanted) {
       view.phase = 'off';
-    } else if (this.capture && !this.capture.open) {
+    } else if (this.capture && !this.capture.granted) {
       view.phase = 'asking';
-    } else if (this.capture?.open) {
+    } else if (this.capture?.granted) {
       view.phase = 'listening';
     } else {
       view.phase = 'waiting';
@@ -249,7 +261,11 @@ export class ListenHere {
     return '';
   }
 
-  /** Whether the microphone may be open and a stream open now. */
+  /**
+   * Whether the microphone may be open and a stream open now. A pause the
+   * gateway reported before the state did (`holdUntilState`) counts as
+   * paused: the microphone closes at once.
+   */
   private allowed(): boolean {
     const engine = this.host.engine();
     return (
@@ -257,7 +273,8 @@ export class ListenHere {
       this.host.admitted() &&
       this.unavailableReason() === '' &&
       engine?.ready === true &&
-      !engine.paused
+      !engine.paused &&
+      !this.holdUntilState
     );
   }
 
@@ -311,7 +328,7 @@ export class ListenHere {
       this.openCapture();
       return;
     }
-    if (this.capture.open && !this.stream && !this.holdUntilState) {
+    if (this.capture.open && !this.stream) {
       this.startStream();
     }
   }
@@ -329,19 +346,31 @@ export class ListenHere {
   // ---- The microphone -----------------------------------------------------------
 
   private openCapture(): void {
-    const capture: Capture = {};
+    const capture: Capture = { abort: new AbortController(), granted: false };
     this.capture = capture;
 
     const opened = this.environment.open(
-      (piece) => this.piece(capture, piece),
-      () => {
-        if (this.capture === capture) {
-          this.turnOff({
-            kind: 'lost',
-            message: 'The browser stopped the microphone (switched off or removed)',
-          });
-        }
+      {
+        onGranted: () => {
+          // The track is live from here: the mark and "●" show at once,
+          // also while the worklet still loads.
+          if (this.capture === capture && !capture.granted) {
+            capture.granted = true;
+            this.environment.setCapturing(true);
+            this.emit();
+          }
+        },
+        onPiece: (piece) => this.piece(capture, piece),
+        onEnded: () => {
+          if (this.capture === capture) {
+            this.turnOff({
+              kind: 'lost',
+              message: 'The microphone stopped (switched off, removed or interrupted)',
+            });
+          }
+        },
       },
+      capture.abort.signal,
     );
     opened.then(
       (open) => {
@@ -351,7 +380,10 @@ export class ListenHere {
           return;
         }
         capture.open = open;
-        this.environment.setCapturing(true);
+        if (!capture.granted) {
+          capture.granted = true;
+          this.environment.setCapturing(true);
+        }
         this.update();
       },
       (error: unknown) => {
@@ -380,6 +412,11 @@ export class ListenHere {
     this.capture = undefined;
     if (capture.open) {
       capture.open.close();
+    } else {
+      // Still asking, or granted while the worklet loads: release now.
+      capture.abort.abort();
+    }
+    if (capture.granted) {
       this.environment.setCapturing(false);
     }
     this.setLevel(0);
@@ -448,6 +485,13 @@ export class ListenHere {
           this.update();
           return;
         }
+        if (message === takenOverRefusal) {
+          this.turnOff({
+            kind: 'moved',
+            message: 'Listening moved to another tab of this browser',
+          });
+          return;
+        }
         this.turnOff({ kind: 'stopped', message });
       },
     );
@@ -474,7 +518,7 @@ export class ListenHere {
    */
   private slowConnection(stream: Stream): void {
     stream.phase = 'stopping';
-    this.showNotice('Connection too slow: some speech was lost');
+    this.showNotice('Connection too slow: some speech was lost', true);
     const stopped = () => {
       if (this.stream === stream) {
         this.stream = undefined;
@@ -526,7 +570,7 @@ export class ListenHere {
           return;
         }
         this.lastAutomaticRestart = now;
-        this.showNotice(`Some speech was lost: ${message.message}`);
+        this.showNotice(`Some speech was lost: ${message.message}`, true);
         this.update();
         return;
       }
@@ -538,7 +582,14 @@ export class ListenHere {
 
   // ---- Notifications ----------------------------------------------------------
 
-  private showNotice(text: string): void {
+  /**
+   * A passing notice in this browser's row; `warn` also shows it as a toast,
+   * so it is seen with Activity hidden.
+   */
+  private showNotice(text: string, warn = false): void {
+    if (warn) {
+      this.host.warn(text);
+    }
     this.cancelNotice?.();
     this.notice = text;
     this.cancelNotice = this.environment.setTimeout(() => {

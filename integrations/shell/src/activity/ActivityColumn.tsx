@@ -26,7 +26,7 @@ import type { AppState } from '../../../mobile/src/store.ts';
 import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import type { GatewayChatBridge } from '../bridge.ts';
 import type { ListenHere } from '../listen/listen-here.ts';
-import { MicrophoneRows } from '../listen/ListenControls.tsx';
+import { ListenMark, MicrophoneRows } from '../listen/ListenControls.tsx';
 import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 import { ActionButton } from './ActionButton.tsx';
 import { HistoryEntry } from './HistoryEntry.tsx';
@@ -94,6 +94,9 @@ export function ActivityColumn(props: {
       <header class="activity-header">
         <h2>Activity</h2>
         <span class="activity-pill">{listening.short}</span>
+        {/* Listen here's mark: Activity covers the bar's mark where it lies
+            over the chat, and its own rows may be scrolled away. */}
+        <ListenMark listenHere={props.listenHere} />
         <button
           ref={props.hideButton}
           class="bar-button activity-toggle"

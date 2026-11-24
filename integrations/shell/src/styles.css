@@ -1697,6 +1697,15 @@ body {
   }
 }
 
+/* In Activity's header: the microphone and the meter only, not a button. */
+.activity-header .listen-mark {
+  cursor: default;
+}
+
+.activity-header .listen-mark-text {
+  display: none;
+}
+
 .listen-mark:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

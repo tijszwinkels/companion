@@ -165,6 +165,7 @@ const listenHere = new ListenHere(
     request: (action) => store.request(action, {}, { quiet: true }),
     sendAudio: (piece) => store.connection.sendBinary(piece),
     bufferedAmount: () => store.connection.bufferedAmount,
+    warn: (text) => store.toast(text, 'error'),
     onAudioEnded: (listener) => {
       store.connection.onUnrequestedMessage = (message) => {
         if (message.type === 'audio-ended') {

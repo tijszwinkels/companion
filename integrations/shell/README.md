@@ -894,7 +894,8 @@ and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening
   listens), a row for **This browser** with the Listen here switch, one row
   per other browser that listens now, and a notice that explains the state.
 - **The mark** in the bar above the chat while Listen here is on, on every
-  page (the settings screen too). It is red with a level meter ("listening
+  page (the settings screen too), and in Activity's header, which covers
+  the bar where Activity lies over the chat. It is red with a level meter ("listening
   here") while the microphone is open. It is struck through ("paused", "not
   connected", "waiting") while it waits. Pressing it shows Activity. Below
   480 px it shows only the microphone and the meter.
@@ -947,31 +948,35 @@ Further rules:
    here is available. Switching off is always possible. From a problem
    state, switching on asks again and clears the problem.
 2. The gateway's `audio-ended` with `paused` (or a start refused with
-   "Listening is paused") starts no new stream before the next state
-   message, because the state that says "paused" may still be on its way.
-3. `taken-over` → taken over; `stalled` → lost; `failed`, `shutdown`,
+   "Listening is paused") counts as paused until the next state message
+   (the state that says "paused" may still be on its way): the microphone
+   is released at once and no new stream starts before that message.
+3. `taken-over` (or a start refused because another tab took over
+   meanwhile) → taken over; `stalled` → lost; `failed`, `shutdown`,
    `replaced` or an unknown reason → stopped with the gateway's message.
+   The browser ending the track, or keeping it muted for 3 seconds (an
+   interruption by a call or another application), → lost.
 4. A start whose answer is lost with the connection is not a problem: the
    page starts again after the reconnect.
 5. "No microphone is on" is shown while Companion runs, is not paused, no
    microphone listens and this page is not listening.
-6. Where the mark cannot be seen, the page still captures only while
-   Listen here is on. The settings screen keeps the bar, and with it the
-   mark. Under the screenshot viewer or in a narrow window where Activity
-   lies over the chat, the reader sees the "●" in the tab's title, the
-   browser's own microphone sign, and (with Activity over the chat) the red
-   "Listening" row.
+6. The mark shows from the moment the browser grants the microphone (also
+   while the worklet still loads), and switching off releases the
+   microphone at once at any step. The settings screen keeps the bar, and
+   with it the mark; where Activity lies over the chat, its header carries
+   the mark. Only the screenshot viewer covers both: there the reader sees
+   the "●" in the tab's title and the browser's own microphone sign.
 
 ### Rule: sending
 
-| Case                                                                                       | What happens                                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Normal                                                                                     | Each 100 ms piece is sent while the stream is open, in order. Pieces from before the start's answer belong to no stream and are not sent.                                                                                                           |
-| More than 2 seconds of sound wait in the socket (`bufferedAmount`)                         | The piece is not sent; `audio-stop`; nothing is sent until its answer (it comes after everything sent before it); then a new `audio-start`. The notice "Connection too slow: some speech was lost" stays for 10 seconds. The microphone stays open. |
-| The gateway ends the stream for a limit (`too-large`, `too-fast`, `slow-listener`, `slow`) | A new stream at once, with the notice "Some speech was lost: …". A second such end within 10 seconds of the last automatic restart switches Listen here off with the reason.                                                                        |
-| The connection drops in the middle of a piece                                              | A WebSocket message is sent whole or not at all; the gateway ends the stream with the connection. Nothing more is sent; the microphone is released, and a new stream starts after the reconnect.                                                    |
-| An `audio-ended` arrives before the start's answer                                         | Kept, and applied when the answer names the same stream.                                                                                                                                                                                            |
-| An `audio-ended` of an earlier stream                                                      | Ignored.                                                                                                                                                                                                                                            |
+| Case                                                                                       | What happens                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Normal                                                                                     | Each 100 ms piece is sent while the stream is open, in order. Pieces from before the start's answer belong to no stream and are not sent.                                                                                                                                     |
+| More than 2 seconds of sound wait in the socket (`bufferedAmount`)                         | The piece is not sent; `audio-stop`; nothing is sent until its answer (it comes after everything sent before it); then a new `audio-start`. "Connection too slow: some speech was lost" shows as a toast and for 10 seconds in this browser's row. The microphone stays open. |
+| The gateway ends the stream for a limit (`too-large`, `too-fast`, `slow-listener`, `slow`) | A new stream at once, with "Some speech was lost: …" as a toast and in the row. A second such end within 10 seconds of the last automatic restart switches Listen here off with the reason.                                                                                   |
+| The connection drops in the middle of a piece                                              | A WebSocket message is sent whole or not at all; the gateway ends the stream with the connection. Nothing more is sent; the microphone is released, and a new stream starts after the reconnect.                                                                              |
+| An `audio-ended` arrives before the start's answer                                         | Kept, and applied when the answer names the same stream.                                                                                                                                                                                                                      |
+| An `audio-ended` of an earlier stream                                                      | Ignored.                                                                                                                                                                                                                                                                      |
 
 Sound is never dropped inside a stream: what was handed to the socket is
 delivered, or the connection, and with it the stream, ends.
@@ -1000,6 +1005,9 @@ unchanged:
   that), less data (Opus, skipping silence: about 115 MB an hour), speech
   following the browser's selection, detecting the same sentence from two
   microphones.
+- No microphone found: the switch goes off with "No microphone found.
+  Connect one, then switch Listen here on again." The page does not watch
+  for a microphone being plugged in.
 - One stream per paired device: a second tab takes it over. At most four
   browsers listen at once. When three microphones speak at the same moment,
   one utterance can be dropped (the listener's limit).
@@ -1014,7 +1022,8 @@ unchanged:
 - `listen-rules.test.ts` (Node) plays both tables against
   `listen-here.ts` with a fake connection and a fake microphone, and checks
   the conversion to 16 kHz pieces (48, 44.1, 16 and 8 kHz, averaging and
-  clamping).
+  clamping). The 3-second mute rule lives in `capture.ts` and is not
+  tested (Chromium cannot mute its fake device on request).
 - `listen-here.test.ts` runs the built shell in headless Chromium with its
   fake audio device (`--use-fake-device-for-media-stream`,
   `--use-file-for-fake-audio-capture` with a synthetic WAV), the real
@@ -2496,9 +2505,10 @@ trip kept its synthetic screenshot (View screenshot), and the bar's model
 picker lists two Pi models. The gateway runs with `--allow-microphone`
 and the listener has microphones with the test recogniser, so Listen here
 works (Resume first): what the browser hears appears in Activity as words
-for its loudness ("w3 w5"), named after the browser. No model, screen
-capture or personal data is involved, and the microphone is used only when
-Listen here is switched on in the browser. Ctrl+C stops
+for its loudness ("w3 w5"), named after the browser. No model or screen
+capture is involved. The microphone is used only when Listen here is
+switched on in the browser: its real sound then reaches the demo process,
+and is never stored (its entries say "Not saved"). Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
 picks another port.

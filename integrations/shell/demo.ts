@@ -45,8 +45,9 @@
  *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
- * screen, or binds a non-loopback address; the microphone is used only when
- * the reader switches Listen here on in the browser. Ctrl+C stops
+ * screen, or binds a non-loopback address. The microphone is used only when
+ * the reader switches Listen here on in the browser; its sound then reaches
+ * this process (the test recogniser) and is never stored. Ctrl+C stops
  * everything and removes the temporary directory.
  *
  * Options: --port N (default 8788), --frame-port N (default the port + 1).
@@ -206,7 +207,10 @@ try {
     { mode: 0o600 },
   );
 
-  let nextFrameId = 1;
+  // The demo's own synthetic frames are numbered far above the IDs the
+  // live microphone pipeline (Listen here) gives its utterances, which count
+  // from 1, so the two never share an Activity entry.
+  let nextFrameId = 1_000_000;
 
   /** A complete 1×1 PNG standing in for a captured window. */
   const syntheticPng = Buffer.from(
@@ -739,8 +743,24 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   // computer's "microphone" is silent, and a listening browser's sound is
   // transcribed as words for its loudness ("w3 w5"), so speaking into the
   // browser makes Activity entries named after the paired browser. No model
-  // runs and nothing is typed anywhere.
-  microphones = microphonesFixture(runtime, pause);
+  // runs and nothing is typed anywhere. Switching Listen here on sends the
+  // browser's real microphone to this demo process.
+  //
+  // Live sound is never stored: capture storage is on in the demo (for its
+  // synthetic entries), but the microphones get an Activity whose
+  // capture-storage admission is always refused, so their entries say
+  // "Not saved" and no recording is written to the temporary directory.
+  const demoRuntime = runtime;
+  const liveActivity = { ...demoRuntime.activity, admitCapture: () => notAdmitted };
+  microphones = microphonesFixture(
+    {
+      activity: liveActivity,
+      connectMicrophones: (connected: Parameters<DesktopRuntime['connectMicrophones']>[0]) => {
+        demoRuntime.connectMicrophones(connected);
+      },
+    } as unknown as DesktopRuntime,
+    pause,
+  );
 
   // Paused for media, as when music plays on the computer; Resume overrides it.
   pause.setMediaPlaying(true);

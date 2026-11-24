@@ -16,6 +16,7 @@ import { UncertainOutcome } from '../../integrations/mobile/src/connection.ts';
 import {
   CaptureError,
   type CaptureEnvironment,
+  type CaptureHandlers,
   type OpenCapture,
 } from '../../integrations/shell/src/listen/capture.ts';
 import {
@@ -51,6 +52,7 @@ class FakeHost implements ListenHost {
   };
   requests: SentRequest[] = [];
   pieces: ArrayBuffer[] = [];
+  warnings: string[] = [];
   buffered = 0;
   private listeners = new Set<() => void>();
   private ended?: (message: AudioEndedMessage) => void;
@@ -85,6 +87,9 @@ class FakeHost implements ListenHost {
   }
   onAudioEnded(listener: (message: AudioEndedMessage) => void) {
     this.ended = listener;
+  }
+  warn(text: string) {
+    this.warnings.push(text);
   }
 
   /** A new state message (a new engine object, as the Store makes). */
@@ -134,8 +139,16 @@ class FakeHost implements ListenHost {
 interface FakeOpening {
   onPiece(piece: ArrayBuffer): void;
   onEnded(): void;
+  /** The browser granted the microphone and the worklet runs. */
   grant(): void;
+  /** The browser granted the microphone; the worklet still loads. */
+  grantOnly(): void;
+  /** The worklet finished loading after `grantOnly`. */
+  ready(): void;
   deny(error: CaptureError): void;
+  /** The browser granted it: its track was live at some point. */
+  granted: boolean;
+  /** The track was stopped. */
   closed: boolean;
 }
 
@@ -150,18 +163,43 @@ class FakeEnvironment implements CaptureEnvironment {
   unavailable() {
     return this.unavailableReason;
   }
-  open(onPiece: (piece: ArrayBuffer) => void, onEnded: () => void): Promise<OpenCapture> {
+  open(handlers: CaptureHandlers, signal: AbortSignal): Promise<OpenCapture> {
     return new Promise((resolve, reject) => {
       const opening: FakeOpening = {
-        onPiece,
-        onEnded,
+        onPiece: (piece) => handlers.onPiece(piece),
+        onEnded: () => handlers.onEnded(),
+        granted: false,
         closed: false,
-        grant: () =>
+        grantOnly: () => {
+          if (signal.aborted) {
+            // As capture.ts: a microphone granted after the page gave up is
+            // released at once.
+            opening.granted = true;
+            opening.closed = true;
+            reject(new CaptureError('failed', 'Cancelled'));
+            return;
+          }
+          opening.granted = true;
+          handlers.onGranted();
+          signal.addEventListener('abort', () => {
+            opening.closed = true;
+            reject(new CaptureError('failed', 'Cancelled'));
+          });
+        },
+        ready: () => {
+          if (signal.aborted) {
+            return;
+          }
           resolve({
             close: () => {
               opening.closed = true;
             },
-          }),
+          });
+        },
+        grant: () => {
+          opening.grantOnly();
+          opening.ready();
+        },
         deny: (error) => reject(error),
       };
       this.openings.push(opening);
@@ -230,11 +268,13 @@ async function listening() {
   return parts;
 }
 
-/** The microphone is closed and nothing is captured. */
+/** Nothing is captured: no sign shows, and every granted microphone was released. */
 function assertClosed(parts: ReturnType<typeof setup>) {
   assert.equal(parts.environment.capturing, false);
   for (const opening of parts.environment.openings) {
-    assert.equal(opening.closed || !parts.environment.capturing, true);
+    if (opening.granted) {
+      assert.equal(opening.closed, true, 'a granted microphone is still open');
+    }
   }
 }
 
@@ -359,13 +399,16 @@ test('listening → Pause (from any panel): microphone released, stream stopped;
   assert.deepEqual(host.actions(), ['audio-stop', 'audio-start']);
 });
 
-test('listening → the gateway ends the stream as paused before the state says so: no start until the next state', async () => {
-  const { host, environment, listen } = await listening();
+test('listening → the gateway ends the stream as paused before the state says so: released at once; no start until the next state', async () => {
+  const parts = await listening();
+  const { host, environment, listen } = parts;
   host.audioEnded('s1', 'paused');
   assert.deepEqual(host.actions(), [], 'no new start while the pause is still on its way');
-  assert.equal(listen.view.phase, 'listening', 'the microphone stays open until the state');
+  assert.equal(environment.latest.closed, true, 'the microphone is released at once');
+  assert.equal(listen.view.phase, 'waiting');
+  assert.equal(listen.view.waitingFor, 'paused');
+  assertClosed(parts);
   host.changeEngine({ paused: true });
-  assert.equal(environment.latest.closed, true);
   host.changeEngine({ paused: false });
   environment.latest.grant();
   await settle();
@@ -381,7 +424,10 @@ test('a start refused as paused waits for the next state instead of switching of
   await settle();
   assert.equal(listen.view.problem, undefined);
   assert.deepEqual(host.actions(), []);
+  assert.equal(environment.latest.closed, true);
   host.changeEngine({});
+  environment.latest.grant();
+  await settle();
   assert.deepEqual(host.actions(), ['audio-start']);
 });
 
@@ -546,6 +592,44 @@ test('listening, then the listener restarts as an older version: off, without a 
   assert.equal(environment.latest.closed, true);
 });
 
+test('granted while the worklet still loads: the mark shows; switching off releases the track at once', async () => {
+  const parts = setup();
+  const { listen, environment, host } = parts;
+  listen.setWanted(true);
+  environment.latest.grantOnly();
+  assert.equal(listen.view.phase, 'listening');
+  assert.equal(environment.capturing, true, 'the mark and the title sign show while it loads');
+  assert.deepEqual(host.actions(), [], 'no stream before the worklet runs');
+
+  listen.setWanted(false);
+  assert.equal(environment.latest.closed, true, 'released without waiting for the worklet');
+  assert.equal(environment.capturing, false);
+  environment.latest.ready();
+  await settle();
+  assertClosed(parts);
+  assert.deepEqual(host.actions(), []);
+});
+
+test('granted after the page gave up (switched off while asking): released at once', async () => {
+  const parts = setup();
+  parts.listen.setWanted(true);
+  parts.listen.setWanted(false);
+  parts.environment.latest.grantOnly();
+  await settle();
+  assertClosed(parts);
+});
+
+test('a start refused because another tab took over meanwhile: off with "moved"', async () => {
+  const { host, environment, listen } = setup();
+  listen.setWanted(true);
+  environment.latest.grant();
+  await settle();
+  host.refuse('audio-start', 'Listening moved to another tab or window of this device');
+  await settle();
+  assert.equal(listen.view.problem?.kind, 'moved');
+  assert.equal(environment.latest.closed, true);
+});
+
 // ---- Rule: sending -------------------------------------------------------------
 
 test('sending: normal pieces go out in order while the stream is open', async () => {
@@ -571,6 +655,7 @@ test('sending: a backlog over two seconds ends the stream, says so and starts a 
   assert.equal(host.pieces.length, 2, 'not sent: the stream ends here');
   assert.deepEqual(host.actions(), ['audio-stop']);
   assert.equal(listen.view.notice, 'Connection too slow: some speech was lost');
+  assert.deepEqual(host.warnings, ['Connection too slow: some speech was lost'], 'also a toast');
 
   // Until the stop is answered nothing is sent, and no start is sent.
   host.buffered = 0;
@@ -595,6 +680,7 @@ test('sending: the gateway ends the stream for a limit: a new stream at once, th
     host.audioEnded('s1', reason);
     assert.deepEqual(host.actions(), ['audio-start'], reason);
     assert.match(listen.view.notice, /^Some speech was lost/);
+    assert.match(host.warnings[0], /^Some speech was lost/);
     host.answer('audio-start', { streamId: 's2' });
     await settle();
 

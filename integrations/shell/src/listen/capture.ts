@@ -38,6 +38,29 @@ export interface OpenCapture {
   close(): void;
 }
 
+/** What the page hears from an opening microphone. */
+export interface CaptureHandlers {
+  /**
+   * The browser granted the microphone: its track is live from now on, also
+   * while the worklet still loads. The page shows its mark from here.
+   */
+  onGranted(): void;
+  /** Each 100 ms piece, once the worklet runs. */
+  onPiece(piece: ArrayBuffer): void;
+  /**
+   * Called once if the browser ends the track by itself (permission
+   * withdrawn, device removed), or keeps it muted for `mutedLimitMs`.
+   */
+  onEnded(): void;
+}
+
+/**
+ * A track muted this long counts as ended: the device was interrupted (a
+ * call, another application) and the page would otherwise send silence
+ * while saying "Listening". Shorter mutes pass unnoticed.
+ */
+export const mutedLimitMs = 3_000;
+
 /** What listen-here.ts needs from the browser; a fake in the unit tests. */
 export interface CaptureEnvironment {
   /**
@@ -47,11 +70,11 @@ export interface CaptureEnvironment {
    */
   unavailable(): string;
   /**
-   * Open the microphone. `onPiece` receives each 100 ms piece; `onEnded`
-   * is called once if the browser ends the track by itself (permission
-   * withdrawn, device removed). Rejects with a CaptureError.
+   * Open the microphone. Rejects with a CaptureError. Aborting `signal`
+   * before it resolved releases the microphone at once (also while the
+   * worklet still loads); the promise then rejects.
    */
-  open(onPiece: (piece: ArrayBuffer) => void, onEnded: () => void): Promise<OpenCapture>;
+  open(handlers: CaptureHandlers, signal: AbortSignal): Promise<OpenCapture>;
   /** The signs outside the page's drawing: "●" in the title, the wake lock. */
   setCapturing(capturing: boolean): void;
   /** Milliseconds on a monotonic clock. */
@@ -97,7 +120,7 @@ export class BrowserCapture implements CaptureEnvironment {
     return '';
   }
 
-  async open(onPiece: (piece: ArrayBuffer) => void, onEnded: () => void): Promise<OpenCapture> {
+  async open(handlers: CaptureHandlers, signal: AbortSignal): Promise<OpenCapture> {
     let media: MediaStream;
     try {
       media = await navigator.mediaDevices.getUserMedia({
@@ -112,11 +135,57 @@ export class BrowserCapture implements CaptureEnvironment {
       throw mediaError(error);
     }
 
-    // From here on the microphone is open: every failure must release it.
+    // From here on the microphone is open: every failure, and the page
+    // giving up meanwhile (`signal`), must release it at once.
     let context: AudioContext | undefined;
+    let closed = false;
+    let mutedTimer: number | undefined;
+    const close = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      window.clearTimeout(mutedTimer);
+      for (const mediaTrack of media.getTracks()) {
+        mediaTrack.stop();
+      }
+      void context?.close();
+    };
+    if (signal.aborted) {
+      close();
+      throw new CaptureError('failed', 'Cancelled');
+    }
+    signal.addEventListener('abort', close);
+    handlers.onGranted();
+
+    const track = media.getAudioTracks()[0];
+    const ended = () => {
+      if (!closed) {
+        handlers.onEnded();
+      }
+    };
+    track?.addEventListener('ended', ended);
+    // A track that stays muted (see `mutedLimitMs`) counts as ended.
+    const watchMuted = () => {
+      window.clearTimeout(mutedTimer);
+      if (track?.muted) {
+        mutedTimer = window.setTimeout(() => {
+          if (track.muted) {
+            ended();
+          }
+        }, mutedLimitMs);
+      }
+    };
+    track?.addEventListener('mute', watchMuted);
+    track?.addEventListener('unmute', watchMuted);
+    watchMuted();
+
     try {
       context = new AudioContext();
       await context.audioWorklet.addModule(workletAddress);
+      if (closed) {
+        throw new CaptureError('failed', 'Cancelled');
+      }
       const source = context.createMediaStreamSource(media);
       const node = new AudioWorkletNode(context, 'listen-here-capture', {
         numberOfInputs: 1,
@@ -126,38 +195,29 @@ export class BrowserCapture implements CaptureEnvironment {
         channelInterpretation: 'speakers',
       });
       node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-        onPiece(event.data);
+        handlers.onPiece(event.data);
       };
       source.connect(node);
       // A context made without a recent click (Resume, a reconnect) may
       // start suspended; the switch's click made the page's activation.
       await context.resume();
-
-      const track = media.getAudioTracks()[0];
-      let closed = false;
-      const close = () => {
-        if (closed) {
-          return;
-        }
-        closed = true;
-        node.port.onmessage = null;
-        source.disconnect();
-        for (const mediaTrack of media.getTracks()) {
-          mediaTrack.stop();
-        }
-        void context?.close();
-      };
-      track?.addEventListener('ended', () => {
-        if (!closed) {
-          onEnded();
-        }
-      });
-      return { close };
-    } catch (error) {
-      for (const mediaTrack of media.getTracks()) {
-        mediaTrack.stop();
+      if (closed) {
+        throw new CaptureError('failed', 'Cancelled');
       }
-      void context?.close();
+      signal.removeEventListener('abort', close);
+      return {
+        close: () => {
+          node.port.onmessage = null;
+          source.disconnect();
+          close();
+        },
+      };
+    } catch (error) {
+      signal.removeEventListener('abort', close);
+      close();
+      if (error instanceof CaptureError) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new CaptureError('failed', `The microphone could not be used: ${message}`);
     }
@@ -200,6 +260,13 @@ export class BrowserCapture implements CaptureEnvironment {
       const lock = await wakeLock.request('screen');
       if (this.capturing && !this.wakeLock) {
         this.wakeLock = lock;
+        // The browser releases it when the page is hidden; forget it then,
+        // so showing the page again asks for a new one.
+        (lock as unknown as EventTarget).addEventListener?.('release', () => {
+          if (this.wakeLock === lock) {
+            this.wakeLock = undefined;
+          }
+        });
       } else {
         await lock.release();
       }

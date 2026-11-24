@@ -68,6 +68,7 @@ export async function writeSpeechWav(
  * Recorded by each page itself, before its own scripts run:
  * - `__liveTracks()`: microphone tracks still live (0 once released);
  * - `__binarySent`: binary WebSocket messages the page sent (audio pieces);
+ * - `__audioStarts`: `audio-start` requests the page sent;
  * - `__holdPermission`: set to true to make the next microphone request
  *   wait forever, as a browser does while its permission prompt is open.
  */
@@ -90,10 +91,13 @@ const pageProbe = `
       return stream;
     };
   }
+  window.__audioStarts = 0;
   const send = WebSocket.prototype.send;
   WebSocket.prototype.send = function (data) {
     if (typeof data !== 'string') {
       window.__binarySent++;
+    } else if (data.includes('"action":"audio-start"')) {
+      window.__audioStarts++;
     }
     return send.call(this, data);
   };
@@ -103,7 +107,13 @@ export async function listenSetup(
   context: { after(callback: () => Promise<void>): void },
   options: { allowMicrophone?: boolean } = {},
 ) {
+  // Each resource's cleanup is registered as soon as it exists, so a setup
+  // that fails halfway leaves nothing behind. `after` callbacks run in
+  // registration order; each one only releases what it owns.
   const directory = await mkdtemp(join(tmpdir(), 'companion-listen-'));
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
   const wav = join(directory, 'speech.wav');
   await writeSpeechWav(wav);
 
@@ -112,18 +122,19 @@ export async function listenSetup(
     gateway: { allowMicrophone: options.allowMicrophone ?? true },
   });
   const microphones = microphonesFixture(fixture.desktop.runtime, fixture.desktop.pause);
+  context.after(async () => {
+    await microphones.close();
+    await fixture.close();
+  });
+
   const browser = new TestBrowser([
     '--use-fake-device-for-media-stream',
     `--use-file-for-fake-audio-capture=${wav}`,
   ]);
-  await browser.start();
-
   context.after(async () => {
     await browser.close();
-    await microphones.close();
-    await fixture.close();
-    await rm(directory, { recursive: true, force: true });
   });
+  await browser.start();
   return { fixture, microphones, browser };
 }
 

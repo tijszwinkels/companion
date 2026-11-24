@@ -50,6 +50,8 @@ test(
 
     const startedAt = Date.now();
     const sentAtStart = await page.evaluate<number>(`window.__binarySent`);
+    const startsAtStart = await page.evaluate<number>(`window.__audioStarts`);
+    const streamAtStart = microphones.browsers.list[0]?.id;
     const utterancesAtStart = microphones.dispatched.length;
     const hiddenChecks: string[] = [];
     let utterancesBeforeLastMinute = utterancesAtStart;
@@ -76,6 +78,9 @@ test(
       utterancesDuringRun: microphones.dispatched.length - utterancesAtStart,
       utterancesLastMinute: microphones.dispatched.length - utterancesBeforeLastMinute,
       streamOpenAtEnd: listenerStreams(microphones).length === 1,
+      sameStreamThroughout:
+        microphones.browsers.list[0]?.id === streamAtStart &&
+        (await page.evaluate<number>(`window.__audioStarts`)) === startsAtStart,
       markStillOn: await page.evaluate<boolean>(
         `document.querySelector('.listen-mark.on') !== null`,
       ),
@@ -86,7 +91,8 @@ test(
     }
 
     assert.ok(report.alwaysHidden, 'the page was in the background throughout');
-    assert.ok(report.streamOpenAtEnd, 'the stream never ended');
+    assert.ok(report.streamOpenAtEnd, 'a stream is open at the end');
+    assert.ok(report.sameStreamThroughout, 'the stream never ended or restarted');
     assert.ok(report.markStillOn);
     assert.ok(report.utterancesLastMinute > 0, 'utterances still arrive in the last minute');
     // Real time within 1 %: a page that stops or slows in the background

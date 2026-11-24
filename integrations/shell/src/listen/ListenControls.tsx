@@ -2,11 +2,12 @@
  * What the page shows of Listen here (listen-here.ts), as in the agreed
  * mock-up:
  *
- * - `ListenMark`: the always-visible mark in the bar above the chat while
- *   Listen here is on: red with a level meter while the microphone is open,
- *   struck through while it waits (paused, not connected). Pressing it
- *   shows the Activity column. Hidden while Listen here is off or the
- *   browser still asks for permission (nothing is captured then).
+ * - `ListenMark`: the always-visible mark in the bar above the chat (and in
+ *   Activity's header) while Listen here is on: red with a level meter while
+ *   the microphone is open, struck through while it waits (paused, not
+ *   connected). Pressing it in the bar shows the Activity column. Hidden
+ *   while Listen here is off or the browser still asks for permission
+ *   (nothing is captured then).
  * - `MicrophoneRows`: Activity's listening block below Pause: one row with
  *   a switch for the computer's microphone (`set-computer-microphone`, the
  *   design's D8), one with the Listen here switch for this browser, one per
@@ -17,6 +18,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
+import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import type { ActivityRequests } from '../activity/requests.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
@@ -63,50 +65,67 @@ export function LevelMeter(props: { listenHere: ListenHere }) {
   );
 }
 
-/** The mark in the bar above the chat. */
-export function ListenMark(props: { listenHere: ListenHere; onShowActivity: () => void }) {
+/**
+ * The mark while Listen here is on. In the bar above the chat it is a
+ * button that shows Activity (`onShowActivity`). In Activity's header,
+ * which covers the bar where Activity lies over the chat, it is the same
+ * mark without a button.
+ */
+export function ListenMark(props: { listenHere: ListenHere; onShowActivity?: () => void }) {
   const view = useListenView(props.listenHere);
 
+  let classes = '';
+  let label = '';
+  let content: ComponentChildren = null;
   if (view.phase === 'listening') {
-    return (
-      <button
-        type="button"
-        class="listen-mark on"
-        title="This browser's microphone is listening. Show Activity"
-        aria-label="This browser is listening. Show Activity"
-        onClick={props.onShowActivity}
-      >
-        <span aria-hidden="true">🎙</span>
+    classes = 'listen-mark on';
+    label = 'This browser is listening';
+    content = (
+      <>
+        <MicIcon size={16} />
         <LevelMeter listenHere={props.listenHere} />
         <span class="listen-mark-text">listening here</span>
-      </button>
+      </>
     );
-  }
-
-  if (view.phase === 'waiting') {
+  } else if (view.phase === 'waiting') {
     let text = 'paused';
-    let title = 'Listening is paused; this browser listens again on Resume';
+    label = 'Listen here: paused; this browser listens again on Resume';
     if (view.waitingFor === 'connection') {
       text = 'not connected';
-      title = 'This browser listens again once it is connected';
+      label = 'Listen here: not connected; this browser listens again once it is connected';
     } else if (view.waitingFor === 'companion') {
       text = 'waiting';
-      title = 'This browser listens again once Companion is ready';
+      label = 'Listen here: waiting; this browser listens again once Companion is ready';
     }
-    return (
-      <button
-        type="button"
-        class="listen-mark waiting"
-        title={`${title}. Show Activity`}
-        aria-label={`Listen here: ${text}. Show Activity`}
-        onClick={props.onShowActivity}
-      >
-        <span aria-hidden="true">🎙</span> <span class="listen-mark-text">{text}</span>
-      </button>
+    classes = 'listen-mark waiting';
+    content = (
+      <>
+        <MicOffIcon size={16} />
+        <span class="listen-mark-text">{text}</span>
+      </>
     );
+  } else {
+    return null;
   }
 
-  return null;
+  if (!props.onShowActivity) {
+    return (
+      <span class={classes} role="img" aria-label={label} title={label}>
+        {content}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      class={classes}
+      title={`${label}. Show Activity`}
+      aria-label={`${label}. Show Activity`}
+      onClick={props.onShowActivity}
+    >
+      {content}
+    </button>
+  );
 }
 
 /** Activity's microphone rows: the computer, this browser, other browsers. */
