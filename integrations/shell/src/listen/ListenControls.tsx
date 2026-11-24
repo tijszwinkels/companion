@@ -1,0 +1,351 @@
+/**
+ * What the page shows of Listen here (listen-here.ts), as in the agreed
+ * mock-up:
+ *
+ * - `ListenMark`: the always-visible mark in the bar above the chat while
+ *   Listen here is on: red with a level meter while the microphone is open,
+ *   struck through while it waits (paused, not connected). Pressing it
+ *   shows the Activity column. Hidden while Listen here is off or the
+ *   browser still asks for permission (nothing is captured then).
+ * - `MicrophoneRows`: Activity's listening block below Pause: one row with
+ *   a switch for the computer's microphone (`set-computer-microphone`, the
+ *   design's D8), one with the Listen here switch for this browser, one per
+ *   other browser that listens now, and a notice that explains the state
+ *   (permission, refused, moved, no sound, no microphone on).
+ */
+
+import type { ComponentChildren } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
+
+import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
+import type { ActivityRequests } from '../activity/requests.ts';
+import type { GatewayChatBridge } from '../bridge.ts';
+import type { ListenHere, ListenView } from './listen-here.ts';
+
+/** The Activity requests key of the computer's switch. */
+const computerSwitchKey = 'computer-microphone';
+
+/** Listen here's view, drawn again whenever it changes. */
+export function useListenView(listenHere: ListenHere): ListenView {
+  const [view, setView] = useState(listenHere.view);
+  useEffect(() => {
+    const unsubscribe = listenHere.subscribe(() => setView(listenHere.view));
+    // It can change between the first render and this subscription.
+    setView(listenHere.view);
+    return unsubscribe;
+  }, [listenHere]);
+  return view;
+}
+
+/**
+ * Four bars whose heights follow the microphone's level. Subscribed on its
+ * own, so ten level changes a second redraw only the meter.
+ */
+export function LevelMeter(props: { listenHere: ListenHere }) {
+  const [level, setLevel] = useState(props.listenHere.currentLevel);
+  useEffect(() => {
+    const listenHere = props.listenHere;
+    const unsubscribe = listenHere.subscribeLevel(() => setLevel(listenHere.currentLevel));
+    setLevel(listenHere.currentLevel);
+    return unsubscribe;
+  }, [props.listenHere]);
+
+  // Each bar responds to a louder level than the one before it, so quiet
+  // sound moves the first bar and speech moves all four.
+  const bars = [0.02, 0.08, 0.2, 0.4].map((threshold, index) => {
+    const height = Math.min(1, level / threshold);
+    return <i key={index} style={{ height: `${3 + Math.round(height * 10)}px` }} />;
+  });
+  return (
+    <span class="level-meter" aria-hidden="true" data-level={level.toFixed(3)}>
+      {bars}
+    </span>
+  );
+}
+
+/** The mark in the bar above the chat. */
+export function ListenMark(props: { listenHere: ListenHere; onShowActivity: () => void }) {
+  const view = useListenView(props.listenHere);
+
+  if (view.phase === 'listening') {
+    return (
+      <button
+        type="button"
+        class="listen-mark on"
+        title="This browser's microphone is listening. Show Activity"
+        aria-label="This browser is listening. Show Activity"
+        onClick={props.onShowActivity}
+      >
+        <span aria-hidden="true">🎙</span>
+        <LevelMeter listenHere={props.listenHere} />
+        <span class="listen-mark-text">listening here</span>
+      </button>
+    );
+  }
+
+  if (view.phase === 'waiting') {
+    let text = 'paused';
+    let title = 'Listening is paused; this browser listens again on Resume';
+    if (view.waitingFor === 'connection') {
+      text = 'not connected';
+      title = 'This browser listens again once it is connected';
+    } else if (view.waitingFor === 'companion') {
+      text = 'waiting';
+      title = 'This browser listens again once Companion is ready';
+    }
+    return (
+      <button
+        type="button"
+        class="listen-mark waiting"
+        title={`${title}. Show Activity`}
+        aria-label={`Listen here: ${text}. Show Activity`}
+        onClick={props.onShowActivity}
+      >
+        <span aria-hidden="true">🎙</span> <span class="listen-mark-text">{text}</span>
+      </button>
+    );
+  }
+
+  return null;
+}
+
+/** Activity's microphone rows: the computer, this browser, other browsers. */
+export function MicrophoneRows(props: {
+  listenHere: ListenHere;
+  bridge: GatewayChatBridge;
+  requests: ActivityRequests;
+}) {
+  const store = useStore();
+  const state = useAppState();
+  const view = useListenView(props.listenHere);
+  const engine = state.engine;
+  const microphones = engine?.microphones;
+  const admitted = props.bridge.admitted;
+  const running = admitted && engine?.ready === true;
+  const paused = engine?.paused === true;
+
+  // The computer's switch (D8): only where the listener has microphones.
+  let computerRow = null;
+  if (microphones) {
+    const pending = props.requests.isPending(computerSwitchKey);
+    let status = 'Off';
+    if (microphones.computer && paused) {
+      status = 'Paused with everything else';
+    } else if (microphones.computer) {
+      const listed = microphones.listening.some((microphone) => microphone.kind === 'computer');
+      status = listed ? 'Listening' : 'On, not listening at the moment';
+    }
+    computerRow = (
+      <MicrophoneRow
+        id="microphone-computer"
+        title="Computer"
+        name="Computer's microphone"
+        status={status}
+        checked={microphones.computer}
+        available={admitted && !pending}
+        onPress={() => {
+          // Checked again at the press: the state may have changed.
+          const current = store.state.engine?.microphones;
+          if (!props.bridge.admitted || !current) {
+            return;
+          }
+          void props.requests.run(computerSwitchKey, () =>
+            store.request('set-computer-microphone', { enabled: !current.computer }),
+          );
+        }}
+      />
+    );
+  }
+
+  // Other browsers that listen now (not this page's own stream).
+  const others = (microphones?.listening ?? []).filter(
+    (microphone) => microphone.kind === 'browser' && microphone.id !== view.streamId,
+  );
+
+  // A notice below the rows, as in the mock-up.
+  let notice = null;
+  if (view.phase === 'asking') {
+    notice = (
+      <p class="listen-notice">
+        Your browser asks for the microphone. Sound from this browser goes to Companion on your
+        computer and is handled as speech there.
+      </p>
+    );
+  } else if (view.phase === 'off' && view.problem) {
+    notice = <ProblemNotice view={view} />;
+  } else if (
+    running &&
+    microphones &&
+    !paused &&
+    microphones.listening.length === 0 &&
+    view.phase !== 'listening'
+  ) {
+    notice = (
+      <p class="listen-notice warn">
+        <b>No microphone is on.</b> Companion hears nothing until one is switched on.
+      </p>
+    );
+  }
+
+  return (
+    <div class="microphone-rows">
+      {computerRow}
+      <ThisBrowserRow listenHere={props.listenHere} view={view} admitted={admitted} />
+      {others.map((microphone) => (
+        <div class="microphone-row" key={microphone.id}>
+          <div class="microphone-text">
+            <span class="microphone-title">{microphone.name}</span>
+            <span class="microphone-status">Listening</span>
+          </div>
+        </div>
+      ))}
+      {notice}
+    </div>
+  );
+}
+
+/** This browser's row: the Listen here switch and what it is doing. */
+function ThisBrowserRow(props: { listenHere: ListenHere; view: ListenView; admitted: boolean }) {
+  const view = props.view;
+
+  if (view.phase === 'unavailable') {
+    return (
+      <div class="microphone-row this-browser" data-listen={view.phase}>
+        <div class="microphone-text">
+          <span class="microphone-title">This browser</span>
+          <span class="microphone-status">{view.unavailable}</span>
+        </div>
+      </div>
+    );
+  }
+
+  let status: ComponentChildren = 'Off';
+  if (view.phase === 'off' && view.problem) {
+    status = view.problem.message;
+  } else if (view.phase === 'asking') {
+    status = 'Waiting for the browser’s permission…';
+  } else if (view.phase === 'listening') {
+    status = (
+      <>
+        Listening <LevelMeter listenHere={props.listenHere} />
+      </>
+    );
+  } else if (view.phase === 'waiting') {
+    status = 'Paused with everything else';
+    if (view.waitingFor === 'connection') {
+      status = 'Waiting for the connection to Companion';
+    } else if (view.waitingFor === 'companion') {
+      status = 'Waiting for Companion';
+    }
+  }
+
+  const on = view.phase !== 'off';
+  const classes = ['microphone-row', 'this-browser'];
+  if (view.phase === 'listening') {
+    classes.push('mine');
+  }
+
+  return (
+    <>
+      <MicrophoneRow
+        id="microphone-this-browser"
+        className={classes.join(' ')}
+        phase={view.phase}
+        title="This browser"
+        name="Listen here"
+        status={status}
+        checked={on}
+        // Off is always possible; on only while requests are admitted.
+        available={on || props.admitted}
+        onPress={() => props.listenHere.setWanted(!on)}
+      />
+      {view.notice && <p class="listen-notice warn">{view.notice}</p>}
+    </>
+  );
+}
+
+/** Why the page switched Listen here off, with what to do. */
+function ProblemNotice(props: { view: ListenView }) {
+  const problem = props.view.problem!;
+  if (problem.kind === 'refused') {
+    return (
+      <p class="listen-notice bad">
+        <b>Microphone not allowed.</b> Allow it for this site with the icon in the address bar, then
+        switch Listen here on again.
+      </p>
+    );
+  }
+  if (problem.kind === 'moved') {
+    return (
+      <p class="listen-notice warn">
+        <b>Listening moved to another tab of this browser.</b> Switch on here to take it back.
+      </p>
+    );
+  }
+  if (problem.kind === 'lost') {
+    return (
+      <p class="listen-notice warn">
+        <b>No sound from this browser.</b> Listen here was switched off. Switch it on to resume.
+      </p>
+    );
+  }
+  if (problem.kind === 'no-microphone') {
+    return (
+      <p class="listen-notice bad">
+        <b>No microphone found.</b> Connect one, then switch Listen here on again.
+      </p>
+    );
+  }
+  return (
+    <p class="listen-notice bad">
+      <b>Listen here stopped.</b> {problem.message}. Switch it on to try again.
+    </p>
+  );
+}
+
+/** One microphone with its switch; the whole row presses the switch. */
+function MicrophoneRow(props: {
+  id: string;
+  className?: string;
+  phase?: string;
+  title: string;
+  name: string;
+  status: ComponentChildren;
+  checked: boolean;
+  available: boolean;
+  onPress: () => void;
+}) {
+  const statusId = `${props.id}-status`;
+
+  function press() {
+    if (props.available) {
+      props.onPress();
+    }
+  }
+
+  return (
+    <div class={props.className ?? 'microphone-row'} data-listen={props.phase} onClick={press}>
+      <div class="microphone-text">
+        <span class="microphone-title">{props.title}</span>
+        <span class="microphone-status" id={statusId}>
+          {props.status}
+        </span>
+      </div>
+      <button
+        type="button"
+        id={props.id}
+        class="setting-switch"
+        role="switch"
+        aria-checked={props.checked}
+        aria-label={props.name}
+        aria-describedby={statusId}
+        aria-disabled={props.available ? undefined : 'true'}
+        onClick={(event) => {
+          // The row's handler presses it once.
+          event.stopPropagation();
+          press();
+        }}
+      />
+    </div>
+  );
+}

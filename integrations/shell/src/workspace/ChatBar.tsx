@@ -15,6 +15,10 @@
  * Left of that ☰ (at the right end while the column is shown), the gear
  * shows the settings screen in place of the chat and, pressed again, goes
  * back (../settings/SettingsScreen.tsx).
+ *
+ * While Listen here is on, its mark (../listen/ListenControls.tsx) sits
+ * after the title and state, on every page, so a listening page is never
+ * without it.
  */
 
 import type { ComponentChildren, RefObject } from 'preact';
@@ -47,6 +51,8 @@ export function ChatBar(props: {
   /** Whether the settings screen is shown (the gear is then pressed). */
   settingsShown: boolean;
   onToggleSettings: () => void;
+  /** Listen here's mark, or null while it is off. */
+  listenMark?: ComponentChildren;
   children?: ComponentChildren;
 }) {
   let toggleLabel = 'Show the conversation list';
@@ -78,6 +84,7 @@ export function ChatBar(props: {
         {props.state ? <span class="chat-bar-state">{props.state}</span> : null}
         {props.model ?? null}
       </div>
+      {props.listenMark ?? null}
       {props.children}
       <button
         class="bar-button settings-toggle"

@@ -246,6 +246,12 @@ export function HistoryEntry(props: {
             <span>
               {time} · {decision} · {outcome}
             </span>
+            {/* Heard by a listening browser: its device's name (Listen here). */}
+            {entry.microphone && (
+              <span class="activity-microphone" title="Heard by this listening browser">
+                {entry.microphone}
+              </span>
+            )}
             {entry.application && <span class="activity-pill">{entry.application}</span>}
           </span>
           {actions.deleteOffered && (

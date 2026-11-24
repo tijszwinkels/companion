@@ -39,6 +39,8 @@ A paired browser can:
     gateway has a frame origin (see [Inline widgets](#inline-widgets));
 11. show a conversation's **pinned widget** above the chat or at the right,
     and pin and unpin widgets (see [Pinned widgets](#pinned-widgets)).
+12. be one more **microphone** of Companion: with **Listen here** on, its
+    speech is handled as speech at the computer (see [Listen here](#listen-here)).
 
 Not yet in the browser: Activity history of earlier listener runs, inserting
 text into desktop applications and session applications.
@@ -863,6 +865,172 @@ resumes it (the button shows the listener's state again at once). The whole
 run's history is drawn (it is read in pages, not shown in pages). The
 marker's memory is this page's: a reload or a second tab starts from its
 own first reading.
+
+## Listen here
+
+A paired browser can be one more microphone of Companion. While **Listen
+here** is on, the browser's microphone goes to the listener on the
+computer, and its speech is handled exactly as speech at the computer: it
+goes to the conversation selected there, and it can do there whatever speech
+can (also type into the application in front). Every microphone that is on
+feeds the same queue. Pause is one state for all of them. The design is in
+the gateway's [listening browsers](../../src/remote/README.md#listening-browsers)
+and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening-browsers).
+
+### What a client must do
+
+1. Start the gateway with `--allow-microphone`. Without it the gateway's
+   `Permissions-Policy` refuses the microphone to its own page, and the row
+   says "Companion's gateway does not allow the microphone on this page".
+2. Serve the page as a secure page: HTTPS, or a loopback address.
+3. In Activity, switch **This browser** on. The browser asks for the
+   microphone once per site.
+
+### What the page shows
+
+- **Activity's listening block**: Pause and Resume as before. Below them
+  are a row for the **Computer** with its own switch (`set-computer-microphone`,
+  so the computer's microphone can be off while a browser beside it
+  listens), a row for **This browser** with the Listen here switch, one row
+  per other browser that listens now, and a notice that explains the state.
+- **The mark** in the bar above the chat while Listen here is on, on every
+  page (the settings screen too). It is red with a level meter ("listening
+  here") while the microphone is open. It is struck through ("paused", "not
+  connected", "waiting") while it waits. Pressing it shows Activity. Below
+  480 px it shows only the microphone and the meter.
+- **"●" before the tab's title** while the microphone is open, and the
+  browser's own microphone sign.
+- **Activity entries** that a browser heard name it (its device name, in
+  red after the outcome).
+- **The screen stays on** while the page listens and is in front (the
+  browser's wake lock, where it has one). A phone stops capturing when its
+  screen locks, so the lock matters there most.
+
+The sound: `getUserMedia` with echo cancellation, noise suppression and
+automatic gain on, an `AudioWorklet` (`listen-worklet.js`, from the page's own
+origin) that converts the device's rate to 16 kHz mono signed 16-bit samples,
+and pieces of 100 ms (3,200 bytes) sent as binary messages on the page's
+existing connection, between `audio-start` and `audio-stop`. No new socket,
+no new storage, and no change to the page's Content-Security-Policy
+(`script-src 'self'` already admits the worklet).
+
+**Not remembered across a reload.** Every page starts with Listen here off,
+so a page never starts listening by itself. This rule lives in one place,
+`src/listen/choice.ts`, and can be changed there.
+
+### Rule: listening states
+
+`src/listen/listen-here.ts`. The microphone is open and a stream is open or
+opening exactly while Listen here is on, requests are admitted (connected,
+after this connection's snapshot), Companion runs and listening is not
+paused. Otherwise both are closed. Pieces are sent only while the stream is
+open. When the page switches Listen here off by itself it says why, and it
+never switches on again by itself, so two tabs never take the stream from
+each other in turn.
+
+| State                                                                     | What the page shows                                                           | Switch off                  | Pause (any panel)                | Resume        | Tab hidden and back | Connection lost, then back                                                    | Sign-out        | Another tab takes over | Permission withdrawn in the browser |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------- | -------------------------------- | ------------- | ------------------- | ----------------------------------------------------------------------------- | --------------- | ---------------------- | ----------------------------------- |
+| Off (every page starts here)                                              | Row "Off"; no mark                                                            | —                           | —                                | —             | nothing             | nothing                                                                       | stays off       | nothing                | nothing                             |
+| Asking permission                                                         | Row "Waiting for the browser's permission…", notice what will happen; no mark | off; closed once answered   | waits; closed once answered      | asks again    | nothing             | waits; closed once answered; asks again                                       | off             | —                      | → refused                           |
+| Listening here                                                            | Red mark with meter, "●" title, row "Listening" with meter                    | `audio-stop`, released, off | `audio-stop`, released, → paused | —             | nothing (sends on)  | released (the gateway ended the stream); listens again after the new snapshot | released, off   | released, → taken over | `audio-stop`, released, → lost      |
+| Paused                                                                    | Struck mark "paused"; row "Paused with everything else"; switch on            | off                         | —                                | asks, listens | nothing             | stays paused                                                                  | off             | —                      | —                                   |
+| Waiting for the connection or Companion                                   | Struck mark "not connected" or "waiting"; row says which                      | off                         | → paused                         | —             | nothing             | listens once admitted and running                                             | off             | —                      | —                                   |
+| Permission refused                                                        | Switch off; row "The browser refused the microphone"; notice how to allow it  | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Taken over by another tab                                                 | Switch off; notice "Listening moved to another tab of this browser"           | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Lost (no sound reached Companion, or the track ended)                     | Switch off; notice "No sound from this browser"                               | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Stopped by Companion (refused, failed, stopping)                          | Switch off; notice with Companion's reason                                    | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Not available (no secure page, no capture, the policy, an older listener) | No switch; the row says why                                                   | —                           | —                                | —             | —                   | read again from the new state                                                 | —               | —                      | —                                   |
+
+Further rules:
+
+1. Switching on is accepted only while requests are admitted and listening
+   here is available. Switching off is always possible. From a problem
+   state, switching on asks again and clears the problem.
+2. The gateway's `audio-ended` with `paused` (or a start refused with
+   "Listening is paused") starts no new stream before the next state
+   message, because the state that says "paused" may still be on its way.
+3. `taken-over` → taken over; `stalled` → lost; `failed`, `shutdown`,
+   `replaced` or an unknown reason → stopped with the gateway's message.
+4. A start whose answer is lost with the connection is not a problem: the
+   page starts again after the reconnect.
+5. "No microphone is on" is shown while Companion runs, is not paused, no
+   microphone listens and this page is not listening.
+6. Where the mark cannot be seen, the page still captures only while
+   Listen here is on. The settings screen keeps the bar, and with it the
+   mark. Under the screenshot viewer or in a narrow window where Activity
+   lies over the chat, the reader sees the "●" in the tab's title, the
+   browser's own microphone sign, and (with Activity over the chat) the red
+   "Listening" row.
+
+### Rule: sending
+
+| Case                                                                                       | What happens                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Normal                                                                                     | Each 100 ms piece is sent while the stream is open, in order. Pieces from before the start's answer belong to no stream and are not sent.                                                                                                           |
+| More than 2 seconds of sound wait in the socket (`bufferedAmount`)                         | The piece is not sent; `audio-stop`; nothing is sent until its answer (it comes after everything sent before it); then a new `audio-start`. The notice "Connection too slow: some speech was lost" stays for 10 seconds. The microphone stays open. |
+| The gateway ends the stream for a limit (`too-large`, `too-fast`, `slow-listener`, `slow`) | A new stream at once, with the notice "Some speech was lost: …". A second such end within 10 seconds of the last automatic restart switches Listen here off with the reason.                                                                        |
+| The connection drops in the middle of a piece                                              | A WebSocket message is sent whole or not at all; the gateway ends the stream with the connection. Nothing more is sent; the microphone is released, and a new stream starts after the reconnect.                                                    |
+| An `audio-ended` arrives before the start's answer                                         | Kept, and applied when the answer names the same stream.                                                                                                                                                                                            |
+| An `audio-ended` of an earlier stream                                                      | Ignored.                                                                                                                                                                                                                                            |
+
+Sound is never dropped inside a stream: what was handed to the socket is
+delivered, or the connection, and with it the stream, ends.
+
+### The phone Connection's additions
+
+The shell uses the phone panel's `Connection`
+(`integrations/mobile/src/connection.ts`), which gained three additive
+members for this. The phone panel does not use them, and its behaviour is
+unchanged:
+
+- `sendBinary(data)`: one binary message on the open, authenticated socket;
+  false while not online.
+- `bufferedAmount`: the socket's `bufferedAmount` (0 without one), for the
+  2-second rule.
+- `onUnrequestedMessage`: an optional listener for gateway messages that
+  answer no request and are not otherwise handled (`audio-ended`). Without
+  one, such messages are ignored as before.
+
+### Known limits and what is left out
+
+- Two microphones in one room hear the same sentence, and Companion acts on
+  it twice. Switch one off (the computer's switch is for that).
+- Not built: spoken replies or sounds in the browser, Record in the shell,
+  choosing among microphones on one device (the browser's own picker does
+  that), less data (Opus, skipping silence: about 115 MB an hour), speech
+  following the browser's selection, detecting the same sentence from two
+  microphones.
+- One stream per paired device: a second tab takes it over. At most four
+  browsers listen at once. When three microphones speak at the same moment,
+  one utterance can be dropped (the listener's limit).
+- A phone stops capturing when its screen locks or the browser is left;
+  Companion then ends the stream (`stalled`), and one tap on the switch
+  resumes.
+- The recognition quality of browser-processed sound (noise suppression,
+  automatic gain) has only been checked with synthetic sound.
+
+### Tests
+
+- `listen-rules.test.ts` (Node) plays both tables against
+  `listen-here.ts` with a fake connection and a fake microphone, and checks
+  the conversion to 16 kHz pieces (48, 44.1, 16 and 8 kHz, averaging and
+  clamping).
+- `listen-here.test.ts` runs the built shell in headless Chromium with its
+  fake audio device (`--use-fake-device-for-media-stream`,
+  `--use-file-for-fake-audio-capture` with a synthetic WAV), the real
+  gateway and a real listener control socket with the test recogniser
+  (`test/microphones-fixture.ts`). It checks that switching on makes the
+  sound arrive as utterances named after the browser, that the mark, the
+  meter and "●" show, and that switching off ends the stream and releases
+  the microphone. It also checks Pause and Resume from the page and from
+  the computer, the computer's switch, permission refused, a second tab
+  taking over, 420 and 1600 px without overflow, no request to another
+  origin and no policy violation, and the header with and without
+  `--allow-microphone`. With COMPANION_SHELL_SCREENSHOTS set, it saves each
+  state at 420 and 1280 px.
+- `listen-soak.test.ts` (opt-in, COMPANION_LISTEN_SOAK_MINUTES) listens for
+  that many minutes in a background tab and compares the pieces sent with
+  the pieces expected.
 
 ## Settings, turn timers and message times
 
@@ -2303,7 +2471,7 @@ widget pages from the gateway's frame origin when one is configured
 
 ```sh
 npm ci
-npm run shell:build      # → integrations/shell/dist (index.html, app.js, app.css)
+npm run shell:build      # → integrations/shell/dist (index.html, app.js, app.css, listen-worklet.js)
 npm run shell:demo       # synthetic listener + gateway on http://127.0.0.1:8788 (frames on 8789)
 npm run test:shell       # builds, then runs the unit and headless Chromium suites
 ```
@@ -2325,8 +2493,12 @@ the flaky-test conversation's turn keeps running (its timer counts), and the
 others show how long their last turn took. The bug-fix conversation has a
 tool group (one call's output is long enough to page through), the city
 trip kept its synthetic screenshot (View screenshot), and the bar's model
-picker lists two Pi models. No
-model, microphone, screen capture or personal data is involved. Ctrl+C stops
+picker lists two Pi models. The gateway runs with `--allow-microphone`
+and the listener has microphones with the test recogniser, so Listen here
+works (Resume first): what the browser hears appears in Activity as words
+for its loudness ("w3 w5"), named after the browser. No model, screen
+capture or personal data is involved, and the microphone is used only when
+Listen here is switched on in the browser. Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
 picks another port.
@@ -2765,6 +2937,12 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/screenshots/ScreenshotViewer.tsx` | The viewer over the page (the phone panel's Modal)                            |
 | `src/models/model-choice.ts`           | What the model picker shows and offers, without DOM access                    |
 | `src/models/ModelPicker.tsx`           | The model button and picker in the bar                                        |
+| `src/listen/listen-here.ts`            | Listen here's rule: when the microphone and the stream are open; sending      |
+| `src/listen/capture.ts`                | The browser's microphone, worklet, wake lock and tab-title mark               |
+| `src/listen/capture-worklet.ts`        | The AudioWorklet (built as `listen-worklet.js`): 100 ms pieces at 16 kHz      |
+| `src/listen/pcm-pieces.ts`             | Conversion to 16 kHz signed 16-bit pieces; the meter's level                  |
+| `src/listen/choice.ts`                 | Whether the Listen here choice is remembered (not, for now)                   |
+| `src/listen/ListenControls.tsx`        | The bar's mark, the level meter and Activity's microphone rows                |
 | `src/styles.css`                       | The frame around the chat; the chat keeps its desktop stylesheet              |
 | `src/widgets/InlineWidget.tsx`         | Widget panels, inline and pinned: header, frame, states, messages, visibility |
 | `src/widgets/frame-address.ts`         | Which frame addresses are used (exactly `<origin>/f/<handle>/`)               |

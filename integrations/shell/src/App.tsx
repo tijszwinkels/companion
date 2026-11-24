@@ -23,6 +23,7 @@ import { useAppState, useStore } from '../../mobile/src/hooks.ts';
 import type { AppState } from '../../mobile/src/store.ts';
 import type { GatewayChatBridge } from './bridge.ts';
 import type { ActivityOverlay } from './layout/activity-overlay.ts';
+import type { ListenHere } from './listen/listen-here.ts';
 import { ScreenshotViewer } from './screenshots/ScreenshotViewer.tsx';
 import type { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import type { SettingsView } from './settings/settings-view.ts';
@@ -40,6 +41,7 @@ export function App(props: {
   viewer: ScreenshotViewerState;
   chatCover: ChatCover;
   widgets: InlineWidgetEnvironment;
+  listenHere: ListenHere;
 }) {
   const state = useAppState();
 
@@ -68,6 +70,7 @@ export function App(props: {
           activityOverlay={props.activityOverlay}
           chatCover={props.chatCover}
           widgets={props.widgets}
+          listenHere={props.listenHere}
         />
         <Toasts />
         <ScreenshotViewer viewer={props.viewer} />

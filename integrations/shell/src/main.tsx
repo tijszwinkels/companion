@@ -8,7 +8,8 @@
  * - the chat page's own ChatStore, attached to that bridge exactly as the Qt
  *   host attaches it to QWebChannel (integrations/session-apps/chat/main.tsx);
  * - the screenshot viewer, which the bridge opens for the page's View
- *   screenshot (screenshots/).
+ *   screenshot (screenshots/);
+ * - Listen here, the browser's microphone as one of Companion's (listen/).
  *
  * The page is static and self-contained: it loads nothing but its own files
  * and talks only to its own origin (the gateway's CSP enforces both).
@@ -21,10 +22,13 @@ import { StoreContext } from '../../mobile/src/hooks.ts';
 import { Store } from '../../mobile/src/store.ts';
 import { ChatStore } from '../../session-apps/chat/store.ts';
 import '../../session-apps/chat/styles.css';
+import type { AudioEndedMessage } from '../../../src/remote/protocol.ts';
 import { App } from './App.tsx';
 import { GatewayChatBridge, type TranscriptView } from './bridge.ts';
 import { ActivityOverlay } from './layout/activity-overlay.ts';
 import type { LayoutStorage } from './layout/stored-layout.ts';
+import { BrowserCapture } from './listen/capture.ts';
+import { ListenHere } from './listen/listen-here.ts';
 import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
 import { SettingsView } from './settings/settings-view.ts';
 import './styles.css';
@@ -148,6 +152,30 @@ bridge.inlineWidget = createInlineWidget(widgets);
 const chat = new ChatStore();
 chat.attach(bridge);
 
+// Listen here (listen/listen-here.ts): this browser's microphone as one more
+// microphone of Companion, on the page's existing connection. Created after
+// the bridge, so its Store subscription runs after the bridge's and
+// `bridge.admitted` is already current when it reads it.
+const listenHere = new ListenHere(
+  {
+    admitted: () => bridge.admitted,
+    paired: () => store.state.connection.status !== 'unpaired',
+    engine: () => store.state.engine,
+    subscribe: (listener) => store.subscribe(listener),
+    request: (action) => store.request(action, {}, { quiet: true }),
+    sendAudio: (piece) => store.connection.sendBinary(piece),
+    bufferedAmount: () => store.connection.bufferedAmount,
+    onAudioEnded: (listener) => {
+      store.connection.onUnrequestedMessage = (message) => {
+        if (message.type === 'audio-ended') {
+          listener(message as unknown as AudioEndedMessage);
+        }
+      };
+    },
+  },
+  new BrowserCapture(),
+);
+
 // The page's View screenshot opens the viewer. The image is fetched with
 // this pairing's token in a header, never in an address (screenshots/).
 const viewer = new ScreenshotViewerState((path, signal) =>
@@ -229,6 +257,7 @@ render(
       viewer={viewer}
       chatCover={chatCover}
       widgets={widgets}
+      listenHere={listenHere}
     />
   </StoreContext.Provider>,
   document.getElementById('app')!,

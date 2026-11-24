@@ -25,6 +25,8 @@ import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import type { AppState } from '../../../mobile/src/store.ts';
 import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import type { GatewayChatBridge } from '../bridge.ts';
+import type { ListenHere } from '../listen/listen-here.ts';
+import { MicrophoneRows } from '../listen/ListenControls.tsx';
 import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 import { ActionButton } from './ActionButton.tsx';
 import { HistoryEntry } from './HistoryEntry.tsx';
@@ -61,6 +63,7 @@ export function ActivityColumn(props: {
    */
   startProfile: StartProfile;
   onStartProfile: (profile: StartProfile) => void;
+  listenHere: ListenHere;
 }) {
   const state = useAppState();
   const listening = listeningView(state);
@@ -104,7 +107,7 @@ export function ActivityColumn(props: {
         </button>
       </header>
       <div class="activity-scroll">
-        <Listening bridge={props.bridge} requests={props.requests} />
+        <Listening bridge={props.bridge} requests={props.requests} listenHere={props.listenHere} />
         <StartConversation
           bridge={props.bridge}
           profile={props.startProfile}
@@ -117,7 +120,11 @@ export function ActivityColumn(props: {
 }
 
 /** The listening state with Pause and Resume (`toggle-pause`). */
-function Listening(props: { bridge: GatewayChatBridge; requests: ActivityRequests }) {
+function Listening(props: {
+  bridge: GatewayChatBridge;
+  requests: ActivityRequests;
+  listenHere: ListenHere;
+}) {
   const store = useStore();
   const state = useAppState();
   const listening = listeningView(state);
@@ -144,22 +151,31 @@ function Listening(props: { bridge: GatewayChatBridge; requests: ActivityRequest
     classes.push('speaking');
   }
 
+  // The state with Pause and Resume, then the microphones (the computer's
+  // switch, Listen here, other listening browsers), as one block.
   return (
-    <section class={classes.join(' ')} aria-label="Listening">
-      <ActionButton
-        class="activity-mic"
-        available={props.bridge.admitted && listening.running && !pending}
-        label={label}
-        title={label}
-        onPress={toggle}
-      >
-        {listening.paused ? <MicOffIcon size={20} /> : <MicIcon size={20} />}
-      </ActionButton>
-      <div class="activity-listening-text" aria-live="polite">
-        <div class="activity-listening-title">{listening.title}</div>
-        <div class="activity-hint">{listening.detail}</div>
-      </div>
-    </section>
+    <div class="listening-block">
+      <section class={classes.join(' ')} aria-label="Listening">
+        <ActionButton
+          class="activity-mic"
+          available={props.bridge.admitted && listening.running && !pending}
+          label={label}
+          title={label}
+          onPress={toggle}
+        >
+          {listening.paused ? <MicOffIcon size={20} /> : <MicIcon size={20} />}
+        </ActionButton>
+        <div class="activity-listening-text" aria-live="polite">
+          <div class="activity-listening-title">{listening.title}</div>
+          <div class="activity-hint">{listening.detail}</div>
+        </div>
+      </section>
+      <MicrophoneRows
+        listenHere={props.listenHere}
+        bridge={props.bridge}
+        requests={props.requests}
+      />
+    </div>
   );
 }
 
