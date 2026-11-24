@@ -1,6 +1,6 @@
 # Companion browser shell
 
-Status: fifth slice, with inline and pinned widgets (2026-11). The desktop chat page in an ordinary browser,
+Status: fifth slice, with inline and pinned widgets and session applications (2026-11). The desktop chat page in an ordinary browser,
 against the existing remote gateway, with the conversation list on its left
 and the Activity column on its right.
 The goal of the larger project is the whole sidebar in a browser, so the
@@ -38,10 +38,13 @@ A paired browser can:
 10. show an agent's **inline widgets** in the chat and use them, when the
     gateway has a frame origin (see [Inline widgets](#inline-widgets));
 11. show a conversation's **pinned widget** above the chat or at the right,
-    and pin and unpin widgets (see [Pinned widgets](#pinned-widgets)).
+    and pin and unpin widgets (see [Pinned widgets](#pinned-widgets));
+12. show a conversation's **session application** with its chat at the
+    right or with a Chat | application switch, and allow or revoke its
+    reading and sending of chat (see [Session applications](#session-applications)).
 
-Not yet in the browser: Activity history of earlier listener runs, inserting
-text into desktop applications and session applications.
+Not yet in the browser: Activity history of earlier listener runs and
+inserting text into desktop applications.
 
 ## Conversation list and layout
 
@@ -1324,8 +1327,9 @@ gateway serves each widget's page to a paired browser on its own origin, the
 `widget.frameUrl` (`<frame origin>/f/<handle>/`) when it is configured with
 one ([gateway README](../../src/remote/README.md#widget-and-application-frames));
 without it the browser receives no address. Pinned widgets are described in
-[their own section](#pinned-widgets); session applications, permission
-controls and a Settings → Widgets page are not part of these steps. The phone panel (`integrations/mobile`) keeps its placeholder
+[their own section](#pinned-widgets), session applications in
+[theirs](#session-applications); a Settings → Widgets page is not part of
+these steps. The phone panel (`integrations/mobile`) keeps its placeholder
 card.
 
 A message with a widget is drawn by the shell's own component
@@ -1551,19 +1555,20 @@ starts no polls (a poll already on its way still completes, and the
 browser's lazy loading may fetch the page of a frame near the view before
 it is visible). A conversation that is not shown has no frames at all.
 
-| Case                                   | Visible | Polls                           |
-| -------------------------------------- | ------- | ------------------------------- |
-| In view                                | yes     | yes                             |
-| Scrolled out of view                   | no      | no, until scrolled back         |
-| Hidden tab                             | no      | no, until the tab is shown      |
-| Behind the settings screen             | no      | no, until the settings are left |
-| Behind the narrow Activity overlay     | no      | no, until the column is hidden  |
-| Behind the open screenshot viewer      | no      | no, until the viewer is closed  |
-| Activity beside the chat (wide window) | yes     | yes                             |
-| A different conversation shown         | —       | no (the frame is removed)       |
-| Disconnected                           | no      | no, until admitted again        |
-| Pinned and folded                      | no      | no, until unfolded              |
-| Pinned, behind the narrow Activity     | no      | no, until the column is hidden  |
+| Case                                         | Visible | Polls                           |
+| -------------------------------------------- | ------- | ------------------------------- |
+| In view                                      | yes     | yes                             |
+| Scrolled out of view                         | no      | no, until scrolled back         |
+| Hidden tab                                   | no      | no, until the tab is shown      |
+| Behind the settings screen                   | no      | no, until the settings are left |
+| Behind the narrow Activity overlay           | no      | no, until the column is hidden  |
+| Behind the open screenshot viewer            | no      | no, until the viewer is closed  |
+| Behind a session application (switch layout) | no      | no, until the chat is shown     |
+| Activity beside the chat (wide window)       | yes     | yes                             |
+| A different conversation shown               | —       | no (the frame is removed)       |
+| Disconnected                                 | no      | no, until admitted again        |
+| Pinned and folded                            | no      | no, until unfolded              |
+| Pinned, behind the narrow Activity           | no      | no, until the column is hidden  |
 
 The pinned widget's frame follows the same rule ([pinned widgets](#pinned-widgets)):
 in view is its place being on screen, and folded counts as out of view.
@@ -1714,7 +1719,9 @@ Rule (`src/widgets/pinned-widget.ts`, drawn by `src/workspace/PinnedWidget.tsx`)
 2. It is shown for the conversation shown in the chat only, and not while
    the settings screen is shown (it belongs to the chat; leaving the
    settings screen loads it again). Previous sessions and the empty view
-   have none.
+   have none. A conversation with a session application has none either:
+   its pinned widget's message shows its inline frame, without Pin (see
+   [session applications](#session-applications), layout rule 8).
 3. It needs a valid frame address. Without one (no frame origin configured)
    nothing is pinned in the browser, and its message keeps the "not set up"
    card.
@@ -1901,6 +1908,391 @@ Rule (`src/layout/pinned-place.ts`, `src/workspace/PinnedWidget.tsx`):
   beside the band.
 - Left out on purpose: pinned session applications, a pop-out, more than
   one pinned widget, animations.
+
+## Session applications
+
+A conversation's agent can give it a **session application**: an authored
+page that takes the place of the chat (a task board, an editor, a
+dashboard), with state the agent and the reader both change
+([the contract](../../src/session-apps/README.md)). The browser shows it
+from the gateway's frame origin, as it shows widgets (the gateway sends
+`application.frameUrl`, [gateway README](../../src/remote/README.md#widget-and-application-frames)),
+with the Companion bar and the permission controls the desktop has, as in
+the agreed design of 2026-11-20:
+
+```text
+ wide window: the chat at the right                 App only, and every narrower window
+┌──────┬┬─────────────────────────────────────────┐ ┌──────┬┬───────────────────────────┐
+│ list ││ ☰ title              ready  model ⚙ ☰  │ │ list ││ ☰ title    ready  ⚙ ☰    │
+│      ││ notes · v2  Chat reading off ▣ Perm…   │ │      ││ Chat|notes · v2 ◫ Perm…   │
+│      ││ (permission rows, when shown)           │ │      ││ (permission rows)         │
+│      ││ application             ┊ chat (420 px) │ │      ││ the application, or chat  │
+└──────┴┴─────────────────────────────────────────┘ └──────┴┴───────────────────────────┘
+```
+
+Everything above the application (the bar, the rows) is the shell's own
+page; the application is an iframe below it
+(`src/application/ApplicationPane.tsx`), drawn by the inline widgets' frame
+component in its `application` mode (`src/widgets/InlineWidget.tsx`): the
+same sandbox and attributes, the same states and messages, the same
+visibility rule, without a header and without Pin. The rest of the
+conversation is unchanged: the chat page, its draft, its bar.
+
+### Rule: layout
+
+Rule (`src/application/application-layout.ts`, remembered by
+`src/layout/stored-layout.ts` and `src/application/useApplicationLayout.ts`,
+drawn by `src/application/ConversationArea.tsx`):
+
+1. A conversation whose application has a frame address, or one the
+   listener could not restore (`error`), is drawn with the **Companion bar**
+   below the bar above the chat: the application's name and version
+   (`notes · v2`), its permission status (see the permission rule) and, at
+   the right, the layout button and **Permissions…**. Without a frame
+   address it is only named (the application-change rule, case "No frame
+   address").
+2. The reader chooses, in this browser, between **the chat at the right**
+   (`split`, the default) and **App only** (`app-only`): **▣ App only** in
+   the bar of the split layout (which also makes the switch show the
+   application, whatever it showed for this conversation before), **◫ Chat
+   at the right** in the bar of the switch layout.
+3. The **split layout** is drawn when the choice is the chat at the right,
+   the window is at least **1100 px** wide, and the area beside the list and
+   the right column (as their own rules leave it) is at least **641 px**:
+   the application's 320 px minimum, the divider and the chat's 320 px.
+   Otherwise the **switch layout** is drawn. ◫ Chat at the right is offered
+   only where the split layout can be drawn. The window never changes the
+   choice, so the split layout returns when the window is wide again.
+4. **Split:** the application at the left, the chat at the right, 420 px
+   wide at first, a divider between them (a focusable separator named
+   "Chat width"). The chat is 320 to 640 px wide, and never so wide that
+   the application has less than 320 px. Dragging gives the chat the
+   distance from the pointer to the area's right edge, remembered once,
+   when the drag ends; a press that does not move changes nothing; Left
+   widens by 20 px, Right narrows by 20 px, Home gives 320 px, End 640 px,
+   each remembered. While a divider is dragged, no frame takes the pointer
+   (a frame is another page, often another process: a drag across the
+   application would otherwise stop where the pointer enters it); this
+   holds for every divider of the shell, the list's, Activity's and the
+   pinned band's edge included. The chat page's own application button is
+   not offered (the application is beside it).
+5. **Switch:** the bar has a **`Chat | notes · v2`** switch; one of the two
+   fills the area. Which one, per conversation, follows the
+   application-change rule and the reader's choice; and when the window
+   leaves the split layout while the reader types in the chat (the window
+   narrows, for example a tiling window manager making room for another
+   window, or another tab chooses App only), the switch shows the chat, so the text box does not go away under the
+   reader's hands (not the reader's choice: a ready notice stays). While the chat is
+   shown, the chat page offers the application as its footer button, as on
+   the desktop. The part that is not shown stays drawn, hidden and inert:
+   the chat keeps its scroll position and editor, and the application's
+   frame stays loaded but counts as not visible (it stops polling, and it
+   can neither read chat nor prepare a send meanwhile); so do the chat's
+   inline widgets while the application is in its place.
+6. The element tree of a conversation is the same in every case (bar,
+   rows, the application's pane, the divider and the chat, absent where not
+   drawn), so neither an arriving or removed application nor a change of
+   layout draws the chat anew, and the application's frame is **not loaded
+   again** when the layout changes or the reader switches between Chat and
+   the application. It loads again when a new code version arrives, when
+   another conversation was shown in between, after Try again, and after a
+   reconnect that brought a new frame address.
+7. The **Activity column** is one more column at the right, unchanged: in a
+   wide window it narrows the area (which can make the switch layout
+   necessary, rule 3); in a narrow one it lies over the bar, the
+   application and the chat, which are inert and not visible meanwhile. The
+   conversation list as strip or full list likewise only changes the area.
+8. A conversation with an application has **no pinned widget** in the
+   browser: its pinned widget's message shows its inline frame in the chat,
+   and its inline widgets offer no Pin (it would change the pin for every
+   client while nothing moves here).
+   The desktop has no rule for the two together (its HTML surface shows
+   pinned widgets only in its Classic view), so this is the simplest one.
+9. Remembered as `companion.shell.layout.applicationLayout`
+   (`{"version":1,"value":"split"|"app-only"}`) and
+   `companion.shell.layout.applicationChatWidth` (`{"version":1,"value":420}`),
+   with the layout entries' rules: a missing, unreadable, other-version or
+   wrong-type entry gives its default (the chat at the right; 420 px); a
+   change writes only its own entry; a storage that refuses writes keeps the
+   page's values; not cleared on sign-out; other tabs follow each entry they
+   see written, so two tabs that choose differently one after the other
+   both show the last choice.
+
+| Case                                                              | Shown                                                             |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Nothing remembered, 1280 × 800, strip                             | Split; the chat 420 px at the right; ▣ App only and Permissions…  |
+| 1600 × 900                                                        | Split; the chat 420 px                                            |
+| 1100 / 1099 px, strip, Activity hidden                            | Split / switch                                                    |
+| 900 and 420 px                                                    | Switch, the application shown first; no ◫ (no room)               |
+| 1100 px, strip, Activity 320 px beside it (area 700 px)           | Split; the chat 379 px (700 − 1 − 320)                            |
+| 1100 px, full list 420, Activity 520 remembered (area 320 px)     | Switch; no ◫                                                      |
+| 1280 px, full list 300 px (area 979 px)                           | Split; the chat 420 px                                            |
+| ▣ App only                                                        | Switch, remembered; after a reload: switch, ◫ offered             |
+| ◫ Chat at the right                                               | Split, remembered                                                 |
+| Chat at the right chosen; 1280 → 900 → 1280 px                    | Split, switch, split; the same frame throughout, not loaded again |
+| App only chosen; 1280 → 900 → 1280 px                             | Switch throughout                                                 |
+| Typing in the chat at the right; 1280 → 900 px                    | Switch showing the chat; the text box keeps the focus             |
+| Chat, then the application, with the switch                       | Each in turn; the same frame, not loaded again                    |
+| Divider dragged to 500 px from the area's right edge              | 500 px, remembered on release                                     |
+| Divider dragged to 100 / 900 px                                   | 320 / 640 px (and at most the area less 321 px)                   |
+| Press on the divider without moving                               | Nothing changes or is written                                     |
+| Left / Right / Home / End on the divider                          | +20 / −20 / 320 / 640 px, each remembered                         |
+| Reload                                                            | Choice and width as remembered                                    |
+| Entry `"wide"`, `3`, of version 2, not JSON; width `"500"`, `NaN` | The chat at the right; 420 px                                     |
+| Storage refuses writes; ▣ App only                                | Switch for this page                                              |
+| Two tabs; App only in one, then Chat at the right in the other    | The last choice, in both                                          |
+| Activity shown beside (wide window)                               | One more column; the area narrower (rule 3)                       |
+| Activity shown in a narrow window                                 | Over the bar, the application and the chat; the frame not visible |
+| A conversation with an application and a pinned widget (no Pin)   | No pinned widget; its message shows its inline frame              |
+
+### Rule: application changes
+
+Rule (`src/application/application-view.ts`, the desktop's
+`SessionSurface.qml` `observeApplication` ported, and
+`../session-apps/README.md` "Application changes"). Per conversation, this
+page keeps what the switch layout shows (chat or application), the
+application ID and code version it last saw shown here, and a notice:
+
+1. **No application** (any more): the chat alone; the bar, the rows and the
+   frame go, and a ready notice no longer applies.
+2. **First sight** (a conversation shown for the first time in this page,
+   with an application, also on the first snapshot after loading the page):
+   the application, unless the reader chose the chat for it earlier in this
+   page.
+3. **A first application, or a new code version, for a conversation seen
+   here before** (also while another conversation was shown, noticed when it
+   is shown again): it comes forward, unless that would interrupt input: a
+   send or a choice awaiting its answer ("a message is still being sent",
+   "a choice is still being confirmed") or the reader typing (this conversation's text box has the focus: "you
+   are typing"). Then what is shown stays (the
+   chat, for a first application) and the bar says
+   `“notes” is ready. It opens when you choose it; you are typing.` until
+   the reader chooses Chat or the application. The desktop also waits for
+   recording into the text box, which the browser does not have.
+4. **With the chat at the right** (the split layout) the composer never
+   moves: nothing blocks there, an arriving application comes forward
+   (beside the chat) and no notice is shown (a notice from the switch
+   layout is not shown there either: the application is on screen).
+5. The reader's choice (the switch, the chat page's application button,
+   Show the chat) is kept and clears the notice.
+6. A waiting permission change does not hold an application back (as on
+   the desktop): a new code version changes the permission identity, which
+   forgets the waiting change, and the listener ends every grant with the
+   old code (see the permission rule).
+7. A new code version is a **new frame**, which loads (the desktop reloads
+   its view for each version). The frame address stays the same.
+8. **Failed:** the frame states of inline widgets, in the application's
+   words: "Loading the notes application…"; "The notes application could
+   not load." with the reason (the frame's error, or "Its page did not
+   answer within 10 seconds."), "The conversation and the application's
+   saved data are unchanged.", **Try again**, its text description and, in
+   the switch layout, **Show the chat**; an address that ended after the page was shown (its state answers 404)
+   says "Its address has ended, …", while an address that had already
+   ended when the frame loaded (its document answers 404, so no page runs
+   to report it) fails after the 10 seconds; a page loaded before the frame origin was
+   set up says "This page was opened before applications were set up for
+   it. Reload the page to show them."
+9. **Unavailable** (the listener could not restore it, `error`; a saved
+   record it could not read at all has no name and version, and is shown
+   as "Session application", "The application is unavailable."): "The notes
+   application is unavailable." with the error, its description and, in the
+   switch layout, Show the chat, in its pane, in either layout; there are
+   no permission rows.
+10. **Disconnected:** the frame greyed with "Disconnected · reconnecting…",
+    inert and not visible; the permission status ends in "· Disconnected"
+    and no permission can be changed.
+11. **No frame address** (an older gateway, one without a frame origin, or
+    one at its handle limit): the application is named above the chat,
+    which is shown alone: `notes · v2` and "Applications are not set up for
+    this browser, so only the application's name is shown." No switch, no
+    permission rows.
+
+| Case                                                                | Shown                                                                                          |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Opening a conversation that has an application                      | The application (switch layout)                                                                |
+| The same, after the reader chose Chat for it in this page           | The chat                                                                                       |
+| None → an application arrives; nothing blocks (switch)              | The application comes forward                                                                  |
+| An application arrives while the reader types (switch)              | The chat stays, focused; "“chat-probe” is ready. It opens when you choose it; you are typing." |
+| … while a send waits / a choice waits                               | The chat stays; "… a message is still being sent." / "… a choice is still being confirmed."    |
+| A new version while the application is shown, nothing blocks        | A new frame for it, shown                                                                      |
+| A new version while the chat is shown and the reader types (switch) | The chat stays; the notice                                                                     |
+| A new version while the reader types (split)                        | A new frame beside the chat; the composer keeps the focus; no notice                           |
+| The reader chooses Chat or the application                          | That one; the notice goes                                                                      |
+| A new version while a permission change waits                       | The change is forgotten (its answer ignored); the rows show the new state                      |
+| The application is removed                                          | The chat alone; bar, rows and frame gone                                                       |
+| Another conversation shown, and back                                | Its frame loads again; the choice kept                                                         |
+| A new version while another conversation is shown, then back        | Rule 3 when shown again                                                                        |
+| The conversation closes                                             | It leaves with its conversation, as before                                                     |
+| The frame's address ends after it was shown (state 404)             | Failed: "… Its address has ended, …", Try again                                                |
+| The address had ended when the frame loaded (document 404)          | Failed after 10 s visible: "… Its page did not answer within 10 seconds."                      |
+| A reconnect with a new frame address                                | A new frame for it                                                                             |
+| Disconnected                                                        | Greyed, "Disconnected · reconnecting…"; "· Disconnected"; changes unavailable                  |
+| The frame does not answer within 10 s visible / sends `error`       | Failed, with its reason, Try again, its description; Show the chat (switch)                    |
+| Unavailable (`error`)                                               | "The notes application is unavailable." with the error and its description                     |
+| No frame address                                                    | Named above the chat; "Applications are not set up for this browser, …"                        |
+
+### Rule: permissions
+
+Rule (`src/application/chat-permissions.ts`, a port of the desktop's
+native controls in `../panel/SessionView.qml`, drawn by
+`src/application/PermissionRows.tsx`):
+
+1. While the application asks to read or send chat (`chatAccess.requested`),
+   the bar shows the desktop's short status (`Chat reading off · sending
+off`, `sending on, 3/5 left`, `sending used up`, `app message active`,
+   `Disconnected`) and **Permissions…**, which shows the rows below the bar;
+   **Hide permissions** hides them, except while a review is open or a
+   change waits for its answer. Showing another conversation hides them.
+2. **Read this conversation:** its status (`Chat reading off` or `allowed`);
+   **Review chat access** shows the desktop's disclosure text with **Allow
+   reading** and **Not now** (the keyboard focus moves to the disclosure, and the buttons go on their
+   own line below it, so neither a held Enter nor a double click on Review
+   presses Allow; after a change, made here or elsewhere, the focus moves from the row's
+   buttons to its status (shown with a focus ring), so a held Enter never
+   presses the button that replaces the pressed one; Allow and Revoke
+   ignore the second click of a double click or tap, so a change elsewhere
+   between two clicks never turns the second into a Revoke); **Revoke reading** while reading is allowed.
+   **Send messages as the app:** its status (`App sending off`, `App sending
+allowed · 3 of 5 attempts remaining`, `exhausted`, `unavailable on this
+host`, `· app message active`); **Review app sending** (**Review new
+   sending grant** while allowed) shows the desktop's disclosure with
+   **Allow 5 app messages** and **Not now**; **Revoke sending** while
+   allowed. Below the rows: "Applies to this open conversation until it is
+   closed or the app's code changes, on every screen that shows it. Changed
+   here or on the desktop; both show the same state."
+3. **Who:** a change is offered only while requests are admitted and no
+   other change waits. It is the desktop's request
+   (`set-application-chat-read` / `-send` with the conversation, the
+   application's ID and code version, the permission revision shown, and
+   `allowed`), and the listener decides: allowing needs this page to show
+   the conversation (its visible report), stopping only to have it
+   selected ([gateway README](../../src/remote/README.md#application-chat-access)).
+4. **Identity:** the conversation, the application's ID and version and the
+   permission revision. Any change of it (another conversation, new code,
+   a reopen, a change made here or elsewhere) closes an open review,
+   forgets a waiting change (its answer is ignored) and clears an error.
+5. **Never shown as changed before the listener says so:** the rows always
+   show the listener's latest `chatAccess`; a waiting change only adds
+   "Waiting for permission confirmation…".
+6. A **refusal** (from the listener: "Open this conversation on this device
+   first", "Show this conversation on this device first", "Application or
+   permissions changed; review the current permission controls."; from the
+   gateway: its request rate or receipt limits) is shown under the rows;
+   nothing changes.
+7. A **lost answer**: the request is never sent again (the phone
+   Connection's rule for requests whose answer was lost). When this page's
+   connection dropped or timed out while the change waited, the rows say
+   "No confirmation received. Permission may have changed; check its
+   current status before trying again."; when the gateway lost its
+   connection to the listener, the gateway's own answer, "Connection to
+   Companion was lost before it answered; check the current state before
+   trying again". Either way the outcome is unknown: the change may not have reached
+   the listener, or may have been made before the answer was lost. The
+   rows keep showing what the listener last said, then the state the
+   reconnect's snapshot brings and every later change, so the reader sees
+   the outcome there. (One case is known in advance: a change still
+   waiting in the application's queue when the connection went is checked
+   against the departed connection, which may still stop but no longer
+   allow.)
+8. A change made **elsewhere** (the desktop, another tab or device) is
+   shown with the conversation's next version, at once.
+9. The rows are drawn by the shell in its own page, never by the
+   application: the frame is on another origin and cannot draw, reach or
+   press them, and the shell acts on nothing a frame posts except
+   `geometry` and `error` (the messages rule of inline widgets). The shell
+   posts an application frame only `theme` and `visible`.
+
+| Case                                                             | Rows                                                                                                                                           |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reading off; Review chat access                                  | The disclosure; Allow reading and Not now                                                                                                      |
+| Allow reading                                                    | "Waiting for permission confirmation…", still off; then "Chat reading allowed", Revoke                                                         |
+| Revoke reading                                                   | Waiting, still allowed; then "Chat reading off"                                                                                                |
+| Sending off; Review app sending; Allow 5 app messages            | Waiting; then "App sending allowed · 5 of 5 attempts remaining"; bar `sending on, 5/5`                                                         |
+| Revoke sending                                                   | Waiting; then "App sending off"                                                                                                                |
+| Not now                                                          | The review closes; nothing sent                                                                                                                |
+| Allow without a review (an old drawing)                          | Nothing sent                                                                                                                                   |
+| Refused: Open / Show this conversation on this device first      | The refusal under the rows; the state unchanged                                                                                                |
+| Refused: Application or permissions changed                      | The same                                                                                                                                       |
+| Refused by the gateway's request limits                          | The same, with its text                                                                                                                        |
+| Changed on the desktop or in another tab while the rows are open | Shown at once; an open review closes                                                                                                           |
+| Changed elsewhere while a change waits                           | The waiting change forgotten; its answer ignored; the new state shown                                                                          |
+| The connection drops while a change waits                        | "No confirmation received. …" (or the gateway's "Connection to Companion was lost …"); not sent again; the snapshot's state after reconnecting |
+| Disconnected                                                     | `· Disconnected`; every change unavailable                                                                                                     |
+| Another conversation shown                                       | Rows hidden; reviews closed                                                                                                                    |
+| The application asks for neither                                 | No status, no Permissions…                                                                                                                     |
+| A listener without `send`                                        | "App sending unavailable on this host"; its review unavailable                                                                                 |
+
+### Security
+
+- **Policy.** Unchanged: the gateway's own Content-Security-Policy with
+  `frame-src <frame origin>` ([inline widgets](#security)). The
+  application's frame loads only from the frame origin, exactly at the
+  address the gateway sent.
+- **Nothing given to a frame.** The application's frame is an inline
+  widget's (sandbox, `allow`, no referrer). The shell posts it only `theme`
+  and `visible`; it acts only on its `geometry` (marks it shown; the height
+  is ignored, the frame fills its pane) and `error`. Its origin differs from
+  the shell's, so it cannot read the shell's `localStorage` (the device
+  token), its DOM (the bar and the permission rows) or its socket.
+- **Permissions.** Only the reader's press in the shell's own rows sends a
+  permission change; the frame can only read its own grant state through
+  its view, as on the desktop, and reading and sending go through the
+  frame origin's `chat-read`, `chat-send` and `chat-receipt`, which the
+  listener checks against the grant.
+- **A hidden application.** Embedded (the socket route only), host.js
+  treats a frame the shell does not show as hidden, as a hidden tab: while
+  the shell says `visible: false` (the application behind its chat in the
+  switch layout, under the settings screen or the narrow Activity column,
+  out of view, disconnected) `api.chat.read()` and `api.chat.prepareSend()`
+  are refused, read delivery is withdrawn, and reading resumes only after
+  it is shown again and host.js has observed the grant again while visible
+  (its next state poll, or the application's own state read). On the
+  loopback route (the desktop's) it never receives `visible`, so nothing
+  changes there.
+
+### Known limits and what is left out
+
+- **App only and a new version:** in the switch layout a new code version
+  loads a new frame even while the chat is shown (hidden, not polling), so
+  what the old page held only in itself is lost, as on the desktop.
+- **Size reports:** host.js reports an embedded frame's size (`viewport`)
+  for widgets; the gateway answers 404 for an application (its views do not
+  implement it), without forwarding or ending anything.
+- **Unavailable or not set up:** no permission rows; a grant made on the
+  desktop can be revoked there.
+- **The demo's uncertain send:** the demo application keeps the handle of
+  a send whose answer was lost only while its frame stays in the page;
+  after another conversation was shown in between it offers a new send.
+  Check the conversation before asking again. Keeping it would need the
+  handle in the application's saved state (a second mechanism, in a demo).
+- **Event status:** the desktop's bar also shows the delivery state of the
+  application's edits to the agent and "Your unsent message is kept in
+  Chat."; the browser does not, in this step.
+- Left out on purpose: a pop-out, pinned applications, animations, the
+  phone panel, replacing the 400 ms polling.
+
+### Updating
+
+host.js is served by the listener's widget service, which reads it when
+it starts; the shell is served by the gateway from disk. After updating,
+restart the listener from the updated checkout before serving the new
+shell, then reload open browser tabs: a new shell against a listener still
+running the previous host.js would hide an application behind its chat
+while that page could still read chat and prepare a send with an existing
+grant (the hidden-application rule above needs the new host.js).
+
+### Changes outside this directory
+
+Only `../widgets/host.js`, embedded mode only (see Security, "A hidden
+application"): a `viewHidden()` helper (`document.hidden`, or the shell's
+last `visible: false`), used in place of `document.hidden` where chat
+reading and send preparation check visibility (`sendChatOperation`,
+`observeChatAccess`, `readChat` and its in-flight check), and, on
+`visible: false` from the shell for an application, the same
+`withdrawChat` a hidden tab causes. On the loopback route `shellVisible` is
+always true, so its behaviour is unchanged; `widget-host.test.ts` checks
+both routes. Nothing under `src/`, no QML, no change to the shared chat
+page.
 
 ## How it works
 
@@ -2277,7 +2669,7 @@ the chat page:
 | Classic view                              | No Classic view button (`classicView: false`)                                                                        |
 | Widgets                                   | Inline and pinned widgets when the gateway has a frame origin ([inline](#inline-widgets), [pinned](#pinned-widgets)) |
 | Tool details                              | In place, as in the classic view (see [tool details](#tool-details))                                                 |
-| Session applications                      | `application: null`                                                                                                  |
+| Session applications                      | Beside or instead of the chat ([session applications](#session-applications)); the page's button only in the switch  |
 | Screenshots                               | View screenshot opens the viewer (see [screenshots](#screenshots)); no zoom                                          |
 | Voice target, voice hints, focus shortcut | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                                   |
 | Model picker                              | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker                                   |
@@ -2317,8 +2709,12 @@ The gateway also runs a frame origin on the next port (`--frame-port N` picks
 another), and the city-trip answer is followed by an inline packing-list
 widget whose items can be ticked off; the weekend-budget conversation has a
 pinned widget (a small budget table) at the top or the right, by the
-window's shape. Their actions run in the demo process
-(`test/widget-node-renderer.ts`), not in the isolated widget renderer.
+window's shape, and the week-plan conversation has a session application,
+a task board (a click moves a card) that asks to read and send chat: once
+reading is allowed it shows the agent's latest answer, once sending is
+allowed it can ask the agent for a summary. Their actions run in the demo
+process (`test/widget-node-renderer.ts`), not in the isolated widget
+renderer.
 For the times, the invoice conversation was asked "yesterday" and continued
 today (the listener's clock is set back by a day for its first turn only),
 the flaky-test conversation's turn keeps running (its timer counts), and the
@@ -2455,6 +2851,63 @@ The [pinned widget](#pinned-widgets) rules have one table each:
   only for a new size while visible; `present` sends exactly the
   placement; malformed `present` messages and one from the widget's own
   frame are ignored; a refusal shows in its status line.
+
+The [session application](#session-applications) rules have one table each:
+
+- `application-rules.test.ts` (Node) plays the layout table (the window,
+  the list, the Activity column and the choice to split or switch, the
+  chat's width, the divider by pointer and keys, the remembered entries and
+  their invalid forms, no pinned widget with an application), the
+  application-change table step by step (first sight, arriving while
+  typing, a send or a choice waiting, new versions in either mode, removed,
+  another conversation in between) with the desktop's blockers, and the
+  permission table (the status texts, review → allow, revoke, Not now,
+  each refusal, changes elsewhere with and without a waiting change, a new
+  version, a lost answer, disconnected, another conversation, Hide, an
+  older listener, an application that asks for neither) against a
+  recording stand-in for the gateway.
+- `session-apps.test.ts` runs the built shell in headless Chromium against
+  the frame fixture with a synthetic application (`application-page.ts`,
+  `chat-probe`, which reads and sends chat through the frame origin's
+  `chat-read`, `chat-send` and `chat-receipt`): the application at the
+  left and the chat at the right at 1280 and 1600 px and the switch at 900
+  and 420 px, the same frame throughout; the divider (a press, dragged,
+  beyond its bounds, by key), App only and back after a reload, a second
+  tab following each choice, Activity beside it and a narrow area without
+  ◫; an application arriving while the reader types (the notice, the
+  chat's focus and text kept), new versions while the application is shown,
+  while the chat is shown and while the chat is at the right, another
+  conversation in between, disconnected and back with the same frame, the
+  conversation closing; Read and Send allowed and revoked from the shell
+  with the probe refused before and after and served while allowed (its
+  message arriving in the chat), a held Enter on Review landing on the
+  disclosure and a double click on Review sending nothing, a held Enter on
+  Allow allowing once (the focus on the status, never on Revoke), the
+  desktop changing a permission while a review is open, a held Enter on
+  Revoke while the desktop renews the grant (the focus moves to the status,
+  nothing sent), the second click of a double click landing on a Revoke the
+  desktop's grant put there (nothing sent); a change waiting when the connection drops (reported as
+  unknown, sent once, shown when the listener carried it out); a real
+  refusal from the listener (an Allow that waited while the settings
+  screen covered the conversation: "Show this conversation on this device
+  first", nothing changed); the frame
+  unable to read the shell's storage or reach its document, its posted
+  messages changing nothing, the page's policy unchanged; could not load
+  (Show the chat, Try again) and no frame address; an inline widget beside an
+  application (no Pin; not visible while the application is in the chat's
+  place); a review closed by Previous sessions; ▣ App only after the switch
+  showed the chat; the ready notice only in the switch layout; and browser
+  Back from typing in another conversation not holding a new version back. Every test checks that
+  no request left the two origins and no policy was violated. With
+  `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the layouts, the
+  rows and the failure states at 420, 1280 and 1600 px.
+- `widget-host.test.ts` checks host.js's change for applications on both
+  routes: embedded, a shown application reads chat; told `visible: false`
+  it refuses reading and send preparation and makes no chat read; shown
+  again it reads; on the loopback route, framed, `visible: false` changes
+  nothing (it reads and prepares a send).
+- `demo.test.ts` checks that the demo's week plan has its application, on
+  the frame origin.
 
 `chat-heading.test.ts` also draws every kind of row without `frameUrl` with
 three kinds of host and compares each with the reference, and with
@@ -2717,67 +3170,76 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 
 ## Structure
 
-| File                                   | Responsibility                                                                |
-| -------------------------------------- | ----------------------------------------------------------------------------- |
-| `src/main.tsx`                         | Creates the phone Store, the bridge and the chat page's ChatStore             |
-| `src/App.tsx`                          | Pairing, connection banner, toasts, the limit page; the workspace once paired |
-| `src/workspace/Workspace.tsx`          | List, main area and Activity column with their dividers; held input           |
-| `src/workspace/ChatBar.tsx`            | The bar above the chat: ☰, title, state, model, gear, Activity ☰            |
-| `src/workspace/BarState.tsx`           | The bar's state: `working · 2:16`, `working…`, `ready · last turn 0:42`       |
-| `src/workspace/focus-hand-off.ts`      | Focus kept when a focused ☰ goes away because another tab changed the column |
-| `src/workspace/PreviousSessions.tsx`   | Previous sessions with Reopen                                                 |
-| `src/list/ConversationList.tsx`        | The conversation list: entries, markers, close, drag wiring, Previous entry   |
-| `src/list/entries.ts`                  | What each entry shows, from the Store (number, icon, markers, last line)      |
-| `src/list/reorder-gesture.ts`          | The reorder gesture's rules, without DOM access                               |
-| `src/list/move-steps.ts`               | Moving one place by key or menu; one move at a time, without DOM access       |
-| `src/list/EntryMenu.tsx`               | An entry's ⋯ menu: drawing, placing, keyboard, closing                        |
-| `src/list/entry-focus.ts`              | Focus kept on an entry when the list draws it in a new order or it goes       |
-| `src/layout/list-width.ts`             | Width rules: strip, full list, snapping, keyboard, narrow windows             |
-| `src/layout/stored-layout.ts`          | The remembered width and hidden state in `localStorage`                       |
-| `src/layout/useListLayout.ts`          | The layout of this page: preference, window width, remembering                |
-| `src/layout/Divider.tsx`               | The draggable, keyboard-operable divider (list, Activity, the pinned band)    |
-| `src/layout/activity-width.ts`         | Activity column width rules: range, keys, wide and narrow windows             |
-| `src/layout/useActivityLayout.ts`      | The Activity column's layout of this page: preference, shown, remembering     |
-| `src/layout/activity-overlay.ts`       | Whether the Activity column lies over the chat now (for the visible report)   |
-| `src/activity/ActivityColumn.tsx`      | The Activity column: header, listening, start a conversation, history         |
-| `src/activity/HistoryEntry.tsx`        | One history entry and its actions                                             |
-| `src/activity/entry-actions.ts`        | Which actions an entry offers and enables, without DOM access                 |
-| `src/activity/new-activity.ts`         | The new-activity marker's rule, without DOM access                            |
-| `src/activity/listening.ts`            | The listening state's wording                                                 |
-| `src/activity/requests.ts`             | Activity requests awaiting their answer, per entry                            |
-| `src/activity/select-started.ts`       | Selecting a started conversation unless what is shown changed meanwhile       |
-| `src/activity/ActionButton.tsx`        | Buttons that stay focusable while unavailable (`aria-disabled`)               |
-| `src/settings/SettingsScreen.tsx`      | The settings screen: Display and Listening sections                           |
-| `src/settings/display-settings.ts`     | The Display switches and their `localStorage` entries                         |
-| `src/settings/useDisplaySettings.ts`   | The Display switches in a component, following changes                        |
-| `src/settings/listening-switches.ts`   | The listener's sound, intent and shortcut switches, without DOM access        |
-| `src/times/listener-clock.ts`          | The listener clock's offset from each state message                           |
-| `src/times/turn-times.ts`              | What the bar and the list show about turns, without DOM access                |
-| `src/times/turn-ticker.ts`             | Advances every shown running time each second, without drawing the page       |
-| `src/times/TurnTimer.tsx`              | One running time on the page, written by the ticker                           |
-| `src/times/message-time.ts`            | A message's time text for the reader                                          |
-| `src/times/page-times.ts`              | The page's time parts, handed from `main.tsx` to the workspace                |
-| `src/bridge.ts`                        | `NativeBridge` over the gateway: rows/status messages, request mapping        |
-| `src/history.ts`                       | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
-| `src/rows.ts`                          | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
-| `src/tools/tool-details.ts`            | Open tool groups, their pages and requests (port of ToolDetails.qml)          |
-| `src/screenshots/screenshot-viewer.ts` | The viewer's state: request, image, failures, without DOM access              |
-| `src/screenshots/ScreenshotViewer.tsx` | The viewer over the page (the phone panel's Modal)                            |
-| `src/models/model-choice.ts`           | What the model picker shows and offers, without DOM access                    |
-| `src/models/ModelPicker.tsx`           | The model button and picker in the bar                                        |
-| `src/styles.css`                       | The frame around the chat; the chat keeps its desktop stylesheet              |
-| `src/widgets/InlineWidget.tsx`         | Widget panels, inline and pinned: header, frame, states, messages, visibility |
-| `src/widgets/frame-address.ts`         | Which frame addresses are used (exactly `<origin>/f/<handle>/`)               |
-| `src/widgets/frame-state.ts`           | The frame states rule, without DOM access                                     |
-| `src/widgets/frame-messages.ts`        | Messages to and from a frame: checks, height bounds, theme                    |
-| `src/widgets/height-throttle.ts`       | At most one applied frame height per 100 ms                                   |
-| `src/widgets/frame-visibility.ts`      | The visibility rule                                                           |
-| `src/widgets/frame-scroll.ts`          | Scrolling over a widget counts as the reader's scroll                         |
-| `src/widgets/chat-cover.ts`            | Whether the settings screen or the Activity overlay covers the chat           |
-| `src/widgets/pinned-widget.ts`         | Which widget a conversation has pinned, and its message's row                 |
-| `src/workspace/PinnedWidget.tsx`       | The pinned widget: the band at the top or the right column; its controls      |
-| `src/layout/pinned-place.ts`           | Where the pinned widget sits; the band's height; without DOM access           |
-| `src/layout/usePinnedLayout.ts`        | The pinned widget's remembered place, height and fold on this page            |
-| `build.ts`                             | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
-| `demo.ts`                              | Synthetic end-to-end demo                                                     |
-| `synthetic-window.ts`                  | A synthetic window picture (PNG) for the demo's kept screenshot and tests     |
+| File                                      | Responsibility                                                                |
+| ----------------------------------------- | ----------------------------------------------------------------------------- |
+| `src/main.tsx`                            | Creates the phone Store, the bridge and the chat page's ChatStore             |
+| `src/App.tsx`                             | Pairing, connection banner, toasts, the limit page; the workspace once paired |
+| `src/workspace/Workspace.tsx`             | List, main area and Activity column with their dividers; held input           |
+| `src/workspace/ChatBar.tsx`               | The bar above the chat: ☰, title, state, model, gear, Activity ☰            |
+| `src/workspace/BarState.tsx`              | The bar's state: `working · 2:16`, `working…`, `ready · last turn 0:42`       |
+| `src/workspace/focus-hand-off.ts`         | Focus kept when a focused ☰ goes away because another tab changed the column |
+| `src/workspace/PreviousSessions.tsx`      | Previous sessions with Reopen                                                 |
+| `src/list/ConversationList.tsx`           | The conversation list: entries, markers, close, drag wiring, Previous entry   |
+| `src/list/entries.ts`                     | What each entry shows, from the Store (number, icon, markers, last line)      |
+| `src/list/reorder-gesture.ts`             | The reorder gesture's rules, without DOM access                               |
+| `src/list/move-steps.ts`                  | Moving one place by key or menu; one move at a time, without DOM access       |
+| `src/list/EntryMenu.tsx`                  | An entry's ⋯ menu: drawing, placing, keyboard, closing                        |
+| `src/list/entry-focus.ts`                 | Focus kept on an entry when the list draws it in a new order or it goes       |
+| `src/layout/list-width.ts`                | Width rules: strip, full list, snapping, keyboard, narrow windows             |
+| `src/layout/stored-layout.ts`             | The remembered width and hidden state in `localStorage`                       |
+| `src/layout/useListLayout.ts`             | The layout of this page: preference, window width, remembering                |
+| `src/layout/Divider.tsx`                  | The draggable, keyboard-operable divider (list, Activity, the pinned band)    |
+| `src/layout/activity-width.ts`            | Activity column width rules: range, keys, wide and narrow windows             |
+| `src/layout/useActivityLayout.ts`         | The Activity column's layout of this page: preference, shown, remembering     |
+| `src/layout/activity-overlay.ts`          | Whether the Activity column lies over the chat now (for the visible report)   |
+| `src/activity/ActivityColumn.tsx`         | The Activity column: header, listening, start a conversation, history         |
+| `src/activity/HistoryEntry.tsx`           | One history entry and its actions                                             |
+| `src/activity/entry-actions.ts`           | Which actions an entry offers and enables, without DOM access                 |
+| `src/activity/new-activity.ts`            | The new-activity marker's rule, without DOM access                            |
+| `src/activity/listening.ts`               | The listening state's wording                                                 |
+| `src/activity/requests.ts`                | Activity requests awaiting their answer, per entry                            |
+| `src/activity/select-started.ts`          | Selecting a started conversation unless what is shown changed meanwhile       |
+| `src/activity/ActionButton.tsx`           | Buttons that stay focusable while unavailable (`aria-disabled`)               |
+| `src/settings/SettingsScreen.tsx`         | The settings screen: Display and Listening sections                           |
+| `src/settings/display-settings.ts`        | The Display switches and their `localStorage` entries                         |
+| `src/settings/useDisplaySettings.ts`      | The Display switches in a component, following changes                        |
+| `src/settings/listening-switches.ts`      | The listener's sound, intent and shortcut switches, without DOM access        |
+| `src/times/listener-clock.ts`             | The listener clock's offset from each state message                           |
+| `src/times/turn-times.ts`                 | What the bar and the list show about turns, without DOM access                |
+| `src/times/turn-ticker.ts`                | Advances every shown running time each second, without drawing the page       |
+| `src/times/TurnTimer.tsx`                 | One running time on the page, written by the ticker                           |
+| `src/times/message-time.ts`               | A message's time text for the reader                                          |
+| `src/times/page-times.ts`                 | The page's time parts, handed from `main.tsx` to the workspace                |
+| `src/bridge.ts`                           | `NativeBridge` over the gateway: rows/status messages, request mapping        |
+| `src/history.ts`                          | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
+| `src/rows.ts`                             | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
+| `src/tools/tool-details.ts`               | Open tool groups, their pages and requests (port of ToolDetails.qml)          |
+| `src/screenshots/screenshot-viewer.ts`    | The viewer's state: request, image, failures, without DOM access              |
+| `src/screenshots/ScreenshotViewer.tsx`    | The viewer over the page (the phone panel's Modal)                            |
+| `src/models/model-choice.ts`              | What the model picker shows and offers, without DOM access                    |
+| `src/models/ModelPicker.tsx`              | The model button and picker in the bar                                        |
+| `src/styles.css`                          | The frame around the chat; the chat keeps its desktop stylesheet              |
+| `src/widgets/InlineWidget.tsx`            | Widget panels, inline and pinned: header, frame, states, messages, visibility |
+| `src/widgets/frame-address.ts`            | Which frame addresses are used (exactly `<origin>/f/<handle>/`)               |
+| `src/widgets/frame-state.ts`              | The frame states rule, without DOM access                                     |
+| `src/widgets/frame-messages.ts`           | Messages to and from a frame: checks, height bounds, theme                    |
+| `src/widgets/height-throttle.ts`          | At most one applied frame height per 100 ms                                   |
+| `src/widgets/frame-visibility.ts`         | The visibility rule                                                           |
+| `src/widgets/frame-scroll.ts`             | Scrolling over a widget counts as the reader's scroll                         |
+| `src/widgets/chat-cover.ts`               | Whether the settings screen or the Activity overlay covers the chat           |
+| `src/widgets/pinned-widget.ts`            | Which widget a conversation has pinned, and its message's row                 |
+| `src/workspace/PinnedWidget.tsx`          | The pinned widget: the band at the top or the right column; its controls      |
+| `src/layout/pinned-place.ts`              | Where the pinned widget sits; the band's height; without DOM access           |
+| `src/layout/usePinnedLayout.ts`           | The pinned widget's remembered place, height and fold on this page            |
+| `src/application/ConversationArea.tsx`    | A selected conversation: the application's bar, rows, pane, divider and chat  |
+| `src/application/ApplicationBar.tsx`      | The Companion bar above an application: name, switch, status, layout, rows    |
+| `src/application/ApplicationPane.tsx`     | The application's frame, or its unavailable state                             |
+| `src/application/PermissionRows.tsx`      | The Read and Send permission rows                                             |
+| `src/application/chat-permissions.ts`     | The permission rows' rule (a port of the desktop's), without DOM access       |
+| `src/application/application-view.ts`     | The application-change rule (the desktop's), without DOM access               |
+| `src/application/application-layout.ts`   | Split or switch, the chat's width, the divider, without DOM access            |
+| `src/application/useApplicationLayout.ts` | The remembered application layout on this page                                |
+| `src/application/shown-application.ts`    | What is shown for a conversation's application                                |
+| `build.ts`                                | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
+| `demo.ts`                                 | Synthetic end-to-end demo                                                     |
+| `synthetic-window.ts`                     | A synthetic window picture (PNG) for the demo's kept screenshot and tests     |

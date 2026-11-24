@@ -37,6 +37,12 @@
  * (test/widget-node-renderer.ts), not in the isolated widget renderer;
  * the browser draws it from the same bundle.
  *
+ * Session application: the week-plan conversation has a synthetic task
+ * board as its application (move a card by clicking it). It asks to read
+ * and send chat, so its bar shows the permission status and Permissions…;
+ * once reading is allowed it shows the agent's latest answer, and once
+ * sending is allowed it can ask the agent for a summary.
+ *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
  * screen or microphone, or binds a non-loopback address. Ctrl+C stops
@@ -405,6 +411,149 @@ export function mount(root) {
     join(tripBudget, 'style.css'),
     'table { width: 100%; border-collapse: collapse; } td { padding: 4px 0; } td + td { text-align: right; } tr.total td { border-top: 1px solid var(--muted); font-weight: 600; }\n',
   );
+
+  // A session application: a task board with three lanes. A click moves a
+  // card to the next lane (an action, run in this process). It asks to read
+  // and send chat; both need the reader's grant (the permission rows).
+  const taskBoard = join(widgetLibrary, 'task-board');
+  await mkdir(taskBoard, { recursive: true });
+  await writeFile(
+    join(taskBoard, 'widget.json'),
+    JSON.stringify({
+      name: 'task-board',
+      version: 1,
+      description: "A synthetic board with the week's tasks.",
+      application: { eventMode: 'next-input', capabilities: ['chat.read', 'chat.send'] },
+      parameters: {
+        type: 'object',
+        properties: {
+          tasks: {
+            type: 'array',
+            maxItems: 30,
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', minLength: 1, maxLength: 80 },
+                lane: { type: 'string', enum: ['todo', 'doing', 'done'] },
+              },
+              required: ['text', 'lane'],
+              additionalProperties: false,
+            },
+            default: [],
+          },
+        },
+        required: ['tasks'],
+        additionalProperties: false,
+      },
+      actions: {
+        move_task: {
+          description: 'Move a task to the next lane.',
+          parameters: {
+            type: 'object',
+            properties: { index: { type: 'integer', minimum: 0, maximum: 29 } },
+            required: ['index'],
+            additionalProperties: false,
+          },
+          returns: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      },
+      example: { tasks: [{ text: 'Write the report', lane: 'todo' }] },
+    }),
+  );
+  await writeFile(
+    join(taskBoard, 'widget.js'),
+    `const lanes = { todo: 'To do', doing: 'Doing', done: 'Done' };
+const next = { todo: 'doing', doing: 'done', done: 'todo' };
+export function describe(state) {
+  return 'Task board: ' + state.tasks.map((task) => task.text + ' (' + lanes[task.lane] + ')').join(', ');
+}
+export const actions = {
+  move_task(state, args) {
+    const task = state.tasks[args.index];
+    if (task) {
+      task.lane = next[task.lane];
+    }
+    return { state, result: {} };
+  },
+};
+export function mount(root, api) {
+  const board = document.createElement('div');
+  board.className = 'board';
+  const reply = document.createElement('p');
+  reply.className = 'reply';
+  const ask = document.createElement('button');
+  ask.textContent = 'Ask the agent for a summary';
+    // The prepared handle of a send whose outcome is not known yet: kept and
+  // checked with its receipt, never replaced by a new send, until a receipt
+  // says how it ended. One operation at a time (the button waits).
+  let unconfirmed = null;
+  const settled = ['completed', 'failed', 'cancelled'];
+  function show(receipt) {
+    if (receipt && settled.includes(receipt.state)) {
+      unconfirmed = null;
+      ask.textContent = 'Asked (' + receipt.state + '); ask again';
+    } else {
+      ask.textContent = 'Asked (' + (receipt ? receipt.state : 'not confirmed') + '); press to check';
+    }
+  }
+  ask.onclick = async () => {
+    ask.disabled = true;
+    try {
+      if (unconfirmed) {
+        show(await api.chat.receipt(unconfirmed).catch(() => null));
+        return;
+      }
+      let handle;
+      try {
+        handle = await api.chat.prepareSend();
+      } catch (error) {
+        ask.textContent = 'Not sent: ' + error.message;
+        return;
+      }
+      unconfirmed = handle;
+      show(await api.chat.send(handle, 'Please summarise the board.').catch(() => null));
+    } finally {
+      ask.disabled = false;
+    }
+  };
+  root.append(board, reply, ask);
+  api.chat.subscribe((chat) => {
+    const answers = (chat.snapshot?.messages ?? []).filter((message) => message.role === 'assistant');
+    const last = answers[answers.length - 1];
+        // Whether reading is allowed is the shell's to say (its bar); here only
+    // what was read.
+    reply.textContent = last ? 'Latest answer: ' + last.text.slice(0, 160) : 'No recent answer read.';
+  });
+  return {
+    update(state) {
+      board.replaceChildren();
+      for (const lane of Object.keys(lanes)) {
+        const column = document.createElement('section');
+        const heading = document.createElement('h3');
+        heading.textContent = lanes[lane];
+        column.append(heading);
+        state.tasks.forEach((task, index) => {
+          if (task.lane !== lane) {
+            return;
+          }
+          const card = document.createElement('button');
+          card.className = 'card';
+          card.textContent = task.text;
+          card.onclick = () => { void api.call('move_task', { index }).catch(() => {}); };
+          column.append(card);
+        });
+        board.append(column);
+      }
+    },
+    dispose() {},
+  };
+}
+`,
+  );
+  await writeFile(
+    join(taskBoard, 'style.css'),
+    '.board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } h3 { margin: 0 0 8px; font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; } .card { display: block; width: 100%; margin: 0 0 8px; padding: 10px; border: 0; border-radius: 6px; text-align: left; font: inherit; color: inherit; background: rgba(127, 127, 127, 0.15); cursor: pointer; } .reply { opacity: 0.8; }\n',
+  );
   continueStartup();
 
   // ---- Scripted agent backend -------------------------------------------------
@@ -521,6 +670,26 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
             { text: 'Museum tickets', packed: false },
             { text: 'Train tickets home (17:10)', packed: false },
             { text: 'Walking shoes', packed: true },
+          ],
+        },
+      });
+    }
+
+    // The week-plan conversation gets its application, a task board.
+    if (/task board/i.test(question) && request.widgets) {
+      const apply = widgetTools(request.widgets.endpoint, request.widgets.token).find(
+        (tool) => tool.name === 'companion_app_apply',
+      );
+      await apply?.execute('demo-task-board', {
+        bundle: 'task-board',
+        expectedVersion: 0,
+        eventMode: 'next-input',
+        initialState: {
+          tasks: [
+            { text: 'Draft the quarterly report', lane: 'todo' },
+            { text: 'Book the train to the workshop', lane: 'todo' },
+            { text: 'Review the test plan', lane: 'doing' },
+            { text: 'Send the invoices', lane: 'done' },
           ],
         },
       });
@@ -802,6 +971,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     'quickQuestion',
   );
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
+  const week = sessions.start(
+    frame('📋 Plan my week as a task board'),
+    controller.signal,
+    'quickQuestion',
+  );
   const rules = sessions.start(
     frame('Notification rules: summarise them'),
     controller.signal,
@@ -815,6 +989,7 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
       [rules, 1],
       [trip, 1],
       [budget, 1],
+      [week, 1],
     ]),
     trip,
   );
@@ -854,7 +1029,7 @@ Companion browser shell demo (synthetic data only)
   Open:          http://127.0.0.1:${port}/
   Pairing code:  ${code.slice(0, 5)}-${code.slice(5)}   (10 minutes, one browser)
   Widget frames: ${frameOrigin}/ (the city trip shows an inline widget, the
-                 weekend budget a pinned one)
+                 weekend budget a pinned one, the week plan an application)
 
 New pairing code:
   bin/companion-remote pair --state-directory ${stateDirectory}

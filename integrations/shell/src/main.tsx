@@ -34,7 +34,7 @@ import { TurnTicker } from './times/turn-ticker.ts';
 import { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import { ChatCover } from './widgets/chat-cover.ts';
 import { createInlineWidget, type InlineWidgetEnvironment } from './widgets/InlineWidget.tsx';
-import { pinnedWidget } from './widgets/pinned-widget.ts';
+import { pinnedWidget, pinningShown } from './widgets/pinned-widget.ts';
 
 /**
  * Where the chat page's rows are on screen. Chat.tsx draws one `.message`
@@ -142,6 +142,7 @@ const widgets: InlineWidgetEnvironment = {
   pinnedMessageId: (sessionId) => {
     return pinnedWidget(store.state.sessions.get(sessionId))?.messageId ?? '';
   },
+  pinningShown: (sessionId) => pinningShown(store.state.sessions.get(sessionId)),
 };
 bridge.inlineWidget = createInlineWidget(widgets);
 
