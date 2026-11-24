@@ -432,8 +432,12 @@ export function WidgetFrame(props: {
     }
   }, [mode, state.phase, state.height, address]);
 
-  // Tell the loaded frame when its visibility changes.
-  useEffect(() => {
+  // Tell the loaded frame when its visibility changes. A layout effect: the
+  // message is posted in the same task as the drawing that hides or covers
+  // the frame, before the browser paints it, so a frame the reader can no
+  // longer see learns it as early as the shell can tell it (an application
+  // stops reading chat then; host.js).
+  useLayoutEffect(() => {
     if (!loaded) {
       return;
     }

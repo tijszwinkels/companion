@@ -1719,7 +1719,9 @@ Rule (`src/widgets/pinned-widget.ts`, drawn by `src/workspace/PinnedWidget.tsx`)
 2. It is shown for the conversation shown in the chat only, and not while
    the settings screen is shown (it belongs to the chat; leaving the
    settings screen loads it again). Previous sessions and the empty view
-   have none.
+   have none. A conversation with a session application has none either:
+   its pinned widget's message shows its inline frame, without Pin (see
+   [session applications](#session-applications), layout rule 8).
 3. It needs a valid frame address. Without one (no frame origin configured)
    nothing is pinned in the browser, and its message keeps the "not set up"
    card.
@@ -2168,11 +2170,14 @@ host`, `· app message active`); **Review app sending** (**Review new
    permissions changed; review the current permission controls."; from the
    gateway: its request rate or receipt limits) is shown under the rows;
    nothing changes.
-7. A **lost answer** (the connection dropped or timed out while the change
-   waited): the request is never sent again (the phone Connection's rule for
-   requests whose answer was lost), and the rows say "No confirmation
-   received. Permission may have changed; check its current status before
-   trying again." The outcome is unknown: the change may not have reached
+7. A **lost answer**: the request is never sent again (the phone
+   Connection's rule for requests whose answer was lost). When this page's
+   connection dropped or timed out while the change waited, the rows say
+   "No confirmation received. Permission may have changed; check its
+   current status before trying again."; when the gateway lost its
+   connection to the listener, the gateway's own answer, "Connection to
+   Companion was lost before it answered; check the current state before
+   trying again". Either way the outcome is unknown: the change may not have reached
    the listener, or may have been made before the answer was lost. The
    rows keep showing what the listener last said, then the state the
    reconnect's snapshot brings and every later change, so the reader sees
@@ -2188,25 +2193,25 @@ host`, `· app message active`); **Review app sending** (**Review new
    `geometry` and `error` (the messages rule of inline widgets). The shell
    posts an application frame only `theme` and `visible`.
 
-| Case                                                             | Rows                                                                                   |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Reading off; Review chat access                                  | The disclosure; Allow reading and Not now                                              |
-| Allow reading                                                    | "Waiting for permission confirmation…", still off; then "Chat reading allowed", Revoke |
-| Revoke reading                                                   | Waiting, still allowed; then "Chat reading off"                                        |
-| Sending off; Review app sending; Allow 5 app messages            | Waiting; then "App sending allowed · 5 of 5 attempts remaining"; bar `sending on, 5/5` |
-| Revoke sending                                                   | Waiting; then "App sending off"                                                        |
-| Not now                                                          | The review closes; nothing sent                                                        |
-| Allow without a review (an old drawing)                          | Nothing sent                                                                           |
-| Refused: Open / Show this conversation on this device first      | The refusal under the rows; the state unchanged                                        |
-| Refused: Application or permissions changed                      | The same                                                                               |
-| Refused by the gateway's request limits                          | The same, with its text                                                                |
-| Changed on the desktop or in another tab while the rows are open | Shown at once; an open review closes                                                   |
-| Changed elsewhere while a change waits                           | The waiting change forgotten; its answer ignored; the new state shown                  |
-| The connection drops while a change waits                        | "No confirmation received. …"; not sent again; the snapshot's state after reconnecting |
-| Disconnected                                                     | `· Disconnected`; every change unavailable                                             |
-| Another conversation shown                                       | Rows hidden; reviews closed                                                            |
-| The application asks for neither                                 | No status, no Permissions…                                                             |
-| A listener without `send`                                        | "App sending unavailable on this host"; its review unavailable                         |
+| Case                                                             | Rows                                                                                                                                           |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reading off; Review chat access                                  | The disclosure; Allow reading and Not now                                                                                                      |
+| Allow reading                                                    | "Waiting for permission confirmation…", still off; then "Chat reading allowed", Revoke                                                         |
+| Revoke reading                                                   | Waiting, still allowed; then "Chat reading off"                                                                                                |
+| Sending off; Review app sending; Allow 5 app messages            | Waiting; then "App sending allowed · 5 of 5 attempts remaining"; bar `sending on, 5/5`                                                         |
+| Revoke sending                                                   | Waiting; then "App sending off"                                                                                                                |
+| Not now                                                          | The review closes; nothing sent                                                                                                                |
+| Allow without a review (an old drawing)                          | Nothing sent                                                                                                                                   |
+| Refused: Open / Show this conversation on this device first      | The refusal under the rows; the state unchanged                                                                                                |
+| Refused: Application or permissions changed                      | The same                                                                                                                                       |
+| Refused by the gateway's request limits                          | The same, with its text                                                                                                                        |
+| Changed on the desktop or in another tab while the rows are open | Shown at once; an open review closes                                                                                                           |
+| Changed elsewhere while a change waits                           | The waiting change forgotten; its answer ignored; the new state shown                                                                          |
+| The connection drops while a change waits                        | "No confirmation received. …" (or the gateway's "Connection to Companion was lost …"); not sent again; the snapshot's state after reconnecting |
+| Disconnected                                                     | `· Disconnected`; every change unavailable                                                                                                     |
+| Another conversation shown                                       | Rows hidden; reviews closed                                                                                                                    |
+| The application asks for neither                                 | No status, no Permissions…                                                                                                                     |
+| A listener without `send`                                        | "App sending unavailable on this host"; its review unavailable                                                                                 |
 
 ### Security
 

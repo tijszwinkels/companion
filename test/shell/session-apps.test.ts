@@ -205,6 +205,25 @@ test(
     await setSize(page, 1280, 800);
     await page.waitFor(`${drawn}.layout === 'split'`);
 
+    // The settings screen lies over all of it: nothing of the conversation,
+    // the divider included, is drawn over it.
+    await click(page, '.chat-bar .settings-toggle');
+    await page.waitFor(`Boolean(document.querySelector('.settings-layer'))`);
+    // (A pixel at the divider's line, low on the empty settings page, has
+    // the colour of the pixel 20 px beside it.)
+    const line = await page.evaluate<number>(
+      `document.querySelector('.application-divider').getBoundingClientRect().left + 3`,
+    );
+    async function pixel(x: number): Promise<string> {
+      const { data } = await page.call('Page.captureScreenshot', {
+        format: 'png',
+        clip: { x, y: 780, width: 1, height: 1, scale: 1 },
+      });
+      return String(data);
+    }
+    assert.equal(await pixel(line), await pixel(line + 20));
+    await click(page, '.chat-bar .settings-toggle');
+
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);
   },
@@ -471,6 +490,16 @@ test(
       'Half a sentence more!',
     );
     await applicationShown(page);
+
+    // ▣ App only pressed while the text box keeps the focus (a press that
+    // does not move it): the reader's choice, the application is shown.
+    await page.evaluate(
+      `[...document.querySelectorAll('.application-bar button')].find((button) => button.textContent.trim() === '▣ App only').click()`,
+    );
+    await page.waitFor(`${drawn}.layout === 'switch' && ${drawn}.app && !${drawn}.chat`);
+    await press(page, '◫ Chat at the right', bar);
+    await page.waitFor(`${drawn}.layout === 'split'`);
+    await typeInComposer(page, '');
 
     // The window narrows to the switch while the reader types: the switch
     // shows the chat, the text box keeps the focus. Wide again: split.

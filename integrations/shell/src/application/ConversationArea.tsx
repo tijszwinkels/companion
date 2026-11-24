@@ -135,7 +135,8 @@ export function ConversationArea(props: {
   // the switch shows the chat, so the text box does not go away under the
   // reader's hands.
   const previousLayout = useRef(layout);
-  if (previousLayout.current === 'split' && layout === 'switch' && typing) {
+  // (Only when the room went: ▣ App only is the reader's own choice.)
+  if (previousLayout.current === 'split' && layout === 'switch' && !possible && typing) {
     modes.keep(id, 'chat');
   }
   previousLayout.current = layout;

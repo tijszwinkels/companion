@@ -1074,6 +1074,9 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
 }
 
 .conversation-area {
+  /* Its own stacking context: the divider between the application and the
+     chat never paints over the settings screen above it. */
+  isolation: isolate;
   display: flex;
   flex: 1;
   flex-direction: column;

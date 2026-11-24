@@ -483,35 +483,46 @@ export function mount(root, api) {
   reply.className = 'reply';
   const ask = document.createElement('button');
   ask.textContent = 'Ask the agent for a summary';
-  // The prepared handle of a send whose outcome is not known: kept, and
-  // checked with its receipt, never replaced by a new send.
+    // The prepared handle of a send whose outcome is not known yet: kept and
+  // checked with its receipt, never replaced by a new send, until a receipt
+  // says how it ended. One operation at a time (the button waits).
   let unconfirmed = null;
+  const settled = ['completed', 'failed', 'cancelled'];
+  function show(receipt) {
+    if (receipt && settled.includes(receipt.state)) {
+      unconfirmed = null;
+      ask.textContent = 'Asked (' + receipt.state + '); ask again';
+    } else {
+      ask.textContent = 'Asked (' + (receipt ? receipt.state : 'not confirmed') + '); press to check';
+    }
+  }
   ask.onclick = async () => {
-    if (unconfirmed) {
-      const receipt = await api.chat.receipt(unconfirmed).catch(() => null);
-      ask.textContent = receipt ? 'Asked (' + receipt.state + ')' : 'Still unknown; check again';
-      return;
-    }
-    let handle;
+    ask.disabled = true;
     try {
-      handle = await api.chat.prepareSend();
-    } catch (error) {
-      ask.textContent = 'Not sent: ' + error.message;
-      return;
-    }
-    try {
-      await api.chat.send(handle, 'Please summarise the board.');
-      ask.textContent = 'Asked';
-    } catch (error) {
+      if (unconfirmed) {
+        show(await api.chat.receipt(unconfirmed).catch(() => null));
+        return;
+      }
+      let handle;
+      try {
+        handle = await api.chat.prepareSend();
+      } catch (error) {
+        ask.textContent = 'Not sent: ' + error.message;
+        return;
+      }
       unconfirmed = handle;
-      ask.textContent = 'Not confirmed; press to check';
+      show(await api.chat.send(handle, 'Please summarise the board.').catch(() => null));
+    } finally {
+      ask.disabled = false;
     }
   };
   root.append(board, reply, ask);
   api.chat.subscribe((chat) => {
     const answers = (chat.snapshot?.messages ?? []).filter((message) => message.role === 'assistant');
     const last = answers[answers.length - 1];
-    reply.textContent = last ? 'Latest answer: ' + last.text.slice(0, 160) : 'Chat reading is off.';
+        // Whether reading is allowed is the shell's to say (its bar); here only
+    // what was read.
+    reply.textContent = last ? 'Latest answer: ' + last.text.slice(0, 160) : 'No recent answer read.';
   });
   return {
     update(state) {
