@@ -27,6 +27,8 @@ import {
 } from '../../integrations/shell/src/application/chat-permissions.ts';
 import {
   applicationKey,
+  applicationLabel,
+  applicationName,
   shownApplication,
   type ApplicationChatAccess,
   type ShownApplication,
@@ -380,6 +382,18 @@ test('what is shown: a frame, unavailable, not set up, or nothing', () => {
     uuid + ':2',
   );
   assert.equal(applicationKey(null), '');
+
+  // A saved record the listener could not read: no name, version 0.
+  const unreadable = shownApplication(
+    sessionWith({ id: '', name: '', version: 0, revision: 0, text: '', error: 'Unreadable' }),
+  )!;
+  assert.equal(unreadable.kind, 'unavailable');
+  assert.equal(applicationName(unreadable), 'Session application');
+  assert.equal(applicationLabel(unreadable), 'Session application');
+  assert.equal(
+    applicationLabel(shownApplication(sessionWith({ ...base, frameUrl: address }))!),
+    'notes · v2',
+  );
 });
 
 // ---- Application changes --------------------------------------------------------

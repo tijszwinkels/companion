@@ -333,6 +333,20 @@ test(
     await second.page.waitFor(online, 8000);
     await openConversation(second.page, title);
     await second.page.waitFor(`${drawn}.layout === 'split'`);
+    // The second tab's reader types; the first chooses App only: the
+    // second follows, but shows its chat and keeps the text box focused.
+    await click(second.page, '#application-chat textarea');
+    await second.page.waitFor(composerFocused);
+    await press(page, '▣ App only', bar);
+    await second.page.waitFor(`${drawn}.layout === 'switch'`);
+    assert.deepEqual(await second.page.evaluate(drawn), {
+      layout: 'switch',
+      app: false,
+      chat: true,
+    });
+    assert.equal(await second.page.evaluate(composerFocused), true);
+    await press(page, '◫ Chat at the right', bar);
+    await second.page.waitFor(`${drawn}.layout === 'split'`);
     await press(page, '▣ App only', bar);
     await second.page.waitFor(`${drawn}.layout === 'switch'`);
     await press(second.page, '◫ Chat at the right', bar);
@@ -590,7 +604,9 @@ test(
   'permissions: allowed and revoked from the shell, changed on the desktop; the application reads and sends only while allowed',
   { skip, timeout: 150_000 },
   async (context) => {
-    const { fixture, page, id } = await applicationConversation(context, { width: 1280 });
+    const { fixture, page, id, sockets } = await applicationConversation(context, {
+      width: 1280,
+    });
     await applicationShown(page);
     const address = await applicationAddress(page);
 
@@ -607,6 +623,38 @@ test(
     );
     assert.equal(await page.evaluate(readStatusText), 'Chat reading off');
     assert.equal(await page.evaluate(sendStatusText), 'App sending off');
+
+    // Enter on Review, held (repeated): the focus moves to the disclosure,
+    // never to Allow; nothing is sent. Not now closes it again.
+    const sentBefore = requestActions(sockets).length;
+    await page.evaluate(
+      `[...${rowsElement}.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Review chat access').focus()`,
+    );
+    for (const repeat of [false, true, true]) {
+      await page.call('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13,
+        text: '\r',
+        autoRepeat: repeat,
+      });
+    }
+    await page.call('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+    });
+    await page.waitFor(`document.activeElement?.classList.contains('permission-disclosure')`);
+    assert.equal(await page.evaluate(readStatusText), 'Chat reading off');
+    assert.deepEqual(
+      requestActions(sockets)
+        .slice(sentBefore)
+        .filter((action) => action.startsWith('set-application')),
+      [],
+    );
+    await press(page, 'Not now', rowsElement);
 
     // Read: review (the desktop's disclosure), then Allow reading.
     await press(page, 'Review chat access', rowsElement);
@@ -934,8 +982,21 @@ test(
     await typeInComposer(page, 'Typing here');
     // The first one's application is replaced meanwhile; Back shows it:
     // its new version comes forward, no notice (the typing was elsewhere).
+    // (Back only once this page has received the new version: arriving
+    // after Back, it would meet this conversation's own focused text box.)
+    const received: string[] = [];
+    browser.on((message) => {
+      if (
+        message.sessionId === page.sessionId &&
+        message.method === 'Network.webSocketFrameReceived'
+      ) {
+        received.push(String(message.params.response.payloadData));
+      }
+    });
     await applyApplication(first.run, 'chat-probe', 1);
-    await waitFor(() => listenerApplication(fixture, first.id)?.version === 2);
+    await waitFor(() =>
+      received.some((payload) => /"name":"chat-probe","version":2/.test(payload)),
+    );
     await page.evaluate(`history.back()`);
     await page.waitFor(`${bar}?.textContent.includes('chat-probe · v2')`, 10_000);
     await page.waitFor(`${drawn}.app && !${drawn}.chat`);

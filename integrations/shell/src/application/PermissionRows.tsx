@@ -11,9 +11,11 @@
  * chat-permissions.ts's.
  *
  * Buttons stay focusable while unavailable (../activity/ActionButton.tsx).
- * A pressed button that goes away (Review becomes Allow, Allow becomes
- * Revoke once the listener confirms) hands the keyboard focus to the first
- * button of its row, so it is not lost to the page.
+ * A pressed button that goes away hands the keyboard focus on, so it is not
+ * lost to the page: to the row's disclosure text when a review opened (so a
+ * held or repeated Enter on Review can never press Allow: allowing takes a
+ * deliberate move to it), else to the row's first button (Allow becomes
+ * Revoke once the listener confirms).
  */
 
 import { useLayoutEffect, useRef } from 'preact/hooks';
@@ -53,8 +55,8 @@ export function PermissionRows(props: {
   const pressed = useRef<{ kind: PermissionKind; button: Element | null } | null>(null);
 
   // After each drawing: when the pressed button went away and the focus
-  // fell to the page with it, the focus moves to the first button of that
-  // row. Focus the reader moved elsewhere is left alone.
+  // fell to the page with it, the focus moves to that row's open disclosure,
+  // else its first button. Focus the reader moved elsewhere is left alone.
   useLayoutEffect(() => {
     const last = pressed.current;
     if (!last) {
@@ -71,10 +73,13 @@ export function PermissionRows(props: {
     if (focused && focused !== document.body) {
       return;
     }
-    const first = section.current?.querySelector<HTMLElement>(
-      `[data-permission="${last.kind}"] button`,
-    );
-    first?.focus();
+    const row = section.current?.querySelector<HTMLElement>(`[data-permission="${last.kind}"]`);
+    const disclosure = row?.querySelector<HTMLElement>('.permission-disclosure');
+    if (disclosure) {
+      disclosure.focus();
+      return;
+    }
+    row?.querySelector<HTMLElement>('button')?.focus();
   });
 
   function press(kind: PermissionKind, action: () => void) {
@@ -210,11 +215,15 @@ export function PermissionRows(props: {
   );
 }
 
-/** A disclosure text, one paragraph per blank-line-separated part. */
+/**
+ * A disclosure text, one paragraph per blank-line-separated part. Focusable
+ * by script only (`tabIndex` -1): the keyboard focus lands here when the
+ * review opens.
+ */
 function Disclosure(props: { text: string }) {
   const paragraphs = props.text.split('\n\n');
   return (
-    <div class="permission-disclosure">
+    <div class="permission-disclosure" tabIndex={-1}>
       {paragraphs.map((paragraph, index) => (
         <p key={index}>{paragraph}</p>
       ))}

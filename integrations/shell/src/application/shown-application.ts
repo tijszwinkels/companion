@@ -115,9 +115,25 @@ export function applicationKey(application: ShownApplication | null): string {
   return application.id + ':' + application.version;
 }
 
-/** The name and version as the bar shows them: `notes · v2`. */
+/**
+ * The name as the shell shows it: the bundle's name, or "Session
+ * application" for a saved application the listener could not read (it
+ * then sends an empty name and version 0).
+ */
+export function applicationName(application: ShownApplication): string {
+  if (application.name === '') {
+    return 'Session application';
+  }
+  return application.name;
+}
+
+/** The name and version as the bar shows them: `notes · v2` (no version when it has none). */
 export function applicationLabel(application: ShownApplication): string {
-  return `${application.name} · v${application.version}`;
+  const name = applicationName(application);
+  if (application.version < 1) {
+    return name;
+  }
+  return `${name} · v${application.version}`;
 }
 
 function stringOf(value: unknown): string {

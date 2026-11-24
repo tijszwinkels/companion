@@ -23,7 +23,7 @@
 
 import type { InlineWidgetEnvironment } from '../widgets/InlineWidget.tsx';
 import { WidgetFrame } from '../widgets/InlineWidget.tsx';
-import type { ShownApplication } from './shown-application.ts';
+import { applicationName, type ShownApplication } from './shown-application.ts';
 
 /** The pane's element, named by the divider and the bar's switch (`aria-controls`). */
 export const applicationPaneId = 'application-pane';
@@ -57,13 +57,19 @@ export function ApplicationPane(props: {
     </p>
   );
 
+  // A saved application the listener could not read has no name.
+  let unavailableTitle = `The ${application.name} application is unavailable.`;
+  if (application.name === '') {
+    unavailableTitle = 'The application is unavailable.';
+  }
+
   let content = null;
   if (application.kind === 'frame') {
     content = (
       <WidgetFrame
         key={application.address + ' ' + application.version}
         mode="application"
-        name={application.name}
+        name={applicationName(application)}
         time=""
         address={application.address}
         environment={props.environment}
@@ -81,8 +87,7 @@ export function ApplicationPane(props: {
       <div class="panel inline-widget application-frame" data-phase="unavailable">
         <div class="inline-widget-failed">
           <p>
-            <strong>The {application.name || 'session'} application is unavailable.</strong>{' '}
-            {application.error}
+            <strong>{unavailableTitle}</strong> {application.error}
           </p>
           <p class="inline-widget-note">
             The conversation and the application's saved data are unchanged.
@@ -98,7 +103,7 @@ export function ApplicationPane(props: {
     <section
       id={applicationPaneId}
       class="application-pane"
-      aria-label={`Application ${application.name}`}
+      aria-label={`Application ${applicationName(application)}`}
       inert={props.concealed}
     >
       {content}

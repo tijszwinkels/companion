@@ -61,6 +61,7 @@ import {
 import { PermissionRows } from './PermissionRows.tsx';
 import {
   applicationKey,
+  applicationName,
   shownApplication,
   type ApplicationChatAccess,
 } from './shown-application.ts';
@@ -126,7 +127,7 @@ export function ConversationArea(props: {
   }
   let name = '';
   if (paneApplication) {
-    name = paneApplication.name;
+    name = applicationName(paneApplication);
   }
   modes.observe(id, applicationKey(paneApplication), name, blocker);
 
@@ -135,9 +136,19 @@ export function ConversationArea(props: {
   // the switch shows the chat, so the text box does not go away under the
   // reader's hands.
   const previousLayout = useRef(layout);
-  // (Only when the room went: ▣ App only is the reader's own choice.)
-  if (previousLayout.current === 'split' && layout === 'switch' && !possible && typing) {
+  // (Not after this page's own ▣ App only, which is the reader's choice;
+  // App only chosen in another tab, which this one follows, keeps the chat.)
+  const appOnlyPressed = useRef(false);
+  if (
+    previousLayout.current === 'split' &&
+    layout === 'switch' &&
+    typing &&
+    !appOnlyPressed.current
+  ) {
     modes.keep(id, 'chat');
+  }
+  if (layout === 'switch') {
+    appOnlyPressed.current = false;
   }
   previousLayout.current = layout;
   const mode = modes.mode(id, paneApplication !== null);
@@ -157,7 +168,7 @@ export function ConversationArea(props: {
     }
     bridge.offerApplication({
       sessionId: id,
-      name: paneApplication.name,
+      name: applicationName(paneApplication),
       version: paneApplication.version,
       open: (sessionId) => {
         modes.choose(sessionId, 'app');
@@ -221,6 +232,7 @@ export function ConversationArea(props: {
           // last showed the chat here.
           if (!split) {
             modes.choose(id, 'app');
+            appOnlyPressed.current = true;
           }
           props.layout.setChoice(split ? 'split' : 'app-only');
         }}
@@ -247,7 +259,7 @@ export function ConversationArea(props: {
     rowsElement = (
       <PermissionRows
         key="permissions"
-        name={paneApplication.name}
+        name={applicationName(paneApplication)}
         access={access}
         online={admitted}
         rows={rows}

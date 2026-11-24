@@ -1979,8 +1979,9 @@ drawn by `src/application/ConversationArea.tsx`):
 5. **Switch:** the bar has a **`Chat | notes · v2`** switch; one of the two
    fills the area. Which one, per conversation, follows the
    application-change rule and the reader's choice; and when the window
-   narrows from the split layout while the reader types in the chat (a
-   tiling window manager making room for another window), the switch shows the chat, so the text box does not go away under the
+   leaves the split layout while the reader types in the chat (the window
+   narrows, for example a tiling window manager making room for another
+   window, or another tab chooses App only), the switch shows the chat, so the text box does not go away under the
    reader's hands (not the reader's choice: a ready notice stays). While the chat is
    shown, the chat page offers the application as its footer button, as on
    the desktop. The part that is not shown stays drawn, hidden and inert:
@@ -2091,7 +2092,9 @@ application ID and code version it last saw shown here, and a notice:
    to report it) fails after the 10 seconds; a page loaded before the frame origin was
    set up says "This page was opened before applications were set up for
    it. Reload the page to show them."
-9. **Unavailable** (the listener could not restore it, `error`): "The notes
+9. **Unavailable** (the listener could not restore it, `error`; a saved
+   record it could not read at all has no name and version, and is shown
+   as "Session application", "The application is unavailable."): "The notes
    application is unavailable." with the error, its description and, in the
    switch layout, Show the chat, in its pane, in either layout; there are
    no permission rows.
@@ -2142,7 +2145,8 @@ off`, `sending on, 3/5 left`, `sending used up`, `app message active`,
    change waits for its answer. Showing another conversation hides them.
 2. **Read this conversation:** its status (`Chat reading off` or `allowed`);
    **Review chat access** shows the desktop's disclosure text with **Allow
-   reading** and **Not now**; **Revoke reading** while reading is allowed.
+   reading** and **Not now** (the keyboard focus moves to the disclosure, so
+   a held or repeated Enter on Review never presses Allow); **Revoke reading** while reading is allowed.
    **Send messages as the app:** its status (`App sending off`, `App sending
 allowed · 3 of 5 attempts remaining`, `exhausted`, `unavailable on this
 host`, `· app message active`); **Review app sending** (**Review new
@@ -2236,7 +2240,8 @@ host`, `· app message active`); **Review app sending** (**Review new
   switch layout, under the settings screen or the narrow Activity column,
   out of view, disconnected) `api.chat.read()` and `api.chat.prepareSend()`
   are refused, read delivery is withdrawn, and reading resumes only after
-  it is shown again and its next state poll observed the grant. On the
+  it is shown again and host.js has observed the grant again while visible
+  (its next state poll, or the application's own state read). On the
   loopback route (the desktop's) it never receives `visible`, so nothing
   changes there.
 
@@ -2250,6 +2255,11 @@ host`, `· app message active`); **Review app sending** (**Review new
   implement it), without forwarding or ending anything.
 - **Unavailable or not set up:** no permission rows; a grant made on the
   desktop can be revoked there.
+- **The demo's uncertain send:** the demo application keeps the handle of
+  a send whose answer was lost only while its frame stays in the page;
+  after another conversation was shown in between it offers a new send.
+  Check the conversation before asking again. Keeping it would need the
+  handle in the application's saved state (a second mechanism, in a demo).
 - **Event status:** the desktop's bar also shows the delivery state of the
   application's edits to the agent and "Your unsent message is kept in
   Chat."; the browser does not, in this step.
