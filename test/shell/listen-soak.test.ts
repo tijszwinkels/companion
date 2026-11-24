@@ -92,6 +92,18 @@ test(
       markStillOn: await page.evaluate<boolean>(
         `document.querySelector('.listen-mark.on') !== null`,
       ),
+      // Why, if the page stopped by itself: its row, notice and toasts.
+      row: await page.evaluate<string>(
+        `document.querySelector('.microphone-row.this-browser')?.textContent ?? ''`,
+      ),
+      notices: await page.evaluate<string>(
+        `[...document.querySelectorAll('.listen-notice, .toast')].map((element) => element.textContent).join(' | ')`,
+      ),
+      audioStarts: (await page.evaluate<number>(`window.__audioStarts`)) - startsAtStart,
+      listenerEnds: microphones.logs
+        .filter((entry) => /Browser stream/.test(entry.detail))
+        .map((entry) => entry.detail)
+        .slice(-5),
     };
     console.log(`Listen here soak: ${JSON.stringify(report)}`);
     if (process.env.COMPANION_LISTEN_SOAK_REPORT) {
