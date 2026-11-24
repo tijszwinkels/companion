@@ -263,17 +263,30 @@ test(
 );
 
 test(
-  '420 px: the compact mark says "starting…" until the stream is accepted',
+  '360 px: the compact mark says "starting…" until the stream is accepted, in the bar and in Activity',
   { skip },
   async (context) => {
     const { fixture, browser } = await listenSetup(context);
-    const { page } = await listeningPage(fixture, browser, { width: 420, height: 820 });
+    const { page } = await listeningPage(fixture, browser, { width: 360, height: 820 });
     await showActivity(page);
     await page.evaluate(`window.__holdAudioStart = true`);
     await click(page, '#microphone-this-browser');
     await page.waitFor(
       `document.querySelector('.activity-header .listen-mark.on.starting') !== null`,
     );
+    // In Activity's header over the chat: "starting…" and the ☰ that hides
+    // the column both inside the window.
+    const header = await page.evaluate<{ text: boolean; hide: boolean }>(`(() => {
+      const inside = (element) => {
+        const box = element.getBoundingClientRect();
+        return box.width > 0 && box.left >= 0 && box.right <= window.innerWidth;
+      };
+      return {
+        text: inside(document.querySelector('.activity-header .listen-mark .listen-mark-text')),
+        hide: inside(document.querySelector('.activity-header .activity-toggle')),
+      };
+    })()`);
+    assert.deepEqual(header, { text: true, hide: true });
     await click(page, '.activity-header .activity-toggle');
     await page.waitFor(`document.querySelector('.chat-bar .listen-mark.on.starting') !== null`);
     const text = await page.evaluate<{ shown: boolean; text: string }>(`(() => {

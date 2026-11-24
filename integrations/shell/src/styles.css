@@ -1981,8 +1981,15 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   cursor: default;
 }
 
-.activity-header .listen-mark:not(.starting) .listen-mark-text {
+.activity-header .listen-mark:not(.starting):not(.not-available) .listen-mark-text {
   display: none;
+}
+
+/* Over the chat (a narrow window) the header wraps rather than push the
+   mark's "starting…" or the ☰ that hides the column out of the window. */
+.activity-column.overlay .activity-header {
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .listen-mark:focus-visible {

@@ -902,7 +902,9 @@ and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening
   while the microphone is open: "starting…" until the gateway accepted the
   stream, then "listening here". It is struck through ("paused", "not
   connected", "waiting") while it waits. Pressing it shows Activity. Below
-  480 px it shows only the microphone and the meter, except "starting…".
+  480 px, and in Activity's header (which wraps where the column lies over
+  the chat), it shows only the microphone and the meter, except "starting…"
+  and "not available".
 - **"●" before the tab's title** while the microphone is open, and the
   browser's own microphone sign.
 - **Activity entries** that a browser heard name it (its device name, in

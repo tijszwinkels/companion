@@ -106,6 +106,11 @@ export function ListenMark(props: { listenHere: ListenHere; onShowActivity?: () 
         'Listen here: not available right now; this browser listens again once Companion allows it';
     }
     classes = 'listen-mark waiting';
+    if (view.waitingFor === 'not-available') {
+      // Its reason stays written also in Activity's compact header: the
+      // crossed-out microphone alone would read as Pause.
+      classes = 'listen-mark waiting not-available';
+    }
     content = (
       <>
         <MicOffIcon size={16} />
