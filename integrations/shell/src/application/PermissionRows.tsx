@@ -12,10 +12,13 @@
  *
  * Buttons stay focusable while unavailable (../activity/ActionButton.tsx).
  * A pressed button that goes away hands the keyboard focus on, so it is not
- * lost to the page: to the row's disclosure text when a review opened (so a
- * held or repeated Enter on Review can never press Allow: allowing takes a
- * deliberate move to it), else to the row's first button (Allow becomes
- * Revoke once the listener confirms).
+ * lost to the page, never to another button: to the row's disclosure text
+ * when a review opened, else to the row's status text (Allow becomes Revoke
+ * once the listener confirms). So a held or repeated Enter can never press
+ * the button that takes the pressed one's place (Allow after Review, Revoke
+ * after Allow): the next change takes a deliberate move to it. For the
+ * pointer, a review puts its buttons on their own line below the
+ * disclosure, so a double click on Review never lands on Allow.
  */
 
 import { useLayoutEffect, useRef } from 'preact/hooks';
@@ -56,7 +59,7 @@ export function PermissionRows(props: {
 
   // After each drawing: when the pressed button went away and the focus
   // fell to the page with it, the focus moves to that row's open disclosure,
-  // else its first button. Focus the reader moved elsewhere is left alone.
+  // else its status text. Focus the reader moved elsewhere is left alone.
   useLayoutEffect(() => {
     const last = pressed.current;
     if (!last) {
@@ -79,7 +82,7 @@ export function PermissionRows(props: {
       disclosure.focus();
       return;
     }
-    row?.querySelector<HTMLElement>('button')?.focus();
+    row?.querySelector<HTMLElement>('.permission-status')?.focus();
   });
 
   function press(kind: PermissionKind, action: () => void) {
@@ -93,10 +96,12 @@ export function PermissionRows(props: {
   let readRow = null;
   if (readRequested(access)) {
     readRow = (
-      <div class="permission-row" data-permission="read">
+      <div class={rowClass(rows.reviewingRead)} data-permission="read">
         <div class="permission-text">
           <strong>Read this conversation</strong>
-          <span class="permission-status">{readStatus(access, props.online)}</span>
+          <span class="permission-status" tabIndex={-1}>
+            {readStatus(access, props.online)}
+          </span>
           {rows.reviewingRead && <Disclosure text={readDisclosure} />}
         </div>
         <div class="permission-actions">
@@ -148,10 +153,12 @@ export function PermissionRows(props: {
       reviewText = 'Review new sending grant';
     }
     sendRow = (
-      <div class="permission-row" data-permission="send">
+      <div class={rowClass(rows.reviewingSend)} data-permission="send">
         <div class="permission-text">
           <strong>Send messages as the app</strong>
-          <span class="permission-status">{sendStatus(access)}</span>
+          <span class="permission-status" tabIndex={-1}>
+            {sendStatus(access)}
+          </span>
           {rows.reviewingSend && <Disclosure text={sendDisclosure} />}
         </div>
         <div class="permission-actions">
@@ -213,6 +220,14 @@ export function PermissionRows(props: {
       )}
     </section>
   );
+}
+
+/** A row's class: `reviewing` puts its buttons on their own line below the disclosure. */
+function rowClass(reviewing: boolean): string {
+  if (reviewing) {
+    return 'permission-row reviewing';
+  }
+  return 'permission-row';
 }
 
 /**

@@ -2145,8 +2145,10 @@ off`, `sending on, 3/5 left`, `sending used up`, `app message active`,
    change waits for its answer. Showing another conversation hides them.
 2. **Read this conversation:** its status (`Chat reading off` or `allowed`);
    **Review chat access** shows the desktop's disclosure text with **Allow
-   reading** and **Not now** (the keyboard focus moves to the disclosure, so
-   a held or repeated Enter on Review never presses Allow); **Revoke reading** while reading is allowed.
+   reading** and **Not now** (the keyboard focus moves to the disclosure, and the buttons go on their
+   own line below it, so neither a held Enter nor a double click on Review
+   presses Allow; after a change the focus moves to the row's status, so a
+   held Enter on Allow never presses the Revoke that replaces it); **Revoke reading** while reading is allowed.
    **Send messages as the app:** its status (`App sending off`, `App sending
 allowed · 3 of 5 attempts remaining`, `exhausted`, `unavailable on this
 host`, `· app message active`); **Review app sending** (**Review new
@@ -2265,6 +2267,16 @@ host`, `· app message active`); **Review app sending** (**Review new
   Chat."; the browser does not, in this step.
 - Left out on purpose: a pop-out, pinned applications, animations, the
   phone panel, replacing the 400 ms polling.
+
+### Updating
+
+host.js is served by the listener's widget service, which reads it when
+it starts; the shell is served by the gateway from disk. After updating,
+restart the listener from the updated checkout before serving the new
+shell, then reload open browser tabs: a new shell against a listener still
+running the previous host.js would hide an application behind its chat
+while that page could still read chat and prepare a send with an existing
+grant (the hidden-application rule above needs the new host.js).
 
 ### Changes outside this directory
 
@@ -2865,8 +2877,10 @@ The [session application](#session-applications) rules have one table each:
   conversation in between, disconnected and back with the same frame, the
   conversation closing; Read and Send allowed and revoked from the shell
   with the probe refused before and after and served while allowed (its
-  message arriving in the chat), the desktop changing a permission while a
-  review is open; a change waiting when the connection drops (reported as
+  message arriving in the chat), a held Enter on Review landing on the
+  disclosure and a double click on Review sending nothing, a held Enter on
+  Allow allowing once (the focus on the status, never on Revoke), the
+  desktop changing a permission while a review is open; a change waiting when the connection drops (reported as
   unknown, sent once, shown when the listener carried it out); a real
   refusal from the listener (an Allow that waited while the settings
   screen covered the conversation: "Show this conversation on this device

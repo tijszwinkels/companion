@@ -656,13 +656,66 @@ test(
     );
     await press(page, 'Not now', rowsElement);
 
-    // Read: review (the desktop's disclosure), then Allow reading.
-    await press(page, 'Review chat access', rowsElement);
+    // Read: a double click on Review opens the review (the desktop's
+    // disclosure) and sends nothing: Allow is not where Review was.
+    const reviewButton = `[...${rowsElement}.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Review chat access')`;
+    // (Its left quarter: where Allow would come if the buttons stayed beside
+    // the text.)
+    const reviewPoint = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = ${reviewButton}.getBoundingClientRect();
+      return { x: rect.left + rect.width / 4, y: rect.top + rect.height / 2 };
+    })()`);
+    const beforeDouble = requestActions(sockets).length;
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...reviewPoint });
+    for (const clickCount of [1, 2]) {
+      const base = { ...reviewPoint, button: 'left', clickCount };
+      await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+      await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+    }
     await page.waitFor(
       `${rowsElement}.textContent.includes('Allow this app to read recent text from this conversation')`,
     );
-    await press(page, 'Allow reading', rowsElement);
+    assert.deepEqual(
+      requestActions(sockets)
+        .slice(beforeDouble)
+        .filter((action) => action.startsWith('set-application')),
+      [],
+    );
+    assert.equal(await page.evaluate(readStatusText), 'Chat reading off');
+
+    // Allow reading with Enter held: allowed once; once the listener
+    // confirms, the focus is on the row's status, so the repeating key
+    // never presses the Revoke that replaced Allow.
+    await page.evaluate(
+      `[...${rowsElement}.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Allow reading').focus()`,
+    );
+    const enter = {
+      type: 'keyDown',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+      text: '\r',
+    };
+    const beforeAllow = requestActions(sockets).length;
+    await page.call('Input.dispatchKeyEvent', { ...enter, autoRepeat: false });
     await page.waitFor(`${readStatusText} === 'Chat reading allowed'`, 10_000);
+    await page.waitFor(`document.activeElement?.classList.contains('permission-status')`);
+    for (let repeat = 0; repeat < 3; repeat++) {
+      await page.call('Input.dispatchKeyEvent', { ...enter, autoRepeat: true });
+    }
+    await page.call('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+    });
+    assert.equal(await page.evaluate(readStatusText), 'Chat reading allowed');
+    assert.deepEqual(
+      requestActions(sockets)
+        .slice(beforeAllow)
+        .filter((action) => action.startsWith('set-application')),
+      ['set-application-chat-read'],
+    );
     assert.match(
       await page.evaluate<string>(`${bar}.textContent`),
       /Chat reading on · sending off/,

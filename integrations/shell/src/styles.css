@@ -1296,6 +1296,16 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   gap: 6px;
 }
 
+/* A review open: its buttons on their own line below the disclosure, so a
+   second click where Review was never lands on Allow. */
+.permission-row.reviewing .permission-actions {
+  flex-basis: 100%;
+}
+
+.permission-status:focus {
+  outline: none;
+}
+
 .permission-actions .panel-action[aria-disabled='true'] {
   opacity: 0.45;
 }

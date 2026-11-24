@@ -349,7 +349,7 @@ export function ConversationArea(props: {
           id={applicationChatId}
           class={chatClass}
           style={chatStyle}
-          inert={!chatShown}
+          inert={!chatShown || props.covered}
         >
           {/* A new chat view for each conversation lifetime: the same ID
               reopened elsewhere (a new tool epoch) starts at its live end
