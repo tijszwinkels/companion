@@ -17,6 +17,13 @@ import {
   type TranscriptChain,
 } from './utterance-continuation.ts';
 
+/**
+ * The computer's own microphone. Speech calls that name no microphone belong
+ * to it, so callers from before several microphones existed (the listener of
+ * the computer's microphone, file replay, tests) behave exactly as before.
+ */
+export const computerMicrophone = 'computer';
+
 /** The exact objects used for capture, transcription, and dispatch. */
 export type PipelineDependencies = {
   readonly screen: ScreenSensor;
@@ -51,6 +58,8 @@ interface Job {
   attempt?: ProvisionalAttempt;
   /** Speech only: shared by every attempt of one spoken utterance. */
   chain?: TranscriptChain;
+  /** Speech only: the microphone that heard it (`computerMicrophone` or a stream's ID). */
+  microphone?: string;
   /**
    * Whether this observation's audio/screenshot may be archived. Decided at
    * admission; a continuation keeps the admission of the attempt that began
@@ -59,6 +68,9 @@ interface Job {
   storage: CaptureAdmission;
   /** Set when processing has ended, before the sample buffer is cleared. */
   settled: boolean;
+  /** Resolves once its cleanup has finished (`activity.finished` was called). */
+  finished: Promise<void>;
+  markFinished(): void;
 }
 
 /**
@@ -71,6 +83,7 @@ type JobInput =
       trailingSilenceMs: number;
       capturedFrom?: number;
       captureAdmission?: CaptureAdmission;
+      microphone: string;
       text?: never;
       replaces?: Job;
     }
@@ -80,10 +93,21 @@ type JobInput =
       trailingSilenceMs?: never;
       capturedFrom?: never;
       captureAdmission?: never;
+      microphone?: never;
       replaces?: never;
     };
 
-/** Audio/VAD continues independently; one worker routes frames in speech order. */
+/**
+ * Audio/VAD continues independently; one worker routes frames in speech order.
+ *
+ * Several microphones may feed it at once (the computer's and one per
+ * listening browser, see src/sensors/audio/README.md). Recognition, intent
+ * requests and routing are one queue for all of them, in order of arrival.
+ * Only the continuation of an utterance is kept per microphone: speech that
+ * resumes on one microphone can hold or join only that microphone's newest
+ * attempt, never another microphone's. With one microphone this is exactly
+ * the behavior from before several microphones existed.
+ */
 export class SensorPipeline implements InspectableModule {
   readonly label = 'Sensor pipeline';
 
@@ -91,12 +115,22 @@ export class SensorPipeline implements InspectableModule {
   private worker?: Promise<void>;
   private nextId = 0;
 
-  // The most recently admitted job. Only it can be continued by resumed
-  // speech; anything admitted later, including typed input, is a boundary.
-  private newest?: Job;
+  // Per microphone, its most recently admitted speech job. Only it can be
+  // continued by speech that resumes on the same microphone. Typed input is
+  // a boundary for every microphone: it empties this map. Speech from
+  // another microphone is not a boundary.
+  private readonly newest = new Map<string, Job>();
 
-  // The attempt held by an open VAD candidate, until that candidate resolves.
-  private held?: Job;
+  // Per microphone, the attempt held by its open VAD candidate, until that
+  // candidate resolves.
+  private readonly held = new Map<string, Job>();
+
+  // Every admitted job whose cleanup has not finished yet (see
+  // `idleForComputer`).
+  private readonly unfinished = new Set<Job>();
+
+  // The last job ID admitted before the latest Pause (`pauseStarted`).
+  private pauseCutoff?: number;
 
   // Cleanup of superseded jobs that never reached the worker. Tracked so that
   // idle() and shutdown wait for their capture and activity callbacks.
@@ -144,9 +178,13 @@ export class SensorPipeline implements InspectableModule {
    * (Activity.captureClock), for when the first of these samples was
    * acquired. It decides whether the utterance may be archived; see
    * docs/capture-storage.md.
-   * File replay instead passes `captureAdmission`, retained before decoding
-   * starts. Its samples can arrive faster than a realtime clock, and a later
-   * opt-in must not admit any segment of that earlier replay.
+   * File replay and browser streams instead pass `captureAdmission`,
+   * retained when the input starts. File samples can arrive faster than a
+   * realtime clock, and a later opt-in must not admit any segment of that
+   * earlier replay.
+   *
+   * `microphone` names the microphone that heard the segment; the computer's
+   * by default. It may continue only that microphone's held attempt.
    */
   submit(
     samples: Float32Array,
@@ -155,14 +193,22 @@ export class SensorPipeline implements InspectableModule {
     trailingSilenceMs = 0,
     capturedFrom?: number,
     captureAdmission?: CaptureAdmission,
+    microphone = computerMicrophone,
   ): boolean {
-    const held = this.held;
-    this.held = undefined;
+    const held = this.held.get(microphone);
+    this.held.delete(microphone);
 
-    if (held && this.continuable(held, leadIn.length + samples.length)) {
+    if (held && this.continuable(held, microphone, leadIn.length + samples.length)) {
       const combined = concatenate([held.samples!, leadIn, samples]);
       return this.enqueue(
-        { samples: combined, trailingSilenceMs, capturedFrom, captureAdmission, replaces: held },
+        {
+          samples: combined,
+          trailingSilenceMs,
+          capturedFrom,
+          captureAdmission,
+          microphone,
+          replaces: held,
+        },
         signal,
       );
     }
@@ -170,24 +216,28 @@ export class SensorPipeline implements InspectableModule {
     // Not a continuation (or not mergeable): the held attempt proceeds with
     // its own deadlines, because this speech can no longer join it.
     held?.attempt!.release();
-    return this.enqueue({ samples, trailingSilenceMs, capturedFrom, captureAdmission }, signal);
+    return this.enqueue(
+      { samples, trailingSilenceMs, capturedFrom, captureAdmission, microphone },
+      signal,
+    );
   }
 
   /**
-   * The listener opened a new VAD candidate. Hold the newest attempt if it has
-   * not committed yet, so it cannot act until the candidate is resolved by
-   * `submit` (speech) or `speechDiscarded` (too short, or listening ended).
+   * The listener of `microphone` opened a new VAD candidate. Hold that
+   * microphone's newest attempt if it has not committed yet, so it cannot act
+   * until the candidate is resolved by `submit` (speech) or `speechDiscarded`
+   * (too short, or listening ended). Other microphones' attempts are not held.
    */
-  speechResumed(): void {
-    this.releaseHold('Resumed sound was not speech; continuing');
+  speechResumed(microphone = computerMicrophone): void {
+    this.releaseHold('Resumed sound was not speech; continuing', undefined, microphone);
 
-    const job = this.newest;
+    const job = this.newest.get(microphone);
     if (!job?.attempt || job.settled) {
       return;
     }
 
     if (job.attempt.hold()) {
-      this.held = job;
+      this.held.set(microphone, job);
       this.log('hold', 'Speech resumed before dispatch; holding this attempt', job.id);
     }
   }
@@ -201,14 +251,24 @@ export class SensorPipeline implements InspectableModule {
    * ended this long ago, and the held attempt's quiet period restarts from it.
    * Without it (pause, capture or VAD failure, shutdown), listening has stopped,
    * no later sound can continue the attempt, and its deadlines are unchanged.
+   *
+   * Only `microphone`'s hold is released (the computer's by default).
    */
-  speechDiscarded(burstTrailingSilenceMs?: number): void {
-    this.releaseHold('Resumed sound was not speech; continuing', burstTrailingSilenceMs);
+  speechDiscarded(burstTrailingSilenceMs?: number, microphone = computerMicrophone): void {
+    this.releaseHold(
+      'Resumed sound was not speech; continuing',
+      burstTrailingSilenceMs,
+      microphone,
+    );
   }
 
-  private releaseHold(reason: string, burstTrailingSilenceMs?: number): void {
-    const job = this.held;
-    this.held = undefined;
+  private releaseHold(
+    reason: string,
+    burstTrailingSilenceMs: number | undefined,
+    microphone: string,
+  ): void {
+    const job = this.held.get(microphone);
+    this.held.delete(microphone);
 
     if (job) {
       job.attempt!.release(burstTrailingSilenceMs);
@@ -219,9 +279,14 @@ export class SensorPipeline implements InspectableModule {
   }
 
   /** Whether a finished candidate can be merged into the attempt it held. */
-  private continuable(held: Job, addedSamples: number): boolean {
-    // Anything admitted since, such as typed input, separates the two.
-    if (held !== this.newest || held.settled || !held.attempt || held.attempt.committed) {
+  private continuable(held: Job, microphone: string, addedSamples: number): boolean {
+    // Anything admitted since on this microphone, or typed input, separates the two.
+    if (
+      held !== this.newest.get(microphone) ||
+      held.settled ||
+      !held.attempt ||
+      held.attempt.committed
+    ) {
       return false;
     }
 
@@ -240,22 +305,31 @@ export class SensorPipeline implements InspectableModule {
     }
     const admitted = this.enqueue({ text }, signal, target);
 
-    // Typed input is a boundary, whether admitted or dropped as overload:
-    // speech after it can no longer continue an earlier attempt (see
-    // `continuable`). A hold from a VAD candidate that is still open therefore
-    // cannot change that attempt's outcome any more; release it now, so
-    // neither the attempt nor this text waits for the candidate to close.
-    // The attempt keeps its own deadline; typed input adds no speech timer.
-    // Order is unchanged: attempt, text, then the resumed speech.
-    if (this.held && this.held !== this.newest) {
-      this.releaseHold('Typed input ends the continuation; continuing');
+    // Typed input is a boundary for every microphone, whether admitted or
+    // dropped as overload: speech after it can no longer continue an earlier
+    // attempt (see `continuable`). A hold from a VAD candidate that is still
+    // open therefore cannot change that attempt's outcome any more; release
+    // it now, so neither the attempt nor this text waits for the candidate to
+    // close. The attempt keeps its own deadline; typed input adds no speech
+    // timer. Order is unchanged: attempt, text, then the resumed speech.
+    for (const [microphone, held] of [...this.held]) {
+      if (held !== this.newest.get(microphone)) {
+        this.releaseHold('Typed input ends the continuation; continuing', undefined, microphone);
+      }
     }
 
     return admitted;
   }
 
   private enqueue(input: JobInput, signal: AbortSignal, target?: string): boolean {
-    const { replaces, trailingSilenceMs, capturedFrom, captureAdmission, ...observation } = input;
+    const {
+      replaces,
+      trailingSilenceMs,
+      capturedFrom,
+      captureAdmission,
+      microphone,
+      ...observation
+    } = input;
 
     if (signal.aborted || this.signal.aborted) {
       replaces?.attempt!.release();
@@ -271,8 +345,10 @@ export class SensorPipeline implements InspectableModule {
     if (!replaces && this.pending.length >= 2) {
       this.log('dropped', 'Two utterances already queued; this utterance was not processed', id);
 
-      // Later speech must not skip over the dropped audio into an older attempt.
-      this.newest = undefined;
+      // Later speech must not skip over the dropped audio into an older
+      // attempt of the same microphone. Dropped typed input is a boundary
+      // for every microphone, as admitted typed input is.
+      this.setNewest(microphone, undefined);
       return false;
     }
 
@@ -346,6 +422,10 @@ export class SensorPipeline implements InspectableModule {
         (error) => ({ error, application }),
       );
 
+    let markFinished!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      markFinished = resolve;
+    });
     const job: Job = {
       id,
       observedAt,
@@ -356,13 +436,19 @@ export class SensorPipeline implements InspectableModule {
       interaction,
       attempt,
       chain: attempt ? (replaces?.chain ?? { supersededAttempts: [] }) : undefined,
+      microphone,
       storage,
       settled: false,
+      finished,
+      markFinished,
     };
-    this.newest = job;
+    this.unfinished.add(job);
+    this.setNewest(microphone, job);
 
-    // Replace a waiting attempt at its queue position. An active attempt is the
-    // newest job, so nothing waits behind it and the replacement runs next.
+    // Replace a waiting attempt at its queue position. An active attempt was
+    // admitted before everything that waits, so its replacement runs next:
+    // with one microphone nothing waits behind it at all; with several,
+    // another microphone's later utterances keep waiting behind it.
     const waitingIndex = replaces ? this.pending.indexOf(replaces) : -1;
     if (waitingIndex >= 0) {
       this.pending.splice(waitingIndex, 1, job);
@@ -439,6 +525,81 @@ export class SensorPipeline implements InspectableModule {
     }
   }
 
+  /**
+   * Record `job` (or nothing) as the newest job of `microphone`. Typed input
+   * (no microphone) is a boundary for every microphone, so it forgets them all.
+   */
+  private setNewest(microphone: string | undefined, job: Job | undefined): void {
+    if (microphone === undefined) {
+      this.newest.clear();
+      return;
+    }
+
+    if (job) {
+      this.newest.set(microphone, job);
+    } else {
+      this.newest.delete(microphone);
+    }
+  }
+
+  /**
+   * A settled job can never be continued (see `continuable` and
+   * `speechResumed`), so its microphone no longer needs to remember it.
+   * Forgetting it releases its buffers and screenshot at once, also for a
+   * browser stream that has ended: every stream is a microphone of its own
+   * and would otherwise keep its last job for the rest of the run.
+   */
+  private forgetNewest(job: Job): void {
+    if (job.microphone !== undefined && this.newest.get(job.microphone) === job) {
+      this.newest.delete(job.microphone);
+    }
+  }
+
+  private jobFinished(job: Job): void {
+    this.unfinished.delete(job);
+    job.markFinished();
+  }
+
+  /**
+   * Listening was paused: remember which jobs were admitted before it (see
+   * `idleForComputer`). Called by the listener's owner on every Pause.
+   */
+  pauseStarted(): void {
+    this.pauseCutoff = this.nextId;
+  }
+
+  /**
+   * What the computer's microphone loop waits for after a pause (see
+   * microphone-loop.ts): accepted work to settle before its next period.
+   * Like `idle()`, it waits until every admitted job has finished its
+   * cleanup, including typed text admitted while it waits; but speech from a
+   * listening browser admitted after the latest Pause (`pauseStarted`) is not
+   * waited for. After Resume a browser may speak at once, also while the
+   * computer's old period is still unwinding, and its new utterances must not
+   * keep the computer's microphone closed. Without browser speech the jobs
+   * waited for are exactly those `idle()` waits for, whatever the cutoff.
+   */
+  async idleForComputer(): Promise<void> {
+    // Without a recorded Pause, everything admitted so far counts as earlier.
+    const admittedAtEntry = this.nextId;
+
+    // Re-check after each round: typed text may have been admitted meanwhile,
+    // and a further Pause may have moved the cutoff (the latest one counts).
+    while (true) {
+      const firstLater = (this.pauseCutoff ?? admittedAtEntry) + 1;
+      const waitedFor = (job: Job) =>
+        job.id < firstLater ||
+        job.microphone === undefined ||
+        job.microphone === computerMicrophone;
+
+      const waiting = [...this.unfinished].filter(waitedFor);
+      if (!waiting.length) {
+        return;
+      }
+      await Promise.all(waiting.map((job) => job.finished));
+    }
+  }
+
   /** Used by file playback and shutdown to wait for accepted work to settle. */
   async idle(): Promise<void> {
     while (this.worker || this.retiring.size) {
@@ -458,6 +619,7 @@ export class SensorPipeline implements InspectableModule {
       this.activity.outcome?.(job.id, 'superseded');
       await job.capture;
       this.activity.finished?.(job.id);
+      this.jobFinished(job);
     })().finally(() => {
       this.retiring.delete(cleanup);
     });
@@ -515,6 +677,7 @@ export class SensorPipeline implements InspectableModule {
         source: earlierText !== undefined ? 'earlier-attempt' : 'audio-only',
         input: 'speech',
         storage: job.storage,
+        ...otherMicrophone(job),
       });
 
       const recordings = await Promise.allSettled([
@@ -672,6 +835,7 @@ export class SensorPipeline implements InspectableModule {
           source,
           input: job.samples ? 'speech' : 'typed',
           storage: job.storage,
+          ...otherMicrophone(job),
         });
         recorded = true;
 
@@ -742,6 +906,7 @@ export class SensorPipeline implements InspectableModule {
         // samples, and this job owns the audio buffer, which is cleared now.
         job.settled = true;
         job.samples?.fill(0);
+        this.forgetNewest(job);
 
         await job.capture; // Settle capture before shutdown releases the job.
 
@@ -754,9 +919,22 @@ export class SensorPipeline implements InspectableModule {
         }
 
         this.activity.finished?.(job.id);
+        this.jobFinished(job);
       }
     }
   }
+}
+
+/**
+ * `{ microphone }` for speech that another microphone than the computer's
+ * heard, else nothing: records of the computer's speech and of typed text
+ * stay exactly as they were before several microphones existed.
+ */
+function otherMicrophone(job: Job): { microphone?: string } {
+  if (job.microphone === undefined || job.microphone === computerMicrophone) {
+    return {};
+  }
+  return { microphone: job.microphone };
 }
 
 /**

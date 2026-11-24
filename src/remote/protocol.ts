@@ -63,6 +63,63 @@ export const maximumRemoteConnections = 8;
 export const maximumConnectionsPerDevice = 4;
 
 /**
+ * Listening browsers (src/remote/README.md, "Listening browsers"). A
+ * connection that opened an audio stream (`audio-start` … `audio-stop`)
+ * sends its microphone as binary WebSocket messages: 16 kHz mono signed
+ * 16-bit little-endian samples (32,000 bytes per second of sound), each
+ * message an even number of bytes, at most `maximumAudioChunkBytes`.
+ *
+ * - `maximumAudioStreams`: streams the gateway relays at once, all devices
+ *   together; one per paired device (a second connection of the same device
+ *   that starts one takes it over).
+ * - `audioRealTimeFactor`: sound may arrive at most this much faster than
+ *   real time, on average, with up to `audioBurstSeconds` of sound at once
+ *   (a short network stall delivers what it held back together). The
+ *   budget belongs to the device, so restarting a stream does not refill
+ *   it, and every message costs at least `minimumAudioPieceBytes` (20 ms),
+ *   so tiny messages cannot multiply the work per second of sound.
+ *
+ * Audio is counted apart from the request rate limit. A violation ends the
+ * stream, not the connection.
+ */
+export const maximumAudioChunkBytes = 8 * 1024;
+export const maximumAudioStreams = 4;
+export const audioBytesPerSecond = 32_000;
+export const audioRealTimeFactor = 1.5;
+export const audioBurstSeconds = 2;
+export const minimumAudioPieceBytes = 640;
+
+/**
+ * Why the gateway ended a connection's audio stream without the client
+ * asking (the `audio-ended` message):
+ *
+ * - `taken-over`: another connection of the same device started a stream;
+ * - `too-large`: a binary message was larger than `maximumAudioChunkBytes`,
+ *   empty, or not whole 16-bit samples;
+ * - `too-fast`: sound arrived faster than the rate bound allows;
+ * - `slow-listener`: the listener did not keep up with the sound;
+ * - `paused`: listening was paused; open a new stream once the state says
+ *   listening again;
+ * - `stalled`: the stream's sound fell more than three seconds behind real
+ *   time (the browser's capture stopped or trickles, for example a locked
+ *   phone);
+ * - `slow`, `failed`, `shutdown`, `replaced`: the listener ended it (its
+ *   own queue was full, its listening period failed, it is stopping, or
+ *   this connection's newer stream replaced it).
+ */
+export type AudioEndReason =
+  | 'taken-over'
+  | 'too-large'
+  | 'too-fast'
+  | 'slow-listener'
+  | 'paused'
+  | 'stalled'
+  | 'slow'
+  | 'failed'
+  | 'shutdown'
+  | 'replaced';
+
+/**
  * Close reason sent with close code 4429 when a new connection is refused:
  * `device` when its own device already has `maximumConnectionsPerDevice`,
  * `total` when the gateway already relays `maximumRemoteConnections`.
@@ -148,6 +205,23 @@ export interface RemoteActionParameters {
    */
   'set-application-chat-read': ApplicationChatPermissionChange;
   'set-application-chat-send': ApplicationChatPermissionChange;
+  /**
+   * Open this connection's audio stream: "Listen here" (see the binary
+   * message bounds above). The result is `{ streamId }`; only then may the
+   * client send binary messages. Refused when listening here is not
+   * available (an older listener, or one without a microphone loop), while
+   * paused, when this connection already has a stream, and when
+   * `maximumAudioStreams` other devices already listen. Never repeated from
+   * a receipt: a stream belongs to its connection.
+   */
+  'audio-start': Record<string, never>;
+  /** End this connection's audio stream; `stopped`, or `not-streaming`. */
+  'audio-stop': Record<string, never>;
+  /**
+   * Switch the computer's own microphone on or off (the desktop's switch,
+   * decision D8); `computer-microphone-on` or `computer-microphone-off`.
+   */
+  'set-computer-microphone': { enabled: boolean };
 }
 
 /** Fields of `set-application-chat-read` and `set-application-chat-send`. */
@@ -229,6 +303,8 @@ export const mutatingActions: ReadonlySet<RemoteAction> = new Set<RemoteAction>(
   // again, it would only be refused (the permission revision has changed).
   'set-application-chat-read',
   'set-application-chat-send',
+  // Sets a value rather than toggling, but a repeat still gets the outcome.
+  'set-computer-microphone',
 ]);
 
 /** First message on a new socket. The token never travels in a URL. */
@@ -265,6 +341,21 @@ export type GatewayMessage =
       message: string;
       duplicate?: boolean;
     };
+
+/**
+ * Sent by the gateway when this connection's audio stream ended without the
+ * client asking (see AudioEndReason). Binary messages are refused again from
+ * now on; a client that still wants to listen starts a new stream when it
+ * may. Declared apart from `GatewayMessage` so that clients written before
+ * listening browsers keep compiling unchanged; a connection that never
+ * starts a stream never receives it.
+ */
+export interface AudioEndedMessage {
+  type: 'audio-ended';
+  streamId: string;
+  reason: AudioEndReason;
+  message: string;
+}
 
 /**
  * A session application as a remote client receives it: no `viewUrl` (the
@@ -366,6 +457,27 @@ export interface EngineState {
    * means unknown, not off. The phone cannot change it (no remote action).
    */
   captureStorage?: CaptureStorageState;
+  /**
+   * The listener's microphones. Absent from older listeners and from a
+   * listener without a microphone loop: then nobody can listen here and the
+   * computer's microphone has no switch.
+   */
+  microphones?: MicrophonesState;
+}
+
+/** See `MicrophonesState` in src/desktop/runtime.ts and src/desktop/README.md. */
+export interface MicrophonesState {
+  /** The computer's microphone switch is on. */
+  computer: boolean;
+  /**
+   * Microphones listening now, the computer's first. Empty while paused,
+   * and when the computer's is switched off and no browser listens:
+   * Companion then hears nothing. A browser finds its own entry by the
+   * `streamId` its `audio-start` returned.
+   */
+  listening: { id: string; kind: 'computer' | 'browser'; name: string }[];
+  /** `audio-start` is available. */
+  streams: boolean;
 }
 
 export interface ActivityPage {
@@ -535,6 +647,9 @@ const shapes: Record<RemoteAction, ActionShape> = {
   },
   'set-application-chat-read': { required: applicationChatPermissionFields() },
   'set-application-chat-send': { required: applicationChatPermissionFields() },
+  'audio-start': { required: {} },
+  'audio-stop': { required: {} },
+  'set-computer-microphone': { required: { enabled: boolean } },
 };
 
 /** Exactly the fields the desktop sends for an application chat permission. */

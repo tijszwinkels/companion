@@ -194,6 +194,8 @@ export interface FrameFixtureOptions {
   library?: (directory: string) => Promise<void>;
   /** Run the listener in preview mode. */
   preview?: boolean;
+  /** Let the gateway's own page use the microphone (`--allow-microphone`). */
+  allowMicrophone?: boolean;
 }
 
 /** The remote fixture plus a frame origin, a synthetic library and helpers. */
@@ -212,16 +214,19 @@ export async function frameFixture(options: FrameFixtureOptions = {}) {
     widgetLibrary: library,
     appDirectory: options.appDirectory,
     preview: options.preview,
-    gateway: withFrames
-      ? {
-          frames: {
-            listen: { host: '127.0.0.1', port: framePort },
-            origin: frameOrigin,
-            graceMilliseconds: options.graceMilliseconds,
-            widgetSocket: options.widgetSocket,
-          },
-        }
-      : {},
+    gateway: {
+      ...(withFrames
+        ? {
+            frames: {
+              listen: { host: '127.0.0.1', port: framePort },
+              origin: frameOrigin,
+              graceMilliseconds: options.graceMilliseconds,
+              widgetSocket: options.widgetSocket,
+            },
+          }
+        : {}),
+      ...(options.allowMicrophone ? { allowMicrophone: true } : {}),
+    },
   });
   useNodeRenderer(
     (fixture.sessions as unknown as { widgets: { renderer: object } }).widgets.renderer,

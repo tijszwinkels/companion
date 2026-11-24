@@ -58,11 +58,13 @@ export function normalize(value: unknown, key = ''): unknown {
 }
 
 /** Record a gateway started without frame options. */
-export async function recordGateway(): Promise<GatewayRecording> {
+export async function recordGateway(
+  options: { allowMicrophone?: boolean } = {},
+): Promise<GatewayRecording> {
   const appDirectory = await mkdtemp(join(tmpdir(), 'companion-baseline-app-'));
   await writeFile(join(appDirectory, 'index.html'), '<!doctype html><title>App</title>');
   await writeFile(join(appDirectory, 'app.js'), 'console.log(1);\n');
-  const fixture = await frameFixture({ frames: false, appDirectory });
+  const fixture = await frameFixture({ frames: false, appDirectory, ...options });
 
   try {
     const http: GatewayRecording['http'] = [];

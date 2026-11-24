@@ -48,6 +48,12 @@ export interface Transcript {
    * CaptureStoragePolicy). Absent means not admitted: nothing is saved.
    */
   storage?: CaptureAdmission;
+  /**
+   * The microphone that heard this speech when it is not the computer's: a
+   * listening browser's stream ID. Absent for the computer's microphone and
+   * typed text.
+   */
+  microphone?: string;
 }
 
 /** A failed recognition attempt, without a transcript or associated screenshot. */

@@ -106,6 +106,9 @@ serve     Run the phone gateway until interrupted.
                         TLS certificate; plain HTTP only on loopback.
   --frame-origin URL    Public origin of that listener, exactly scheme://host[:port];
                         must differ from every --origin. Required with --frames-listen.
+  --allow-microphone    Let the gateway's own page use the microphone, so a paired
+                        browser can switch on Listen here (off unless given). Widget
+                        and application frames never may.
 
 pair      Print a one-time pairing code (10 minutes, 5 attempts).
 devices   List paired devices as JSON.
@@ -144,6 +147,7 @@ async function main(): Promise<number> {
       'apps-directory': { type: 'string' },
       'frames-listen': { type: 'string' },
       'frame-origin': { type: 'string' },
+      'allow-microphone': { type: 'boolean' },
       'state-directory': { type: 'string' },
     },
   });
@@ -273,6 +277,7 @@ async function main(): Promise<number> {
     appDirectory: values['app-directory'] ?? join(checkout, 'integrations', 'mobile', 'dist'),
     apps,
     frames,
+    allowMicrophone: values['allow-microphone'] === true,
     log: (message) => console.error(`[remote] ${message}`),
   });
 
@@ -297,6 +302,9 @@ async function main(): Promise<number> {
   }
   if (gateway.frames) {
     console.error(`[remote] Widget frames: ${gateway.frames.origin} on ${gateway.frames.address}`);
+  }
+  if (values['allow-microphone']) {
+    console.error('[remote] Paired browsers may listen here (microphone allowed for this page)');
   }
   console.error('[remote] Pair a phone with: companion-remote pair');
 

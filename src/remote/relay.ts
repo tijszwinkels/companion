@@ -15,6 +15,10 @@
  * until they answer (bounded by `drainMilliseconds`), so their receipts record
  * the real outcome for a reconnecting phone. If the listener goes away, the
  * phone connection is closed with an "engine unavailable" code.
+ *
+ * Audio: a connection may open one audio stream ("Listen here"); its binary
+ * messages then go to the listener as `audio-chunk` lines on this same
+ * upstream socket. See "Audio streams" below and src/remote/README.md.
  */
 
 import { createConnection, type Socket } from 'node:net';
@@ -25,11 +29,16 @@ import type { WebSocket } from 'ws';
 import {
   draftEvents,
   remoteEvents,
+  maximumAudioChunkBytes,
+  maximumAudioStreams,
   mutatingActions,
   parseRemoteRequest,
+  type AudioEndedMessage,
+  type AudioEndReason,
   type GatewayMessage,
   type RemoteRequest,
 } from './protocol.ts';
+import type { AudioRate, AudioStreamHolder, AudioStreamRegistry } from './audio-streams.ts';
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
 import { PhoneOutput } from './outbound.ts';
 import { draftEditBurst } from './request-rate.ts';
@@ -80,6 +89,54 @@ const reportRefusedRequestId = 'report-refused';
  */
 const refusedReportMarker = 'refused:';
 
+/** Upstream request ID of the gateway's own `audio-stop` lines (see endAudio). */
+const audioStopRequestId = 'audio-stop';
+
+/**
+ * Bytes waiting to be written to the listener above which an audio stream
+ * ends as `slow-listener`: about six seconds of sound as base64 lines. The
+ * listener reads requests as they come, so only a listener that has stopped
+ * reading lets this grow.
+ */
+const maximumUpstreamAudioBacklogBytes = 256 * 1024;
+
+/** What the client is told with each `audio-ended`. */
+const audioEndMessages: Record<AudioEndReason, string> = {
+  'taken-over': 'Listening moved to another tab or window of this device',
+  'too-large': 'A piece of sound was empty, too large or not whole 16-bit samples',
+  'too-fast': 'Sound arrived faster than real time allows',
+  'slow-listener': 'Companion did not keep up with the sound',
+  paused: 'Listening is paused',
+  stalled: 'Too little sound arrived from this browser',
+  slow: 'Companion did not keep up with the sound',
+  failed: 'Listening here failed on the computer',
+  shutdown: 'Companion is stopping',
+  replaced: 'A newer stream of this connection replaced it',
+};
+
+/** Reasons the listener may give in its `audio-ended` event (src/desktop/runtime.ts). */
+const listenerAudioEndReasons = new Set<AudioEndReason>([
+  'paused',
+  'stalled',
+  'slow',
+  'failed',
+  'shutdown',
+  'replaced',
+]);
+
+const streamIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * This connection's audio stream: none; starting (its `audio-start` waits
+ * for the listener; `token` tells a stale answer from the current one, and
+ * `ended` keeps an `audio-ended` event the listener sent before its answer);
+ * or open, with the listener's stream ID and the device's rate budget.
+ */
+type AudioState =
+  | { phase: 'none' }
+  | { phase: 'starting'; token: number; ended?: { streamId: string; reason: AudioEndReason } }
+  | { phase: 'open'; streamId: string; rate: AudioRate };
+
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
 
@@ -120,6 +177,13 @@ export interface RelayOptions {
   allowScreenshot(deviceId: string, sessionId: string): void;
   /** Frame addresses for this device's views; absent when no frame origin is configured. */
   frames?: RelayFrames;
+  /** The paired device's name, given to the listener with `audio-start`. */
+  deviceName?: string;
+  /**
+   * The gateway's audio streams: one per device, `maximumAudioStreams` in
+   * total. Without it this connection is never offered an audio stream.
+   */
+  audioStreams?: AudioStreamRegistry;
   /** The gateway retains draining relays until their upstream is really closed. */
   onClosed(): void;
   log(message: string): void;
@@ -165,6 +229,30 @@ export class Relay {
    * the connection's lifetime.
    */
   private readonly drafts: boolean;
+  /**
+   * Whether the listener offers audio streams: its latest state said
+   * `microphones.streams: true`. An older listener never does, and then
+   * `audio-start` is answered here without reaching it.
+   */
+  private audioAvailable = false;
+  private audio: AudioState = { phase: 'none' };
+  private audioStarts = 0;
+  /**
+   * Starts abandoned while their answer was still on its way (the client
+   * stopped, or another connection of the device took over), by token, with
+   * the reason the client is given when the answer arrives.
+   */
+  private readonly abandonedStarts = new Map<number, AudioEndReason | undefined>();
+  /**
+   * One deadline per flush marker not yet flushed, oldest first (see
+   * awaitUpstreamFlush). Each closes the connection if its marker is not
+   * flushed in time.
+   */
+  private readonly flushDeadlines = new Set<ReturnType<typeof setTimeout>>();
+  /** This relay as the registry sees it; taken over by another connection of the device. */
+  private readonly audioHolder: AudioStreamHolder = {
+    takenOver: () => this.endAudio('taken-over'),
+  };
 
   constructor(
     private readonly phone: WebSocket,
@@ -198,6 +286,9 @@ export class Relay {
 
   /** Close both sides, for revocation or gateway shutdown. */
   terminate(code: number, reason: string): void {
+    // The listener ends the stream when the upstream connection closes; the
+    // gateway's slot is free at once.
+    this.endAudio(undefined);
     this.terminated = true;
     this.phoneOpen = false;
     this.output.close();
@@ -215,7 +306,13 @@ export class Relay {
       return;
     }
     if (isBinary) {
-      this.sendPhone({ type: 'error', message: 'Expected a text message' });
+      // Binary messages are sound, and only within an open audio stream.
+      // Without one they are refused exactly as before audio existed.
+      if (this.audio.phase !== 'open') {
+        this.sendPhone({ type: 'error', message: 'Expected a text message' });
+        return;
+      }
+      this.audioPiece(binaryBytes(data));
       return;
     }
 
@@ -240,6 +337,13 @@ export class Relay {
     const parsed = parseRemoteRequest(value, { drafts: this.drafts });
     if (!parsed.ok) {
       this.sendPhone({ type: 'error', requestId: parsed.requestId, message: parsed.message });
+      return;
+    }
+
+    // Ending a stream only ever frees resources: it never waits for the
+    // request rate, so a client can always stop listening.
+    if (parsed.request.action === 'audio-stop') {
+      this.stopAudio(parsed.request.requestId);
       return;
     }
 
@@ -279,6 +383,12 @@ export class Relay {
 
   private accept(request: RemoteRequest): void {
     const reply = (message: Reply) => this.sendPhone(message);
+
+    // A stream belongs to its connection: never answered from a receipt.
+    if (request.action === 'audio-start') {
+      this.startAudio(request);
+      return;
+    }
 
     if (!mutatingActions.has(request.action)) {
       this.forward(request, reply);
@@ -390,6 +500,14 @@ export class Relay {
     // a connection that asked for drafts, and to no other.
     const draftHost = request.action === 'panel-state' && this.drafts ? { draftHost: true } : {};
 
+    // The listener names a listening browser after its paired device. The
+    // client cannot send this field (protocol.ts); the gateway adds it.
+    if (request.action === 'audio-start') {
+      const deviceName = this.options.deviceName ?? 'Paired device';
+      this.writeUpstream({ ...fields, deviceName, requestId: upstreamId });
+      return;
+    }
+
     // A report that waited for role confirmation while the phone left (or
     // started closing) describes a page nobody sees any more: keep its
     // selection and order, but never let it count as visible.
@@ -468,7 +586,7 @@ export class Relay {
     return this.phoneOpen && this.phone.readyState === this.phone.OPEN;
   }
 
-  private sendPhone(message: GatewayMessage, replaceable = false): void {
+  private sendPhone(message: GatewayMessage | AudioEndedMessage, replaceable = false): void {
     if (!this.phoneIsOpen()) {
       return;
     }
@@ -477,6 +595,8 @@ export class Relay {
   }
 
   private phoneClosed(): void {
+    // A closed page stops listening at once, even while requests drain.
+    this.endAudio(undefined);
     this.phoneOpen = false;
     this.output.close();
     for (const cancel of this.duplicateWaiters) {
@@ -518,6 +638,248 @@ export class Relay {
 
     this.withdrawal = 'sent';
     this.writeUpstream({ action: 'withdraw-visibility', requestId: withdrawalRequestId });
+  }
+
+  // ---- Audio streams ------------------------------------------------------
+  //
+  // Rules (src/remote/README.md, "Listening browsers"): binary messages are
+  // sound and are accepted only between this connection's `audio-start`
+  // result and the stream's end. One stream per paired device, at most
+  // `maximumAudioStreams` in total (AudioStreamRegistry); each piece at most
+  // `maximumAudioChunkBytes` of whole 16-bit samples, at most 1.5 times real
+  // time (AudioRate), counted apart from the request rate. A violation, a
+  // takeover, a listener that falls behind, a closed page, revocation and a
+  // lost connection end the stream, never the connection.
+
+  /** The client asked to listen here (`audio-start`). */
+  private startAudio(request: RemoteRequest): void {
+    const requestId = request.requestId;
+    const streams = this.options.audioStreams;
+    const refuse = (message: string) => {
+      this.sendPhone({ type: 'error', requestId, action: 'audio-start', message });
+    };
+
+    if (this.audio.phase !== 'none') {
+      refuse('An audio stream is already open on this connection');
+      return;
+    }
+    if (!this.audioAvailable || !streams) {
+      refuse('Listening here is not available on this computer');
+      return;
+    }
+    // Checked before the claim, which takes the stream from another tab of
+    // this device: a start that `forward` would refuse must not do that.
+    if (this.pending.size - this.pendingDraftEdits() >= maximumPendingRequests) {
+      refuse('Too many unfinished requests; wait for earlier ones');
+      return;
+    }
+    if (streams.claim(this.options.deviceId, this.audioHolder) === 'total') {
+      refuse(`Too many browsers are listening (at most ${maximumAudioStreams})`);
+      return;
+    }
+
+    const token = ++this.audioStarts;
+    this.audio = { phase: 'starting', token };
+    this.forward(request, (reply) => this.audioStartAnswered(token, requestId, reply));
+  }
+
+  /** The listener answered an `audio-start` (or the relay gave up on it). */
+  private audioStartAnswered(token: number, requestId: string, reply: Reply): void {
+    const current = this.audio.phase === 'starting' && this.audio.token === token;
+    const streamId = reply.type === 'result' ? streamIdOf(reply.result) : undefined;
+
+    if (!current) {
+      // Stopped or taken over while starting: the listener's new stream
+      // must not stay open with nobody sending to it.
+      const reason = this.abandonedStarts.get(token);
+      this.abandonedStarts.delete(token);
+      if (streamId) {
+        this.writeUpstream({ action: 'audio-stop', streamId, requestId: audioStopRequestId });
+      }
+      this.sendPhone({
+        type: 'error',
+        requestId,
+        action: 'audio-start',
+        message: reason ? audioEndMessages[reason] : 'The audio stream ended before it started',
+      });
+      return;
+    }
+
+    if (!streamId) {
+      // Refused by the listener (for example while paused), or lost.
+      this.audio = { phase: 'none' };
+      this.options.audioStreams?.release(this.audioHolder);
+      const message = reply.type === 'error' ? reply.message : 'Listening here failed';
+      this.sendPhone({ type: 'error', requestId, action: 'audio-start', message });
+      return;
+    }
+
+    // The listener may already have ended this stream (for example Pause in
+    // the same moment) and said so before its answer: report both, in order,
+    // and keep nothing open.
+    const endedEarly = this.audio.phase === 'starting' ? this.audio.ended : undefined;
+    if (endedEarly && endedEarly.streamId === streamId) {
+      this.audio = { phase: 'none' };
+      this.options.audioStreams?.release(this.audioHolder);
+      // As for every end the listener reports: what is still buffered for
+      // it must be flushed in time.
+      this.awaitUpstreamFlush();
+      this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
+      this.sendAudioEnded(streamId, endedEarly.reason);
+      return;
+    }
+
+    const rate = this.options.audioStreams!.rate(this.options.deviceId);
+    this.audio = { phase: 'open', streamId, rate };
+    this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
+  }
+
+  /**
+   * When a stream ends (its stop written, or the listener ended it), sound
+   * may still wait in the upstream socket's buffer. A listener that never
+   * reads again would keep it there for as long as the connection lives, so
+   * the connection is closed as "engine unavailable" if that buffer has not
+   * been flushed within the request timeout, as for a request the listener
+   * never answers.
+   *
+   * An empty write with a callback marks the end of what is buffered now:
+   * writes are flushed in order, so its callback runs once everything before
+   * it has reached the operating system. This covers every backlog, also one
+   * small enough that the socket never asked for `drain`. Every marker has
+   * its own deadline, counted from when it was written, so a later stream's
+   * end never inherits an earlier one's nearly expired deadline.
+   *
+   * Documented limit: Node may write a marker in one batch with requests
+   * written after it, and calls the marker's callback when that whole batch
+   * is written. A batch still pending near the deadline can therefore close
+   * a connection whose listener received the stop itself in time.
+   */
+  private awaitUpstreamFlush(): void {
+    if (this.upstream.destroyed || this.upstream.writableLength === 0) {
+      return;
+    }
+
+    const deadline = setTimeout(() => {
+      this.flushDeadlines.delete(deadline);
+      this.terminate(closeCodes.engineUnavailable, 'Companion did not keep up');
+    }, requestMilliseconds);
+    this.flushDeadlines.add(deadline);
+
+    this.upstream.write('', () => {
+      clearTimeout(deadline);
+      this.flushDeadlines.delete(deadline);
+    });
+  }
+
+  /** The client asked to stop listening (`audio-stop`). */
+  private stopAudio(requestId: string): void {
+    const streaming = this.audio.phase !== 'none';
+    this.endAudio(undefined);
+    this.sendPhone({
+      type: 'result',
+      requestId,
+      action: 'audio-stop',
+      result: streaming ? 'stopped' : 'not-streaming',
+    });
+  }
+
+  /** One binary message of the open stream: check it and pass it on. */
+  private audioPiece(bytes: Buffer): void {
+    if (this.audio.phase !== 'open') {
+      return;
+    }
+
+    if (bytes.length === 0 || bytes.length > maximumAudioChunkBytes || bytes.length % 2 !== 0) {
+      this.endAudio('too-large');
+      return;
+    }
+    if (!this.audio.rate.take(bytes.length)) {
+      this.endAudio('too-fast');
+      return;
+    }
+    if (this.upstream.writableLength > maximumUpstreamAudioBacklogBytes) {
+      // Ending the stream also starts the flush deadline (endAudio).
+      this.endAudio('slow-listener');
+      return;
+    }
+
+    this.writeUpstream({ action: 'audio-chunk', data: bytes.toString('base64') });
+  }
+
+  /**
+   * End this connection's stream, if any: the listener stops it (unless the
+   * upstream is gone), the gateway's slot is freed, and with a `reason` the
+   * client is told. A start still waiting for its answer is abandoned; its
+   * answer then stops the listener's stream (audioStartAnswered).
+   */
+  private endAudio(reason: AudioEndReason | undefined): void {
+    const audio = this.audio;
+    if (audio.phase === 'none') {
+      return;
+    }
+
+    this.audio = { phase: 'none' };
+    this.options.audioStreams?.release(this.audioHolder);
+
+    if (audio.phase === 'starting') {
+      // Its answer will stop the listener's stream by ID (audioStartAnswered).
+      // A start already written upstream is also stopped at once, without an
+      // ID: on this ordered socket the stop follows exactly that start, so the
+      // listener never keeps the period while the answer is on its way.
+      this.abandonedStarts.set(audio.token, reason);
+      if (this.ready) {
+        this.writeUpstream({ action: 'audio-stop', requestId: audioStopRequestId });
+        this.awaitUpstreamFlush();
+      }
+      return;
+    }
+
+    this.writeUpstream({
+      action: 'audio-stop',
+      streamId: audio.streamId,
+      requestId: audioStopRequestId,
+    });
+    // Sound still queued for a listener that stopped reading is released
+    // within the request timeout, not only when the connection closes.
+    this.awaitUpstreamFlush();
+    if (reason) {
+      this.sendAudioEnded(audio.streamId, reason);
+    }
+  }
+
+  /** The listener ended this connection's stream (`audio-ended` event). */
+  private listenerEndedAudio(message: Record<string, unknown>): void {
+    const audio = this.audio;
+    const reason = listenerAudioEndReasons.has(message.reason as AudioEndReason)
+      ? (message.reason as AudioEndReason)
+      : 'failed';
+
+    if (audio.phase === 'starting' && typeof message.streamId === 'string') {
+      // Before the answer to this connection's start: it may be about the
+      // stream that answer will name (audioStartAnswered decides).
+      audio.ended = { streamId: message.streamId, reason };
+      return;
+    }
+    if (audio.phase !== 'open' || message.streamId !== audio.streamId) {
+      // An earlier stream of this connection; already ended here.
+      return;
+    }
+
+    this.audio = { phase: 'none' };
+    this.options.audioStreams?.release(this.audioHolder);
+    // Sound sent before the listener's end may still be buffered for it.
+    this.awaitUpstreamFlush();
+    this.sendAudioEnded(audio.streamId, reason);
+  }
+
+  private sendAudioEnded(streamId: string, reason: AudioEndReason): void {
+    const ended: AudioEndedMessage = {
+      type: 'audio-ended',
+      streamId,
+      reason,
+      message: audioEndMessages[reason],
+    };
+    this.sendPhone(ended);
   }
 
   // ---- Listener side ------------------------------------------------------
@@ -574,6 +936,27 @@ export class Relay {
     if (isReply && message.requestId === reportRefusedRequestId) {
       // Nobody waits for the gateway's own report either.
       return;
+    }
+
+    if (isReply && (message.requestId === audioStopRequestId || message.requestId === undefined)) {
+      // The gateway's own `audio-stop`, or a refused `audio-chunk` (pieces
+      // carry no request ID). A refused piece means the listener's stream
+      // has ended; its `audio-ended` event says why.
+      return;
+    }
+
+    if (message.type === 'audio-ended') {
+      this.listenerEndedAudio(message);
+      return;
+    }
+
+    // Only once the remote role is confirmed: the snapshot that arrives
+    // before is held and handled again then (roleAnswered), so a start can
+    // never be admitted while requests still wait for the role.
+    if (message.type === 'state' && this.ready) {
+      const microphones = message.microphones as { streams?: unknown } | undefined;
+      this.audioAvailable =
+        typeof microphones === 'object' && microphones !== null && microphones.streams === true;
     }
 
     if (isReply && typeof message.requestId === 'string') {
@@ -730,6 +1113,13 @@ export class Relay {
   private upstreamClosed(): void {
     clearTimeout(this.roleTimer);
     clearTimeout(this.drainTimer);
+    for (const deadline of this.flushDeadlines) {
+      clearTimeout(deadline);
+    }
+    this.flushDeadlines.clear();
+
+    // The listener's stream ended with its connection.
+    this.endAudio(this.phoneOpen ? 'failed' : undefined);
 
     // Requests that never answered have an unknown outcome. Record that in
     // their receipts: a repeat must not execute them a second time.
@@ -862,4 +1252,24 @@ export class Relay {
     }
     return screenshotName.exec(basename(path))?.[1];
   }
+}
+
+/** A binary WebSocket message as one buffer (`ws` may deliver fragments or an ArrayBuffer). */
+function binaryBytes(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data as Buffer[]);
+  }
+  return Buffer.from(data as ArrayBuffer);
+}
+
+/** The listener's stream ID in an `audio-start` result, if it is well formed. */
+function streamIdOf(result: unknown): string | undefined {
+  if (result === null || typeof result !== 'object') {
+    return undefined;
+  }
+  const streamId = (result as { streamId?: unknown }).streamId;
+  return typeof streamId === 'string' && streamIdPattern.test(streamId) ? streamId : undefined;
 }

@@ -61,7 +61,9 @@ On connection and state changes, the server sends:
 
 The recent view contains the latest 100 records, newest first, including
 audio-only failures (an empty transcript with `transcriptSource: "audio-only"`).
-`speaking` is the current VAD speech state, independent of the processing count.
+`speaking` is the current VAD speech state, independent of the processing count
+(with several [microphones](#microphones-and-listening-browsers), true while any
+of them hears speech).
 It returns to false on silence, pause, end of input, or capture failure. Older
 servers omit this optional field; adapters should treat absence as false.
 It is a view limit, not a database retention policy. Snapshot the rows when
@@ -694,6 +696,107 @@ An intermediate version-2 schema had delivery markers but no `legacy_outcome`.
 Its old and new failed rows cannot be distinguished, so migration conservatively
 marks ambiguous failed sends/pastes as `interrupted` and preserves their labels.
 Once provenance columns exist, subsequent opens leave new cancellations intact.
+
+### Microphones and listening browsers
+
+Companion may hear through several microphones at once: the computer's, and
+one per paired browser that switched on **Listen here**. The rules (periods,
+Pause, continuation per microphone, stored audio) are in
+[microphones and listening periods](../sensors/audio/README.md); this section
+is the control-socket protocol. Everything here exists only in live
+microphone mode; otherwise `microphones` is absent and the actions are refused.
+
+The state snapshot carries:
+
+```json
+{
+  "microphones": {
+    "computer": true,
+    "listening": [
+      { "id": "computer", "kind": "computer", "name": "Computer" },
+      { "id": "<stream uuid>", "kind": "browser", "name": "Phone" }
+    ],
+    "streams": true
+  }
+}
+```
+
+- `computer`: the computer's microphone switch (D8) is on.
+- `listening`: the microphones that listen now, the computer's first, then
+  each listening browser (its stream ID and its paired device's name) in the
+  order the streams started. The computer is listed only while its ordinary
+  listening period runs (not between a lost recorder and its retry, nor while
+  Record has the microphone). Empty while paused, and when the computer's
+  switch is off and no browser listens: Companion then hears nothing.
+- `streams`: a remote connection may open an audio stream.
+- Absent in older listeners and outside microphone mode: no switch, and no
+  browser can listen.
+
+`speaking` is true while **any** microphone hears speech.
+
+`{"action":"set-computer-microphone","enabled":false}` (desktop and remote
+connections) switches the computer's microphone off or on; the results are
+`computer-microphone-off` and `computer-microphone-on`. Off ends the
+computer's current listening period without cancelling accepted
+utterances; on starts a new one unless paused. Not stored: every listener run
+starts with it on, like the sound switch. Manual recording still uses the
+computer's microphone while it is off.
+
+**Audio streams** (remote connections only; desktop connections are refused).
+The remote gateway relays a listening browser's microphone on its existing
+connection for that browser; there is no second socket.
+
+- `{"action":"audio-start","deviceName":"Phone"}` opens the connection's
+  stream and answers `{"streamId":"<uuid>"}`. The gateway adds `deviceName`
+  (the paired device's name, 1–100 characters); a client cannot set it. A
+  second `audio-start` on the same connection replaces its stream (the old
+  one ends as `replaced`). Refused while paused (`Listening is paused`), at
+  shutdown, and when eight listening periods exist (open streams and ended
+  ones whose voice detector is still closing; the gateway allows four
+  streams). The stream's capture-storage admission is taken now.
+- `{"action":"audio-chunk","data":"<base64>"}`: one piece of 16 kHz mono
+  signed 16-bit little-endian samples, 2–8192 bytes (an even number), strict
+  base64 of at most 10,924 characters. Pieces carry no `requestId`, never wait,
+  take no slot and are **not answered** when accepted; a refused piece (no
+  stream, malformed) is answered with an error as any request. A piece that
+  would make more than 5 seconds of sound (or 250 pieces) wait for the
+  stream's voice detector ends the stream (`slow`); sound more than three
+  seconds behind real time (plus 1% of the stream's age for clock drift, at
+  most 10 seconds) ends it too (`stalled`), whether pieces stopped or only
+  trickle.
+- `{"action":"audio-stop","streamId":"<uuid>"}` ends the connection's stream:
+  `stopped`, or `not-streaming` when it has none. With `streamId` it ends the
+  stream only if it is that one (the gateway always names it, so a late stop
+  never ends a newer stream). It never waits and takes no slot, so it is
+  never refused as busy.
+- `{"type":"audio-ended","streamId":"<uuid>","reason":"paused"}` is sent to
+  the owning connection only when its stream ended without its asking:
+  `paused`, `replaced`, `slow`, `stalled`, `failed` or `shutdown`. It may
+  arrive before the answer to the `audio-start` that opened the stream. A closed connection
+  ends its stream silently.
+
+`audio-start` and `set-computer-microphone` are listening controls, like
+`toggle-pause` (at most 16 in flight per connection).
+
+Activity entries (and `history` rows) of speech a browser heard carry
+`microphone` with the device's name; the computer's speech and typed text
+have none. It is not stored in the database, so earlier runs' entries never
+have it.
+
+**What a paired device can now do** (decision D4, accepted by the user). A
+paired device's speech is the user's speech at the computer. By speaking it
+can do everything speech can do there, including what its typed requests may
+not: type into the application in front on the computer ("insert …",
+"enter …", automatic dictation), go to or pop out the computer's selected
+conversation, and start conversations and quick questions with a fresh
+screenshot of the computer's window. Like every conversation a paired device
+is shown, such a conversation's saved screenshot (capture storage on) can then
+be opened on that device: by speaking, a paired device can therefore obtain a
+new screenshot of the computer's window, which its typed requests cannot
+(they never capture one). It can also switch the computer's microphone off
+and on, as it could already pause listening. It still cannot hear the
+computer's microphone or another browser's, fetch a screenshot by any other
+route, or use Record.
 
 ## Agent sessions
 
@@ -1681,6 +1784,11 @@ For a remote connection:
   remote rule in [application chat access from a paired
   device](#application-chat-access-from-a-paired-device): allowing needs that
   connection's own selection on a visible page, stopping only its selection.
+- `audio-start`, `audio-chunk` and `audio-stop` (remote connections only)
+  stream a listening browser's microphone; `set-computer-microphone` is
+  allowed for both. See [microphones and listening
+  browsers](#microphones-and-listening-browsers). A connection that closes
+  ends its stream.
 - `send-agent` text allows 1–8000 characters, the desktop composer's bound,
   matching the phone protocol.
 - `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
@@ -1702,8 +1810,8 @@ line may hold at most 128 Ki characters (`maximumRequestLineCharacters`: a
 unfinished one that grows past it, disconnects that client. The bound applies
 per line, so one read carrying several requests is fine. Each
 connection may have 16 control requests in flight; more are refused with
-"Previous request is still running". `panel-state`, `withdraw-visibility` and
-`draft-set` are always admitted and take no slot: their handlers never wait,
+"Previous request is still running". `panel-state`, `withdraw-visibility`,
+`report-refused`, `draft-set`, `audio-chunk` and `audio-stop` are always admitted and take no slot: their handlers never wait,
 so each finishes right after the read that delivered it, in arrival order. A
 batch of reports or keystrokes therefore never makes a following request look
 busy, and a gateway withdrawing a departed client's visibility never waits for
