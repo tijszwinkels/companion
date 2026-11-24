@@ -700,6 +700,13 @@ test(
     await page.call('Input.dispatchKeyEvent', { ...enter, autoRepeat: false });
     await page.waitFor(`${readStatusText} === 'Chat reading allowed'`, 10_000);
     await page.waitFor(`document.activeElement?.classList.contains('permission-status')`);
+    // The status shows that it has the keyboard focus.
+    assert.deepEqual(
+      await page.evaluate(
+        `[document.activeElement.matches(':focus-visible'), getComputedStyle(document.activeElement).outlineStyle]`,
+      ),
+      [true, 'solid'],
+    );
     for (let repeat = 0; repeat < 3; repeat++) {
       await page.call('Input.dispatchKeyEvent', { ...enter, autoRepeat: true });
     }
@@ -784,6 +791,116 @@ test(
       /Allow 5 app messages/,
     );
 
+    assertTwoOrigins(fixture, page);
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'permissions: a key held on Revoke while the grant is renewed elsewhere revokes nothing (the focus moves to the status)',
+  { skip, timeout: 120_000 },
+  async (context) => {
+    const { fixture, page, id, sockets } = await applicationConversation(context, {
+      width: 1280,
+    });
+    await applicationShown(page);
+    const allowed = await desktopChange(fixture, id, 'send', true);
+    assert.equal(allowed.type, 'result', JSON.stringify(allowed));
+    await press(page, 'Permissions…', bar);
+    await page.waitFor(`${sendStatusText}?.startsWith('App sending allowed')`, 10_000);
+
+    // The keyboard focus on Revoke sending; the desktop renews the grant.
+    await page.evaluate(
+      `[...${rowsElement}.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Revoke sending').focus()`,
+    );
+    const revisionBefore = listenerApplication(fixture, id)!.chatAccess.revision;
+    const renewed = await desktopChange(fixture, id, 'send', true);
+    assert.equal(renewed.type, 'result', JSON.stringify(renewed));
+    assert.notEqual(listenerApplication(fixture, id)!.chatAccess.revision, revisionBefore);
+    await page.waitFor(
+      `document.activeElement === document.querySelector('[data-permission="send"] .permission-status')`,
+      10_000,
+    );
+
+    // A held Enter now presses nothing.
+    const before = requestActions(sockets).length;
+    for (const repeat of [true, true, true]) {
+      await page.call('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13,
+        text: '\r',
+        autoRepeat: repeat,
+      });
+    }
+    await page.call('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+    });
+    assert.deepEqual(
+      requestActions(sockets)
+        .slice(before)
+        .filter((action) => action.startsWith('set-application')),
+      [],
+    );
+    assert.equal(listenerApplication(fixture, id)!.chatAccess.send.allowed, true);
+    assertTwoOrigins(fixture, page);
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'permissions: the second click of a double click never presses the Revoke that a change elsewhere put under the pointer',
+  { skip, timeout: 120_000 },
+  async (context) => {
+    const { fixture, page, id, sockets } = await applicationConversation(context, {
+      width: 1280,
+    });
+    await applicationShown(page);
+    await press(page, 'Permissions…', bar);
+    await page.waitFor(`${readStatusText} === 'Chat reading off'`);
+
+    // A point in Review's right part, where Revoke reading will be.
+    const reviewButton = `[...${rowsElement}.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Review chat access')`;
+    const point = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = ${reviewButton}.getBoundingClientRect();
+      return { x: rect.right - 15, y: rect.top + rect.height / 2 };
+    })()`);
+    const before = requestActions(sockets).length;
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+    const first = { ...point, button: 'left', clickCount: 1 };
+    await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...first });
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...first });
+    await page.waitFor(`Boolean(document.querySelector('.permission-disclosure'))`);
+
+    // Between the two clicks the desktop allows reading: the review closes
+    // and Revoke reading is under the pointer.
+    const allowed = await desktopChange(fixture, id, 'read', true);
+    assert.equal(allowed.type, 'result', JSON.stringify(allowed));
+    await page.waitFor(`${readStatusText} === 'Chat reading allowed'`, 10_000);
+    assert.equal(
+      await page.evaluate(
+        `document.elementFromPoint(${point.x}, ${point.y})?.closest('button')?.textContent.trim()`,
+      ),
+      'Revoke reading',
+    );
+    const second = { ...point, button: 'left', clickCount: 2 };
+    await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...second });
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...second });
+
+    // Nothing was sent; reading stays allowed. A single click later revokes.
+    assert.deepEqual(
+      requestActions(sockets)
+        .slice(before)
+        .filter((action) => action.startsWith('set-application')),
+      [],
+    );
+    assert.equal(await page.evaluate(readStatusText), 'Chat reading allowed');
+    await press(page, 'Revoke reading', rowsElement);
+    await page.waitFor(`${readStatusText} === 'Chat reading off'`, 10_000);
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);
   },

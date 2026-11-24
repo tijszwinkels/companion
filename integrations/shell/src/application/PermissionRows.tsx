@@ -16,9 +16,13 @@
  * when a review opened, else to the row's status text (Allow becomes Revoke
  * once the listener confirms). So a held or repeated Enter can never press
  * the button that takes the pressed one's place (Allow after Review, Revoke
- * after Allow): the next change takes a deliberate move to it. For the
- * pointer, a review puts its buttons on their own line below the
- * disclosure, so a double click on Review never lands on Allow.
+ * after Allow): the next change takes a deliberate move to it. The same
+ * holds when the permission changes elsewhere while the focus is on a
+ * row's button: it moves to the row's status. For the pointer, a review
+ * puts its buttons on their own line below the disclosure, and Allow and
+ * Revoke ignore the second click of a double click (`singleClick`), so a
+ * click meant for the button that was there a moment ago never presses
+ * them.
  */
 
 import { useLayoutEffect, useRef } from 'preact/hooks';
@@ -50,9 +54,14 @@ export function PermissionRows(props: {
   onReview: (kind: PermissionKind) => void;
   onDecline: (kind: PermissionKind) => void;
   onChange: (kind: PermissionKind, allowed: boolean) => void;
+  /** The permission identity shown (chat-permissions.ts `permissionIdentity`). */
+  identity: string;
 }) {
   const { access, rows } = props;
   const section = useRef<HTMLElement>(null);
+  // The row that last had the keyboard focus inside the rows, '' once the
+  // focus moved elsewhere on the page.
+  const focusedRow = useRef<PermissionKind | ''>('');
   // The button just pressed and its row, until it has gone away (or the
   // focus moved elsewhere).
   const pressed = useRef<{ kind: PermissionKind; button: Element | null } | null>(null);
@@ -84,6 +93,46 @@ export function PermissionRows(props: {
     }
     row?.querySelector<HTMLElement>('.permission-status')?.focus();
   });
+
+  // The permission changed (here or elsewhere: the desktop, another tab)
+  // while the keyboard focus was in a row, on one of its buttons or fallen
+  // to the page with a button that went away: it moves to that row's status
+  // text, so a key still held or repeating never presses a button that now
+  // means something else (a Revoke naming a renewed grant).
+  const shownIdentity = useRef(props.identity);
+  useLayoutEffect(() => {
+    if (shownIdentity.current === props.identity) {
+      return;
+    }
+    shownIdentity.current = props.identity;
+    const kind = focusedRow.current;
+    if (kind === '') {
+      return;
+    }
+    const focused = document.activeElement;
+    const onButton =
+      focused !== null && focused.tagName === 'BUTTON' && section.current?.contains(focused);
+    if (focused && focused !== document.body && !onButton) {
+      return;
+    }
+    section.current
+      ?.querySelector<HTMLElement>(`[data-permission="${kind}"] .permission-status`)
+      ?.focus();
+  }, [props.identity]);
+
+  function focusIn(event: FocusEvent) {
+    const row = (event.target as Element).closest<HTMLElement>('[data-permission]');
+    focusedRow.current = (row?.dataset.permission as PermissionKind | undefined) ?? '';
+  }
+
+  function focusOut(event: FocusEvent) {
+    // To another element outside the rows: the reader moved on. (A button
+    // that goes away loses the focus to nothing; that is not moving on.)
+    const next = event.relatedTarget as Node | null;
+    if (next && !section.current?.contains(next)) {
+      focusedRow.current = '';
+    }
+  }
 
   function press(kind: PermissionKind, action: () => void) {
     pressed.current = { kind, button: document.activeElement };
@@ -118,6 +167,7 @@ export function PermissionRows(props: {
             <ActionButton
               available={props.canChange}
               onPress={() => press('read', () => props.onChange('read', true))}
+              singleClick
               class="panel-action small"
             >
               Allow reading
@@ -136,6 +186,7 @@ export function PermissionRows(props: {
             <ActionButton
               available={props.canChange}
               onPress={() => press('read', () => props.onChange('read', false))}
+              singleClick
               class="panel-action small"
             >
               Revoke reading
@@ -175,6 +226,7 @@ export function PermissionRows(props: {
             <ActionButton
               available={props.canChange && send !== null}
               onPress={() => press('send', () => props.onChange('send', true))}
+              singleClick
               class="panel-action small"
             >
               Allow 5 app messages
@@ -193,6 +245,7 @@ export function PermissionRows(props: {
             <ActionButton
               available={props.canChange}
               onPress={() => press('send', () => props.onChange('send', false))}
+              singleClick
               class="panel-action small"
             >
               Revoke sending
@@ -208,6 +261,8 @@ export function PermissionRows(props: {
       ref={section}
       id={permissionRowsId}
       class="permission-rows"
+      onFocusIn={focusIn}
+      onFocusOut={focusOut}
       aria-label={`Chat permissions of ${props.name}`}
     >
       {readRow}

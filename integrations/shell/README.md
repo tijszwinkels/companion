@@ -2147,8 +2147,11 @@ off`, `sending on, 3/5 left`, `sending used up`, `app message active`,
    **Review chat access** shows the desktop's disclosure text with **Allow
    reading** and **Not now** (the keyboard focus moves to the disclosure, and the buttons go on their
    own line below it, so neither a held Enter nor a double click on Review
-   presses Allow; after a change the focus moves to the row's status, so a
-   held Enter on Allow never presses the Revoke that replaces it); **Revoke reading** while reading is allowed.
+   presses Allow; after a change, made here or elsewhere, the focus moves from the row's
+   buttons to its status (shown with a focus ring), so a held Enter never
+   presses the button that replaces the pressed one; Allow and Revoke
+   ignore the second click of a double click or tap, so a change elsewhere
+   between two clicks never turns the second into a Revoke); **Revoke reading** while reading is allowed.
    **Send messages as the app:** its status (`App sending off`, `App sending
 allowed · 3 of 5 attempts remaining`, `exhausted`, `unavailable on this
 host`, `· app message active`); **Review app sending** (**Review new
@@ -2880,7 +2883,10 @@ The [session application](#session-applications) rules have one table each:
   message arriving in the chat), a held Enter on Review landing on the
   disclosure and a double click on Review sending nothing, a held Enter on
   Allow allowing once (the focus on the status, never on Revoke), the
-  desktop changing a permission while a review is open; a change waiting when the connection drops (reported as
+  desktop changing a permission while a review is open, a held Enter on
+  Revoke while the desktop renews the grant (the focus moves to the status,
+  nothing sent), the second click of a double click landing on a Revoke the
+  desktop's grant put there (nothing sent); a change waiting when the connection drops (reported as
   unknown, sent once, shown when the listener carried it out); a real
   refusal from the listener (an Allow that waited while the settings
   screen covered the conversation: "Show this conversation on this device

@@ -260,6 +260,7 @@ export function ConversationArea(props: {
       <PermissionRows
         key="permissions"
         name={applicationName(paneApplication)}
+        identity={permissionIdentity(id, application)}
         access={access}
         online={admitted}
         rows={rows}

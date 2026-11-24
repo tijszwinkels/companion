@@ -1306,6 +1306,12 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   outline: none;
 }
 
+/* Where the keyboard focus goes after a change: visible, as on buttons. */
+.permission-status:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .permission-actions .panel-action[aria-disabled='true'] {
   opacity: 0.45;
 }
