@@ -902,7 +902,7 @@ and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening
   while the microphone is open: "starting…" until the gateway accepted the
   stream, then "listening here". It is struck through ("paused", "not
   connected", "waiting") while it waits. Pressing it shows Activity. Below
-  480 px it shows only the microphone and the meter.
+  480 px it shows only the microphone and the meter, except "starting…".
 - **"●" before the tab's title** while the microphone is open, and the
   browser's own microphone sign.
 - **Activity entries** that a browser heard name it (its device name, in
@@ -913,7 +913,8 @@ and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening
 
 The sound: `getUserMedia` with echo cancellation, noise suppression and
 automatic gain on, an `AudioWorklet` (`listen-worklet.js`, from the page's own
-origin) that converts the device's rate to 16 kHz mono signed 16-bit samples,
+origin) that converts the device's rate to 16 kHz mono signed 16-bit
+little-endian samples (written so whatever the browser's byte order),
 and pieces of 100 ms (3,200 bytes) sent as binary messages on the page's
 existing connection, between `audio-start` and `audio-stop`. No new socket,
 no new storage, and no change to the page's Content-Security-Policy
@@ -933,18 +934,20 @@ open. When the page switches Listen here off by itself it says why, and it
 never switches on again by itself, so two tabs never take the stream from
 each other in turn.
 
-| State                                                                     | What the page shows                                                           | Switch off                  | Pause (any panel)                | Resume        | Tab hidden and back | Connection lost, then back                                                    | Sign-out        | Another tab takes over | Permission withdrawn in the browser |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------- | -------------------------------- | ------------- | ------------------- | ----------------------------------------------------------------------------- | --------------- | ---------------------- | ----------------------------------- |
-| Off (every page starts here)                                              | Row "Off"; no mark                                                            | —                           | —                                | —             | nothing             | nothing                                                                       | stays off       | nothing                | nothing                             |
-| Asking permission                                                         | Row "Waiting for the browser's permission…", notice what will happen; no mark | off; closed once answered   | waits; closed once answered      | asks again    | nothing             | waits; closed once answered; asks again                                       | off             | —                      | → refused                           |
-| Listening here                                                            | Red mark with meter, "●" title, row "Listening" with meter                    | `audio-stop`, released, off | `audio-stop`, released, → paused | —             | nothing (sends on)  | released (the gateway ended the stream); listens again after the new snapshot | released, off   | released, → taken over | `audio-stop`, released, → lost      |
-| Paused                                                                    | Struck mark "paused"; row "Paused with everything else"; switch on            | off                         | —                                | asks, listens | nothing             | stays paused                                                                  | off             | —                      | —                                   |
-| Waiting for the connection or Companion                                   | Struck mark "not connected" or "waiting"; row says which                      | off                         | → paused                         | —             | nothing             | listens once admitted and running                                             | off             | —                      | —                                   |
-| Permission refused                                                        | Switch off; row "The browser refused the microphone"; notice how to allow it  | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
-| Taken over by another tab                                                 | Switch off; notice "Listening moved to another tab of this browser"           | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
-| Lost (no sound reached Companion, or the track ended)                     | Switch off; notice "No sound from this browser"                               | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
-| Stopped by Companion (refused, failed, stopping)                          | Switch off; notice with Companion's reason                                    | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
-| Not available (no secure page, no capture, the policy, an older listener) | No switch; the row says why                                                   | —                           | —                                | —             | —                   | read again from the new state                                                 | —               | —                      | —                                   |
+| State                                                                                                            | What the page shows                                                                     | Switch off                  | Pause (any panel)                | Resume        | Tab hidden and back | Connection lost, then back                                                    | Sign-out        | Another tab takes over | Permission withdrawn in the browser |
+| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------- | -------------------------------- | ------------- | ------------------- | ----------------------------------------------------------------------------- | --------------- | ---------------------- | ----------------------------------- |
+| Off (every page starts here)                                                                                     | Row "Off"; no mark                                                                      | —                           | —                                | —             | nothing             | nothing                                                                       | stays off       | nothing                | nothing                             |
+| Asking permission                                                                                                | Row "Waiting for the browser's permission…", notice what will happen; no mark           | off; closed once answered   | waits; closed once answered      | asks again    | nothing             | waits; closed once answered; asks again                                       | off             | —                      | → refused                           |
+| Listening here                                                                                                   | Red mark with meter, "●" title, row "Listening" with meter                              | `audio-stop`, released, off | `audio-stop`, released, → paused | —             | nothing (sends on)  | released (the gateway ended the stream); listens again after the new snapshot | released, off   | released, → taken over | `audio-stop`, released, → lost      |
+| Paused                                                                                                           | Struck mark "paused"; row "Paused with everything else"; switch on                      | off                         | —                                | asks, listens | nothing             | stays paused                                                                  | off             | —                      | —                                   |
+| Waiting for the connection or Companion                                                                          | Struck mark "not connected" or "waiting"; row says which                                | off                         | → paused                         | —             | nothing             | listens once admitted and running                                             | off             | —                      | —                                   |
+| Not available for now: `streams` false, or no `microphones` while the listener starts (Listen here on)           | Struck mark "not available"; row "Listening here is not available right now"; switch on | off                         | → paused                         | —             | nothing             | waits; listens once the state offers streams                                  | off             | —                      | —                                   |
+| Limit page (the reconnect refused for a connection limit)                                                        | Switch off; notice with the reason (seen after Retry)                                   | —                           | —                                | —             | —                   | Retry opens nothing                                                           | off             | —                      | —                                   |
+| Permission refused                                                                                               | Switch off; row "The browser refused the microphone"; notice how to allow it            | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Taken over by another tab                                                                                        | Switch off; notice "Listening moved to another tab of this browser"                     | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Lost (no sound reached Companion, or the track ended)                                                            | Switch off; notice "No sound from this browser"                                         | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Stopped by Companion (refused, failed, stopping)                                                                 | Switch off; notice with Companion's reason                                              | —                           | nothing                          | nothing       | nothing             | nothing                                                                       | problem cleared | —                      | —                                   |
+| Not available (no secure page, no capture, the policy; or the listener without streams while Listen here is off) | No switch; the row says why                                                             | —                           | —                                | —             | —                   | read again from the new state                                                 | —               | —                      | —                                   |
 
 Further rules:
 
@@ -954,7 +957,17 @@ Further rules:
 2. The gateway's `audio-ended` with `paused` (or a start refused with
    "Listening is paused") counts as paused until the next state message
    (the state that says "paused" may still be on its way): the microphone
-   is released at once and no new stream starts before that message.
+   is released at once and no new stream starts before that message. A
+   start refused with "Listening here is not available…" is held the same
+   way, so the page never retries in a loop and never switches off for it.
+   A listener without streams now (`microphones.streams` false, for example
+   while it uses the computer's microphone for another mode, or
+   `microphones` still absent while it starts) keeps Listen here on but
+   closed; it comes back by itself once the state offers streams again.
+   While Listen here is off, such a listener is "not available" (no switch).
+   The page also switches Listen here off when the gateway refuses it for
+   a connection limit: the limit page covers the switch, and its Retry must
+   not open the microphone by itself.
 3. `taken-over` (or a start refused because another tab took over
    meanwhile) → taken over; `stalled` → lost; `failed`, `shutdown`,
    `replaced` or an unknown reason → stopped with the gateway's message.
@@ -966,8 +979,13 @@ Further rules:
    reloads.
 4. A start whose answer is lost with the connection is not a problem: the
    page starts again after the reconnect.
-5. "No microphone is on" is shown while Companion runs, is not paused, no
-   microphone listens and this page is not listening.
+5. While Companion runs, is not paused, no microphone listens and this
+   page is not listening: "No microphone is on" when the computer's switch
+   is off too, else "No microphone is listening right now" (Record has the
+   computer's microphone, or its recorder is being retried; it listens
+   again by itself). Other listening browsers are listed only from this
+   connection's state, so a disconnected page never lists its own former
+   stream.
 6. The mark shows from the moment the browser grants the microphone (also
    while the worklet still loads), and switching off releases the
    microphone at once at any step. The settings screen keeps the bar, and
@@ -1052,7 +1070,8 @@ unchanged:
   meter and "●" show, and that switching off ends the stream and releases
   the microphone. It also checks Pause and Resume from the page and from
   the computer, the computer's switch, permission refused, a second tab
-  taking over, 420 and 1600 px without overflow, no request to another
+  taking over, 420 and 1600 px without overflow, "starting…" in the compact
+  mark, no former own stream listed while offline, no request to another
   origin and no policy violation, and the header with and without
   `--allow-microphone`. With COMPANION_SHELL_SCREENSHOTS set, it saves each
   state at 420 and 1280 px.

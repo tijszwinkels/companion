@@ -56,6 +56,8 @@ export interface ListenHost {
   admitted(): boolean;
   /** This browser is paired (not signed out or revoked). */
   paired(): boolean;
+  /** The gateway refused this page for a connection limit (the limit page shows). */
+  limited(): boolean;
   engine(): ListenEngine | undefined;
   /** Called after every change of the above. */
   subscribe(listener: () => void): () => void;
@@ -95,9 +97,35 @@ export interface ListenView {
   problem?: ListenProblem;
   /** A passing message, such as "Connection too slow: some speech was lost". */
   notice: string;
-  waitingFor: 'paused' | 'connection' | 'companion' | '';
+  waitingFor: 'paused' | 'connection' | 'companion' | 'not-available' | '';
   /** This page's stream while it is open ('' otherwise): its entry in `listening`. */
   streamId: string;
+}
+
+/**
+ * What Activity says when nothing hears (README "Further rules"): `none-on`
+ * when no microphone is switched on (the reader must switch one on), and
+ * `none-listening` when the computer's is on but not listening at this
+ * moment (Record has it, or its recorder is being retried): it listens
+ * again by itself. '' otherwise, also while this page listens.
+ */
+export function quietNotice(state: {
+  running: boolean;
+  paused: boolean;
+  microphones: MicrophonesState | undefined;
+  listeningHere: boolean;
+}): '' | 'none-on' | 'none-listening' {
+  const microphones = state.microphones;
+  if (!state.running || state.paused || !microphones || state.listeningHere) {
+    return '';
+  }
+  if (microphones.listening.length > 0) {
+    return '';
+  }
+  if (microphones.computer) {
+    return 'none-listening';
+  }
+  return 'none-on';
 }
 
 /** Two seconds of 16 kHz 16-bit sound. */
@@ -128,6 +156,15 @@ const takenOverRefusal = 'Listening moved to another tab or window of this devic
 
 const notAvailableHere = 'Listening here is not available on this computer';
 
+/**
+ * The start of a refusal of `audio-start` because listening here is not
+ * available at this moment (the gateway's "… on this computer", or a
+ * listener that uses the computer's microphone for another mode). Like
+ * Pause: the page waits for the next state message instead of switching off
+ * or trying again.
+ */
+const notAvailableRefusal = 'Listening here is not available';
+
 interface Stream {
   /** `starting` until the gateway answered; `stopping` after a slow-connection stop. */
   phase: 'starting' | 'open' | 'stopping';
@@ -156,11 +193,13 @@ export class ListenHere {
   private level = 0;
 
   /**
-   * After the stream ended or was refused because of Pause, no new one
-   * starts before the next state message: the message saying "paused" may
-   * still be on its way, and a start before it would be refused again.
+   * After the stream ended or was refused because of Pause (`paused`), or
+   * a start was refused as not available now (`not-available`), the
+   * microphone stays closed and no new stream starts before the next state
+   * message: the message that explains it may still be on its way, and a
+   * start before it would be refused again. Never a retry loop.
    */
-  private holdUntilState = false;
+  private holdUntilState: '' | 'paused' | 'not-available' = '';
   private lastEngine?: ListenEngine;
   private lastAutomaticRestart = -Infinity;
 
@@ -207,8 +246,10 @@ export class ListenHere {
       const engine = this.host.engine();
       if (!this.host.admitted()) {
         view.waitingFor = 'connection';
-      } else if (engine?.paused || this.holdUntilState) {
+      } else if (engine?.paused || this.holdUntilState === 'paused') {
         view.waitingFor = 'paused';
+      } else if (!this.supportedNow() || this.holdUntilState === 'not-available') {
+        view.waitingFor = 'not-available';
       } else {
         view.waitingFor = 'companion';
       }
@@ -257,16 +298,30 @@ export class ListenHere {
 
   // ---- The rule ---------------------------------------------------------------
 
+  /**
+   * Why this page offers no switch, or ''. The page itself (no secure page,
+   * no capture, the policy) rules Listen here out; the listener's support
+   * only while Listen here is off. While it is on, a listener without
+   * support now (`microphones` absent while it starts, or `streams: false`
+   * while it uses the computer's microphone for another mode) only makes
+   * the page wait (`supportedNow`): the choice is kept, and listening comes
+   * back by itself.
+   */
   private unavailableReason(): string {
     const environment = this.environment.unavailable();
     if (environment) {
       return environment;
     }
     // The listener's support is known only from this connection's state.
-    if (this.host.admitted() && this.host.engine()?.microphones?.streams !== true) {
+    if (this.host.admitted() && !this.wanted && !this.supportedNow()) {
       return notAvailableHere;
     }
     return '';
+  }
+
+  /** The listener accepts a stream now (`microphones.streams`). */
+  private supportedNow(): boolean {
+    return this.host.engine()?.microphones?.streams === true;
   }
 
   /**
@@ -282,7 +337,8 @@ export class ListenHere {
       this.unavailableReason() === '' &&
       engine?.ready === true &&
       !engine.paused &&
-      !this.holdUntilState
+      this.supportedNow() &&
+      this.holdUntilState === ''
     );
   }
 
@@ -312,7 +368,7 @@ export class ListenHere {
     const engine = this.host.engine();
     if (engine !== this.lastEngine) {
       this.lastEngine = engine;
-      this.holdUntilState = false;
+      this.holdUntilState = '';
     }
 
     // Signed out or revoked: the next pairing starts with Listen here off.
@@ -320,9 +376,19 @@ export class ListenHere {
       this.wanted = false;
       this.problem = undefined;
     }
-    // Known not to be possible on this page or computer: off, without a
-    // problem (the row says why instead of offering the switch).
-    if (this.wanted && this.unavailableReason() !== '' && this.host.admitted()) {
+    // Refused for a connection limit: the limit page covers the switch, and
+    // its Retry must not open the microphone again by itself.
+    if (this.wanted && this.host.limited()) {
+      this.wanted = false;
+      this.problem = {
+        kind: 'stopped',
+        message: 'Companion refused this tab for a connection limit',
+      };
+      choiceChanged(false);
+    }
+    // Not possible on this page at all: off, without a problem (the row
+    // says why instead of offering the switch).
+    if (this.wanted && this.environment.unavailable() !== '') {
       this.wanted = false;
       choiceChanged(false);
     }
@@ -502,7 +568,12 @@ export class ListenHere {
         }
         const message = error instanceof Error ? error.message : String(error);
         if (message === pausedRefusal) {
-          this.holdUntilState = true;
+          this.holdUntilState = 'paused';
+          this.update();
+          return;
+        }
+        if (message.startsWith(notAvailableRefusal)) {
+          this.holdUntilState = 'not-available';
           this.update();
           return;
         }
@@ -576,8 +647,9 @@ export class ListenHere {
 
     switch (message.reason) {
       case 'paused':
-        // Resume (from any panel) starts a new stream.
-        this.holdUntilState = true;
+        // Resume (from any panel) starts a new stream; so does a listener
+        // that offers streams again (it ends them as paused, too).
+        this.holdUntilState = 'paused';
         this.update();
         return;
       case 'taken-over':

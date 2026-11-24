@@ -22,7 +22,8 @@ import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import type { ActivityRequests } from '../activity/requests.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
-import type { ListenHere, ListenView } from './listen-here.ts';
+import type { MicrophonesState } from '../../../../src/remote/protocol.ts';
+import { quietNotice, type ListenHere, type ListenView } from './listen-here.ts';
 
 /** The Activity requests key of the computer's switch. */
 const computerSwitchKey = 'computer-microphone';
@@ -81,7 +82,7 @@ export function ListenMark(props: { listenHere: ListenHere; onShowActivity?: () 
     // Red from the browser's grant on; "starting" until the stream is open,
     // so nobody speaks into a stream that is not there yet.
     const starting = view.streamId === '';
-    classes = 'listen-mark on';
+    classes = starting ? 'listen-mark on starting' : 'listen-mark on';
     label = starting ? 'This browser is starting to listen' : 'This browser is listening';
     content = (
       <>
@@ -99,6 +100,10 @@ export function ListenMark(props: { listenHere: ListenHere; onShowActivity?: () 
     } else if (view.waitingFor === 'companion') {
       text = 'waiting';
       label = 'Listen here: waiting; this browser listens again once Companion is ready';
+    } else if (view.waitingFor === 'not-available') {
+      text = 'not available';
+      label =
+        'Listen here: not available right now; this browser listens again once Companion allows it';
     }
     classes = 'listen-mark waiting';
     content = (
@@ -179,10 +184,21 @@ export function MicrophoneRows(props: {
     );
   }
 
-  // Other browsers that listen now (not this page's own stream).
-  const others = (microphones?.listening ?? []).filter(
-    (microphone) => microphone.kind === 'browser' && microphone.id !== view.streamId,
-  );
+  // Other browsers that listen now (not this page's own stream). Only from
+  // this connection's state: the last one before a disconnect may still list
+  // this page's own former stream.
+  let others: MicrophonesState['listening'] = [];
+  if (admitted) {
+    others = (microphones?.listening ?? []).filter(
+      (microphone) => microphone.kind === 'browser' && microphone.id !== view.streamId,
+    );
+  }
+  const quiet = quietNotice({
+    running,
+    paused,
+    microphones,
+    listeningHere: view.phase === 'listening',
+  });
 
   // A notice below the rows, as in the mock-up.
   let notice = null;
@@ -195,16 +211,17 @@ export function MicrophoneRows(props: {
     );
   } else if (view.phase === 'off' && view.problem) {
     notice = <ProblemNotice view={view} />;
-  } else if (
-    running &&
-    microphones &&
-    !paused &&
-    microphones.listening.length === 0 &&
-    view.phase !== 'listening'
-  ) {
+  } else if (quiet === 'none-on') {
     notice = (
       <p class="listen-notice warn">
         <b>No microphone is on.</b> Companion hears nothing until one is switched on.
+      </p>
+    );
+  } else if (quiet === 'none-listening') {
+    notice = (
+      <p class="listen-notice">
+        <b>No microphone is listening right now.</b> The computer's microphone is on and listens
+        again by itself.
       </p>
     );
   }
@@ -262,6 +279,8 @@ function ThisBrowserRow(props: { listenHere: ListenHere; view: ListenView; admit
       status = 'Waiting for the connection to Companion';
     } else if (view.waitingFor === 'companion') {
       status = 'Waiting for Companion';
+    } else if (view.waitingFor === 'not-available') {
+      status = 'Listening here is not available right now';
     }
   }
 

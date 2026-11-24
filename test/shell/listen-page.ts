@@ -69,6 +69,8 @@ export async function writeSpeechWav(
  * - `__liveTracks()`: microphone tracks still live (0 once released);
  * - `__binarySent`: binary WebSocket messages the page sent (audio pieces);
  * - `__audioStarts`: `audio-start` requests the page sent;
+ * - `__holdAudioStart`: set to true to keep `audio-start` requests from
+ *   leaving the page, as if the gateway had not answered yet;
  * - `__holdPermission`: set to true to make the next microphone request
  *   wait forever, as a browser does while its permission prompt is open.
  */
@@ -76,6 +78,7 @@ const pageProbe = `
   window.__streams = [];
   window.__binarySent = 0;
   window.__holdPermission = false;
+  window.__holdAudioStart = false;
   window.__liveTracks = () => window.__streams
     .flatMap((stream) => stream.getTracks())
     .filter((track) => track.readyState === 'live').length;
@@ -98,6 +101,9 @@ const pageProbe = `
       window.__binarySent++;
     } else if (data.includes('"action":"audio-start"')) {
       window.__audioStarts++;
+      if (window.__holdAudioStart) {
+        return undefined;
+      }
     }
     return send.call(this, data);
   };

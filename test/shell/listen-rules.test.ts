@@ -21,6 +21,7 @@ import {
 } from '../../integrations/shell/src/listen/capture.ts';
 import {
   automaticRestartInterval,
+  quietNotice,
   ListenHere,
   maximumBacklogBytes,
   startupLimitMs,
@@ -46,6 +47,7 @@ interface SentRequest {
 class FakeHost implements ListenHost {
   isAdmitted = true;
   isPaired = true;
+  isLimited = false;
   state: ListenEngine | undefined = {
     ready: true,
     paused: false,
@@ -63,6 +65,9 @@ class FakeHost implements ListenHost {
   }
   paired() {
     return this.isPaired;
+  }
+  limited() {
+    return this.isLimited;
   }
   engine() {
     return this.state;
@@ -592,11 +597,175 @@ test('switching on is refused while requests are not admitted; off is always pos
   assert.equal(listen.view.phase, 'off');
 });
 
-test('listening, then the listener restarts as an older version: off, without a problem', async () => {
-  const { host, environment, listen } = await listening();
+test('listening, then a restarting listener reports ready before its microphones: waits, the choice kept; listens again once they are there', async () => {
+  const parts = await listening();
+  const { host, environment, listen } = parts;
   host.changeEngine({ microphones: undefined });
+  assert.equal(listen.view.phase, 'waiting');
+  assert.equal(listen.view.waitingFor, 'not-available');
+  assertClosed(parts);
+  assert.deepEqual(host.actions(), ['audio-stop']);
+  host.answer('audio-stop', 'not-streaming');
+
+  host.changeEngine({ microphones: { computer: true, listening: [], streams: true } });
+  environment.latest.grant();
+  await settle();
+  assert.deepEqual(host.actions(), ['audio-start']);
+});
+
+test('waiting for microphones that never come: the reader can switch off', async () => {
+  const { host, listen } = await listening();
+  host.changeEngine({ microphones: undefined });
+  listen.setWanted(false);
+  assert.equal(listen.view.phase, 'unavailable', 'off and not offered: an older listener');
+});
+
+// ---- Not available for now (`microphones.streams: false`) ------------------------
+
+const noStreams = { computer: true, listening: [], streams: false };
+const withStreams = { computer: true, listening: [], streams: true };
+
+test('listening → streams false: microphone and stream closed, the choice kept, the row says why; streams true listens again', async () => {
+  const parts = await listening();
+  const { host, environment, listen } = parts;
+  host.changeEngine({ microphones: noStreams });
+  assert.equal(listen.view.phase, 'waiting');
+  assert.equal(listen.view.waitingFor, 'not-available');
+  assert.equal(listen.view.problem, undefined);
+  assert.deepEqual(host.actions(), ['audio-stop']);
+  assertClosed(parts);
+  host.answer('audio-stop', 'not-streaming');
+
+  // State messages meanwhile start nothing.
+  host.changeEngine({ microphones: noStreams });
+  assert.equal(environment.openings.length, 1);
+  assert.deepEqual(host.actions(), []);
+
+  host.changeEngine({ microphones: withStreams });
+  environment.latest.grant();
+  await settle();
+  assert.deepEqual(host.actions(), ['audio-start']);
+  host.answer('audio-start', { streamId: 's2' });
+  await settle();
+  assert.equal(listen.view.streamId, 's2');
+});
+
+test('streams false: an audio-ended "paused" before that state closes at once; no start until streams is true', async () => {
+  const parts = await listening();
+  const { host, environment, listen } = parts;
+  host.audioEnded('s1', 'paused');
+  assertClosed(parts);
+  assert.deepEqual(host.actions(), []);
+  host.changeEngine({ microphones: noStreams });
+  assert.equal(listen.view.waitingFor, 'not-available');
+  assert.deepEqual(host.actions(), [], 'never a retry while not available');
+  assert.equal(environment.openings.length, 1);
+  host.changeEngine({ microphones: withStreams });
+  environment.latest.grant();
+  await settle();
+  assert.deepEqual(host.actions(), ['audio-start']);
+});
+
+test('streams false: an audio-ended "paused" after that state changes nothing', async () => {
+  const { host, listen } = await listening();
+  host.changeEngine({ microphones: noStreams });
+  host.answer('audio-stop', 'not-streaming');
+  host.audioEnded('s1', 'paused');
+  assert.equal(listen.view.waitingFor, 'not-available');
+  assert.equal(listen.view.problem, undefined);
+  assert.deepEqual(host.actions(), []);
+});
+
+test('a start refused as not available waits for the next state: no retry loop, no switch-off, back by itself', async () => {
+  const parts = setup();
+  const { host, environment, listen } = parts;
+  listen.setWanted(true);
+  environment.latest.grant();
+  await settle();
+  host.refuse('audio-start', 'Listening here is not available');
+  await settle();
+  assert.equal(listen.view.problem, undefined);
+  assert.equal(listen.view.phase, 'waiting');
+  assert.equal(listen.view.waitingFor, 'not-available');
+  assertClosed(parts);
+  assert.deepEqual(host.actions(), []);
+
+  // The state that explains it, then streams again.
+  host.changeEngine({ microphones: noStreams });
+  assert.deepEqual(host.actions(), []);
+  host.changeEngine({ microphones: withStreams });
+  environment.latest.grant();
+  await settle();
+  assert.deepEqual(host.actions(), ['audio-start']);
+
+  // Refused again and again: never switched off, never the restart guard.
+  for (let round = 0; round < 3; round++) {
+    host.refuse('audio-start', 'Listening here is not available on this computer');
+    await settle();
+    assert.equal(listen.view.problem, undefined);
+    host.changeEngine({});
+    environment.latest.grant();
+    await settle();
+  }
+  assert.deepEqual(host.actions(), ['audio-start']);
+});
+
+test('streams false while Listen here is off: not offered; switching on is refused', () => {
+  const { host, listen, environment } = setup();
+  host.changeEngine({ microphones: noStreams });
   assert.equal(listen.view.phase, 'unavailable');
-  assert.equal(environment.latest.closed, true);
+  listen.setWanted(true);
+  assert.equal(listen.view.phase, 'unavailable');
+  assert.equal(environment.openings.length, 0);
+});
+
+test('the limit page while listening or waiting: Listen here goes off with the reason; Retry opens nothing', async () => {
+  const parts = await listening();
+  const { host, environment, listen } = parts;
+  host.isLimited = true;
+  host.disconnect();
+  assert.equal(listen.view.phase, 'off');
+  assert.equal(listen.view.problem?.kind, 'stopped');
+  assertClosed(parts);
+  host.isLimited = false;
+  host.reconnect();
+  assert.equal(environment.openings.length, 1);
+  assert.equal(listen.view.phase, 'off');
+});
+
+test('quiet notice: none on, none listening at the moment, or nothing to say', () => {
+  const base = { running: true, paused: false, listeningHere: false };
+  assert.equal(
+    quietNotice({ ...base, microphones: { computer: false, listening: [], streams: true } }),
+    'none-on',
+  );
+  assert.equal(
+    quietNotice({ ...base, microphones: { computer: true, listening: [], streams: true } }),
+    'none-listening',
+    'the computer is on but not listening (Record, a retry)',
+  );
+  const listening = [{ id: 'computer', kind: 'computer' as const, name: 'Computer' }];
+  assert.equal(
+    quietNotice({ ...base, microphones: { computer: true, listening, streams: true } }),
+    '',
+  );
+  assert.equal(
+    quietNotice({
+      ...base,
+      listeningHere: true,
+      microphones: { computer: false, listening: [], streams: true },
+    }),
+    '',
+  );
+  assert.equal(
+    quietNotice({
+      ...base,
+      paused: true,
+      microphones: { computer: false, listening: [], streams: true },
+    }),
+    '',
+  );
+  assert.equal(quietNotice({ ...base, microphones: undefined }), '');
 });
 
 test('granted while the worklet still loads: the mark shows; switching off releases the track at once', async () => {
@@ -816,16 +985,29 @@ test('pieces: 48 kHz and 44.1 kHz become 16,000 samples a second in pieces of 10
   }
 });
 
-test('pieces: samples are averaged per interval and clamped to 16 bits', () => {
+test('pieces: samples are averaged per interval, clamped to 16 bits and little-endian', () => {
   const pieces: ArrayBuffer[] = [];
   const converter = new PcmPieces(48_000, (piece) => pieces.push(piece));
+  // Output samples, three input samples each: average 1.5 (clamped to full
+  // scale), −2 (clamped to the negative limit), 0.25, then 0.
+  const averages = [1.5, -2, 0.25];
   const input = new Float32Array(pieceSamples * 3);
-  for (let index = 0; index < input.length; index++) {
-    input[index] = index % 3 === 0 ? 3 : 0; // average 1 → full scale
+  for (let index = 0; index < averages.length * 3; index++) {
+    input[index] = averages[Math.floor(index / 3)];
   }
   converter.push(input);
   assert.equal(pieces.length, 1);
-  assert.equal(new Int16Array(pieces[0])[0], 32767);
+
+  const bytes = new Uint8Array(pieces[0]);
+  const view = new DataView(pieces[0]);
+  assert.equal(view.getInt16(0, true), 32767);
+  assert.equal(view.getInt16(2, true), -32767);
+  assert.equal(view.getInt16(4, true), Math.round(0.25 * 32767));
+  assert.equal(view.getInt16(6, true), 0);
+  // Little-endian: the low byte first, whatever the host's byte order.
+  assert.deepEqual([bytes[0], bytes[1]], [0xff, 0x7f]);
+  assert.deepEqual([bytes[2], bytes[3]], [0x01, 0x80]);
+
   assert.equal(pieceLevel(pieces[0]) > 0.99, true);
-  assert.equal(pieceLevel(new Int16Array(10).buffer), 0);
+  assert.equal(pieceLevel(new ArrayBuffer(20)), 0);
 });

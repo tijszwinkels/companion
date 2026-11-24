@@ -1970,7 +1970,8 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
 
 /* Narrow windows: the microphone and its meter only, so the title keeps room. */
 @media (max-width: 479px) {
-  .listen-mark.on .listen-mark-text {
+  /* Except "starting…": nobody should speak before the stream is open. */
+  .listen-mark.on:not(.starting) .listen-mark-text {
     display: none;
   }
 }
@@ -1980,7 +1981,7 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   cursor: default;
 }
 
-.activity-header .listen-mark-text {
+.activity-header .listen-mark:not(.starting) .listen-mark-text {
   display: none;
 }
 

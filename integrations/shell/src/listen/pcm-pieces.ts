@@ -1,7 +1,7 @@
 /**
  * Turns the microphone's samples into the gateway's audio format: 16 kHz
- * mono signed 16-bit samples, in pieces of 100 ms (1,600 samples, 3,200
- * bytes). See src/remote/README.md, "Listening browsers".
+ * mono signed 16-bit little-endian samples, in pieces of 100 ms (1,600
+ * samples, 3,200 bytes). See src/remote/README.md, "Listening browsers".
  *
  * Input: blocks of mono float samples (-1 … 1) at the audio context's rate
  * (usually 48 kHz, sometimes 44.1 kHz), as the AudioWorklet receives them.
@@ -43,8 +43,12 @@ export class PcmPieces {
   private sum = 0;
   private count = 0;
 
-  /** The piece being filled, and how many of its samples are written. */
-  private piece = new Int16Array(pieceSamples);
+  /**
+   * The piece being filled, and how many of its samples are written. The
+   * samples are written little-endian whatever the browser's own byte order
+   * (the gateway's format), through a DataView.
+   */
+  private piece = new DataView(new ArrayBuffer(pieceSamples * 2));
   private written = 0;
 
   constructor(
@@ -84,12 +88,12 @@ export class PcmPieces {
     } else if (clamped < -1) {
       clamped = -1;
     }
-    this.piece[this.written] = Math.round(clamped * 32767);
+    this.piece.setInt16(this.written * 2, Math.round(clamped * 32767), true);
     this.written++;
 
     if (this.written === pieceSamples) {
       const complete = this.piece;
-      this.piece = new Int16Array(pieceSamples);
+      this.piece = new DataView(new ArrayBuffer(pieceSamples * 2));
       this.written = 0;
       this.onPiece(complete.buffer);
     }
@@ -101,10 +105,11 @@ export class PcmPieces {
  * an average) makes the meter move for quiet speech too.
  */
 export function pieceLevel(piece: ArrayBuffer): number {
-  const samples = new Int16Array(piece);
+  const samples = new DataView(piece);
+  const count = Math.floor(piece.byteLength / 2);
   let peak = 0;
-  for (let index = 0; index < samples.length; index++) {
-    const magnitude = Math.abs(samples[index]);
+  for (let index = 0; index < count; index++) {
+    const magnitude = Math.abs(samples.getInt16(index * 2, true));
     if (magnitude > peak) {
       peak = magnitude;
     }

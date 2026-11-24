@@ -161,6 +161,7 @@ const listenHere = new ListenHere(
   {
     admitted: () => bridge.admitted,
     paired: () => store.state.connection.status !== 'unpaired',
+    limited: () => store.state.connection.status === 'limited',
     engine: () => store.state.engine,
     subscribe: (listener) => store.subscribe(listener),
     request: (action) => store.request(action, {}, { quiet: true }),

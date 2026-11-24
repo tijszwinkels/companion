@@ -263,6 +263,55 @@ test(
 );
 
 test(
+  '420 px: the compact mark says "starting…" until the stream is accepted',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await listenSetup(context);
+    const { page } = await listeningPage(fixture, browser, { width: 420, height: 820 });
+    await showActivity(page);
+    await page.evaluate(`window.__holdAudioStart = true`);
+    await click(page, '#microphone-this-browser');
+    await page.waitFor(
+      `document.querySelector('.activity-header .listen-mark.on.starting') !== null`,
+    );
+    await click(page, '.activity-header .activity-toggle');
+    await page.waitFor(`document.querySelector('.chat-bar .listen-mark.on.starting') !== null`);
+    const text = await page.evaluate<{ shown: boolean; text: string }>(`(() => {
+    const element = document.querySelector('.chat-bar .listen-mark .listen-mark-text');
+    return { shown: element.getBoundingClientRect().width > 0, text: element.textContent };
+  })()`);
+    assert.deepEqual(text, { shown: true, text: 'starting…' });
+    assert.equal(await horizontalOverflow(page), 0);
+  },
+);
+
+test(
+  'offline: this browser’s former stream is not listed as another listening browser',
+  { skip },
+  async (context) => {
+    const { fixture, microphones, browser } = await listenSetup(context);
+    const { page } = await listeningPage(fixture, browser);
+    await startListening(page);
+    await waitFor(() => listenerStreams(microphones).length === 1);
+
+    // The browser reports the network gone: the connection is dropped.
+    await page.evaluate(`window.dispatchEvent(new Event('offline'))`);
+    await page.waitFor(`document.querySelector('.shell[data-connection="offline"]') !== null`);
+    await page.waitFor(`document.querySelector('[data-listen="waiting"]') !== null`);
+    const rows = await page.evaluate<string[]>(
+      `[...document.querySelectorAll('.microphone-row')].map((row) => row.textContent)`,
+    );
+    assert.equal(rows.filter((row) => row.startsWith('Browser')).length, 0, rows.join(' | '));
+    assert.match(await browserRow(page), /Waiting for the connection/);
+
+    // Back online: listening again.
+    await page.evaluate(`window.dispatchEvent(new Event('online'))`);
+    await page.waitFor(markOn, 8000);
+    await waitFor(() => listenerStreams(microphones).length === 1);
+  },
+);
+
+test(
   'the page may use the microphone only with the gateway’s --allow-microphone',
   { skip },
   async (context) => {
