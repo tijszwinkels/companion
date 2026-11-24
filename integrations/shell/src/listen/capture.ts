@@ -197,6 +197,13 @@ export class BrowserCapture implements CaptureEnvironment {
       node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
         handlers.onPiece(event.data);
       };
+      // The worklet failed while running: nothing more arrives, so the
+      // microphone counts as ended and is released.
+      node.onprocessorerror = () => {
+        if (!closed) {
+          handlers.onEnded();
+        }
+      };
       source.connect(node);
       // A context made without a recent click (Resume, a reconnect) may
       // start suspended; the switch's click made the page's activation.
@@ -208,6 +215,7 @@ export class BrowserCapture implements CaptureEnvironment {
       return {
         close: () => {
           node.port.onmessage = null;
+          node.onprocessorerror = null;
           source.disconnect();
           close();
         },

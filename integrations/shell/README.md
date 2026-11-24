@@ -895,8 +895,9 @@ and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening
   per other browser that listens now, and a notice that explains the state.
 - **The mark** in the bar above the chat while Listen here is on, on every
   page (the settings screen too), and in Activity's header, which covers
-  the bar where Activity lies over the chat. It is red with a level meter ("listening
-  here") while the microphone is open. It is struck through ("paused", "not
+  the bar where Activity lies over the chat. It is red with a level meter
+  while the microphone is open: "starting…" until the gateway accepted the
+  stream, then "listening here". It is struck through ("paused", "not
   connected", "waiting") while it waits. Pressing it shows Activity. Below
   480 px it shows only the microphone and the meter.
 - **"●" before the tab's title** while the microphone is open, and the
@@ -956,8 +957,10 @@ Further rules:
    `replaced` or an unknown reason → stopped with the gateway's message.
    The browser ending the track, or keeping it muted for 3 seconds (an
    interruption by a call or another application), → lost. A worklet that
-   fails, or has not started 10 seconds after the browser granted the
-   microphone, → stopped, and the microphone is released.
+   fails (also while running), or has not started 10 seconds after the
+   browser granted the microphone, → stopped or lost, and the microphone
+   is released. Another tab signing out releases it before this tab
+   reloads.
 4. A start whose answer is lost with the connection is not a problem: the
    page starts again after the reconnect.
 5. "No microphone is on" is shown while Companion runs, is not paused, no
@@ -1017,6 +1020,10 @@ unchanged:
 - An older gateway in front of a newer listener forwards the computer's
   switch but refuses `set-computer-microphone`: each press shows the
   refusal as a toast. This happens only with mixed versions.
+- The first piece of a stream can begin up to 100 ms before the gateway
+  accepted the stream (the worklet's piece was already being filled). The
+  mark shows during that time. Cutting it exactly would need the pieces to
+  be tagged per stream across the audio thread.
 - One stream per paired device: a second tab takes it over. At most four
   browsers listen at once. When three microphones speak at the same moment,
   one utterance can be dropped (the listener's limit).

@@ -238,6 +238,9 @@ const credentialStorageKey = 'companion.remote.device';
 window.addEventListener('storage', (event) => {
   // `key` is null when another tab cleared the whole storage.
   if (event.key === credentialStorageKey || event.key === null) {
+    // The microphone and its stream go at once, not when the reload has
+    // unloaded the page: this tab must not send sound after the sign-out.
+    listenHere.setWanted(false);
     window.location.reload();
     return;
   }

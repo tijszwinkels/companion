@@ -767,6 +767,7 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   const forgetRecords = setInterval(() => {
     microphones?.logs.splice(0);
     microphones?.dispatched.splice(0);
+    microphones?.detectors.splice(0);
   }, 60_000);
   forgetRecords.unref();
 

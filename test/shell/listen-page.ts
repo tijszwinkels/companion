@@ -193,11 +193,16 @@ export function switchState(page: TestPage): Promise<string> {
   );
 }
 
-/** Switch Listen here on and wait until the microphone is open and the mark shows. */
+/** Switch Listen here on and wait until the stream is open (the mark shows, the row says Listening). */
 export async function startListening(page: TestPage): Promise<void> {
   await showActivity(page);
   await click(page, '#microphone-this-browser');
   await page.waitFor(`document.querySelector('.listen-mark.on') !== null`, 8000);
+  // "Starting…" until the gateway accepted the stream.
+  await page.waitFor(
+    `document.querySelector('.microphone-row.this-browser')?.textContent.includes('Listening')`,
+    8000,
+  );
 }
 
 /** The text of this browser's row. */

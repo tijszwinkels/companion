@@ -78,13 +78,16 @@ export function ListenMark(props: { listenHere: ListenHere; onShowActivity?: () 
   let label = '';
   let content: ComponentChildren = null;
   if (view.phase === 'listening') {
+    // Red from the browser's grant on; "starting" until the stream is open,
+    // so nobody speaks into a stream that is not there yet.
+    const starting = view.streamId === '';
     classes = 'listen-mark on';
-    label = 'This browser is listening';
+    label = starting ? 'This browser is starting to listen' : 'This browser is listening';
     content = (
       <>
         <MicIcon size={16} />
         <LevelMeter listenHere={props.listenHere} />
-        <span class="listen-mark-text">listening here</span>
+        <span class="listen-mark-text">{starting ? 'starting…' : 'listening here'}</span>
       </>
     );
   } else if (view.phase === 'waiting') {
@@ -244,9 +247,13 @@ function ThisBrowserRow(props: { listenHere: ListenHere; view: ListenView; admit
   } else if (view.phase === 'asking') {
     status = 'Waiting for the browser’s permission…';
   } else if (view.phase === 'listening') {
+    let word = 'Listening';
+    if (view.streamId === '') {
+      word = 'Starting…';
+    }
     status = (
       <>
-        Listening <LevelMeter listenHere={props.listenHere} />
+        {word} <LevelMeter listenHere={props.listenHere} />
       </>
     );
   } else if (view.phase === 'waiting') {
