@@ -374,9 +374,13 @@ test(
     await second.page.waitFor(`${drawn}.layout === 'split'`);
     await press(page, '⇥ Hide chat', chatPane);
     await second.page.waitFor(`${drawn}.layout === 'switch'`);
+    // Here ⇤ Show chat has the focus (⇥ Hide chat was pressed); the other
+    // tab brings the chat back: the focus moves to ⇥ Hide chat here too.
+    await page.waitFor(`document.activeElement?.id === 'show-chat-beside'`);
     await second.page.waitFor(`Boolean(document.querySelector('#show-chat-beside'))`);
     await click(second.page, '#show-chat-beside');
     await page.waitFor(`${drawn}.layout === 'split'`);
+    await page.waitFor(`document.activeElement?.id === 'hide-chat'`);
     await second.page.close();
 
     // The switch last showed the chat here: ⇥ Hide chat shows the application.

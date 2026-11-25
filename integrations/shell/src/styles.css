@@ -2425,10 +2425,12 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   flex: 0 1 auto;
 }
 
-/* Wide windows: room for a long model name in full. */
+/* Wide windows: no cap of its own, so a long model name is shown in full
+   (on a line of its own under the title where it does not fit beside it);
+   only a heading narrower than the name shortens it. */
 @media (min-width: 1280px) {
   .model-button {
-    max-width: 44ch;
+    max-width: 100%;
   }
 }
 

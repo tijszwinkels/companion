@@ -23,7 +23,10 @@
  * on the gateway) gets `NotSetUpBar` instead: the name and one line.
  */
 
+import { useRef } from 'preact/hooks';
+
 import { ActionButton } from '../activity/ActionButton.tsx';
+import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 import type { ApplicationLayout } from './application-layout.ts';
 import type { SurfaceMode } from './application-view.ts';
 import { applicationPaneId } from './ApplicationPane.tsx';
@@ -44,6 +47,11 @@ export function ApplicationBar(props: {
   /** The window has room for the chat at the right (◫ is offered in the switch layout). */
   splitPossible: boolean;
   onSplit: (split: boolean) => void;
+  /**
+   * ⇤ Show chat (or ◫ Chat at the right) had keyboard focus when it went
+   * away: pressed here, or the layout changed in another tab.
+   */
+  onShowChatFocusLost: () => void;
   /** The short permission status, or '' when the application asks for neither. */
   summary: string;
   /** Whether the permission rows can be shown (the application asks for one). */
@@ -94,14 +102,11 @@ export function ApplicationBar(props: {
       text = '⇤ Show chat';
     }
     layoutButton = (
-      <button
-        id={showChatButtonId}
-        class="panel-action small application-bar-action"
-        title="Show the chat to the right of the app"
-        onClick={() => props.onSplit(true)}
-      >
-        {text}
-      </button>
+      <ShowChatButton
+        text={text}
+        onPress={() => props.onSplit(true)}
+        onFocusLost={props.onShowChatFocusLost}
+      />
     );
   }
 
@@ -144,6 +149,24 @@ export function ApplicationBar(props: {
         </p>
       )}
     </div>
+  );
+}
+
+/** ⇤ Show chat or ◫ Chat at the right: the chat back at the right of the application. */
+function ShowChatButton(props: { text: string; onPress: () => void; onFocusLost: () => void }) {
+  const button = useRef<HTMLButtonElement>(null);
+  useFocusHandOff(button, props.onFocusLost);
+
+  return (
+    <button
+      ref={button}
+      id={showChatButtonId}
+      class="panel-action small application-bar-action"
+      title="Show the chat to the right of the app"
+      onClick={props.onPress}
+    >
+      {props.text}
+    </button>
   );
 }
 

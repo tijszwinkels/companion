@@ -11,16 +11,30 @@
  * chat page keeps its whole height there.
  */
 
+import { useRef } from 'preact/hooks';
+
+import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 import { applicationChatId } from './ApplicationBar.tsx';
 
 /** The ⇥ Hide chat button, which ⇤ Show chat gives focus back to. */
 export const hideChatButtonId = 'hide-chat';
 
-export function ChatPaneHeader(props: { onHide: () => void }) {
+export function ChatPaneHeader(props: {
+  onHide: () => void;
+  /**
+   * ⇥ Hide chat had keyboard focus when it went away: pressed here, or the
+   * layout changed in another tab of this browser.
+   */
+  onFocusLost: () => void;
+}) {
+  const button = useRef<HTMLButtonElement>(null);
+  useFocusHandOff(button, props.onFocusLost);
+
   return (
     <div class="chat-pane-header">
       <span class="chat-pane-title">Chat</span>
       <button
+        ref={button}
         id={hideChatButtonId}
         class="panel-action small chat-pane-hide"
         aria-controls={applicationChatId}

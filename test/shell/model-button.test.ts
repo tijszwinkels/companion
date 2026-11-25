@@ -23,7 +23,12 @@ import {
  */
 
 /** The listener's models: two share the ending `qwen3-coder-30b`. */
-const models = ['openai-codex/gpt-5.1-codex-max', 'local/qwen3-coder-30b', 'cloud/qwen3-coder-30b'];
+const models = [
+  'openai-codex/gpt-5.1-codex-max',
+  'local/qwen3-coder-30b',
+  'cloud/qwen3-coder-30b',
+  'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0',
+];
 
 async function resize(page: TestPage, width: number): Promise<void> {
   await page.call('Emulation.setDeviceMetricsOverride', {
@@ -106,7 +111,7 @@ test(
       `document.querySelector('.model-button').title.includes('local/qwen3-coder-30b')`,
     );
     await click(page, '.model-button');
-    await page.waitFor(`document.querySelectorAll('#model-picker option').length === 4`);
+    await page.waitFor(`document.querySelectorAll('#model-picker option').length === 5`);
     await click(page, '.model-button');
     await page.waitFor(`!document.querySelector('#model-picker')`);
     await page.waitFor(
@@ -127,5 +132,21 @@ test(
       assert.ok(shared.lead === null || shared.lead.width < 1, JSON.stringify(shared));
     }
     assert.equal(await horizontalOverflow(page), 0, '420 px');
+
+    // A very long name: still whole at 1280 and 1600 px.
+    await fixture.sessions.setModel(
+      id,
+      'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0',
+      signal(),
+    );
+    for (const width of [1600, 1280]) {
+      await resize(page, width);
+      await page.waitFor(
+        `document.querySelector('.model-button .model-distinct')?.textContent === 'global.anthropic.claude-haiku-4-5-20251001-v1:0'`,
+      );
+      const drawn = await page.evaluate<Drawn>(drawnName);
+      assert.equal(drawn.distinct.cut, false, `${width} px: shown in full`);
+      assert.equal(await horizontalOverflow(page), 0, `${width} px`);
+    }
   },
 );

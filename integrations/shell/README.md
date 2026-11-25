@@ -256,7 +256,8 @@ chooses the style (`src/layout/list-width.ts`, stored by
 The second line under each title is a Display switch of its own,
 "Show a second line under each conversation title" (on by default): off,
 the full list shows each conversation's title only, centred beside its
-icon in an entry of the same height; the unread and working markers, the
+icon (entries keep their 52 px minimum height; one whose running time
+wraps under a narrow list gets lower by the missing line); the unread and working markers, the
 running time and the ⋯ and × buttons stay; Activity, Previous sessions and
 Settings keep their line (Activity's carries the listening state). The
 strip never draws the second line. The last line stays the entry's
@@ -291,7 +292,9 @@ window", left of the gear). Rule (`src/workspace/new-window.ts`):
    round. The fragment is read once, when the page loads, and nothing
    writes it: it stays in the address, so reloading that window shows the
    conversation again, also after the reader chose another one there.
-   Changing the fragment by hand does nothing until a reload.
+   Editing the fragment by hand is a step in the page's history: like Back
+   to an entry the page does not know (as before this rule), it shows the
+   empty view; the named conversation is shown after a reload.
 
 | Case                                                     | Result                                                         |
 | -------------------------------------------------------- | -------------------------------------------------------------- |
@@ -1714,8 +1717,10 @@ The rule:
    default model): a name without `/` whole; otherwise the shortest ending
    of whole `/`-separated parts that no other known name has, else the whole
    name. The open list and the button's title text and accessible name
-   keep the full name. At 1280 px and wider the button is up to 44
-   characters wide (22 below), so that part is shown in full; where the
+   keep the full name. At 1280 px and wider the button may take the
+   heading's whole width (on a line of its own under the title where it
+   does not fit beside it; 22 characters below 1280 px), so that part is
+   shown in full unless the heading itself is narrower; where the
    button is narrower than its text (a 420 px window), the part before the
    last `/` (when shown) gives up its room first and the last part is
    shortened last, so the button never shows a prefix alone. Until the

@@ -179,10 +179,10 @@ export function ConversationArea(props: {
     props.layout.setChoice('app-only');
   }
 
-  // The button to focus after the drawing that follows a press of ⇥ Hide
-  // chat or ⇤ Show chat (the pressed one is gone then), or ''. Used once;
-  // a button that is not drawn then (another tab changed the layout
-  // meanwhile, or no room for the split) is not waited for.
+  // The button to focus after the drawing in which ⇥ Hide chat or ⇤ Show
+  // chat went away while focused (pressed here, or the layout changed in
+  // another tab), or ''. Used once; a button that is not drawn then (no
+  // room for the split) is not waited for.
   const focusAfterLayout = useRef('');
   useLayoutEffect(() => {
     const target = focusAfterLayout.current;
@@ -272,6 +272,9 @@ export function ConversationArea(props: {
           }
           focusAfterLayout.current = hideChatButtonId;
           props.layout.setChoice('split');
+        }}
+        onShowChatFocusLost={() => {
+          focusAfterLayout.current = hideChatButtonId;
         }}
         summary={permissionSummary(access, admitted)}
         permissions={asks}
@@ -397,6 +400,9 @@ export function ConversationArea(props: {
               onHide={() => {
                 focusAfterLayout.current = showChatButtonId;
                 showAppOnly();
+              }}
+              onFocusLost={() => {
+                focusAfterLayout.current = showChatButtonId;
               }}
             />
           )}
