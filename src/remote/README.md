@@ -723,9 +723,8 @@ given the permission in its `allow` attribute (the shell's own rule).
 Accepted by the user (decision D4): a listening device's speech is treated as
 the user's speech at the computer. By speaking, a paired device can therefore
 do what its typed requests cannot: type into the application in front on the
-computer, change the computer's selected conversation by voice navigation, and
-start conversations and quick questions carrying a fresh screenshot of the
-computer's window (desktop-only actions for typed requests, see
+computer, and start conversations and quick questions carrying a fresh
+screenshot of the computer's window (desktop-only actions for typed requests, see
 `desktopOnlyActions` in [`src/desktop/runtime.ts`](../desktop/runtime.ts)).
 Because a device may open the saved screenshot of every conversation it is
 shown ([Security model](#security-model)), it can therefore obtain a new
@@ -741,8 +740,61 @@ leaves that device continuously over TLS to the gateway and over the private
 socket to the listener; it is stored only as the capture-storage switch
 allows (per utterance, as for the computer's microphone).
 
+### Speech follows the device that recorded it
+
+Approved by the user (2026-11-25): speech heard by a browser's microphone
+goes to the conversation **that tab** has open, and "go to session N" heard
+there selects N **in that tab** only; a conversation its speech starts is
+shown in that tab and opens in the background on the desktop. The
+computer's microphone follows the desktop exactly as before. The rules and
+the table of cases are in [the desktop
+protocol](../desktop/README.md#speech-follows-the-device-that-recorded-it).
+
+The gateway's part ([`relay.ts`](relay.ts) `listenerSelected`):
+
+1. The listener sends `agent-select` to a remote connection only for speech
+   that connection's own stream heard, naming that stream
+   (`{"type":"agent-select","id","streamId","from","orderRevision"}`, or
+   `"started":true` instead of `orderRevision`).
+2. The relay passes it on **only while `streamId` is this connection's open
+   stream**, with a conversation ID and `from` (a conversation ID or empty)
+   in UUID form, and exactly one of a 1–128 character `orderRevision` and
+   `started: true` (no `presentation`). Everything else is dropped. A
+   connection that never opened a stream (the phone panel, older clients)
+   therefore never receives it, with no new opt-in, and its other events are
+   exactly as before. `agent-select` stays in `desktopOnlyEvents`: it is
+   never relayed as an engine event.
+3. The client receives it as a gateway message of its own (like
+   `audio-ended`): `{"type":"agent-select","id","from","orderRevision"}` or
+   `{"type":"agent-select","id","from","started":true}`, without the stream
+   ID (`AgentSelectMessage` in [`protocol.ts`](protocol.ts)). It should show
+   that conversation as a click in its list would, but only while it still
+   shows `from`, and for a go-to only while its order revision is still
+   `orderRevision` and the conversation is listed.
+
+**What a paired device can now steer.** Nothing a paired device may reach
+changes: it could already select any open conversation in its own view and
+type into it.
+
+| By its speech, a paired device …                          | Before                                | Now                                                        |
+| --------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
+| sends a follow-up to                                      | the conversation the desktop shows    | the conversation its own tab shows (or none)               |
+| moves with "go to session N"                              | the desktop sidebar                   | its own tab only                                           |
+| moves with "pop out session N"                            | the desktop (a pop-out window)        | nothing (refused)                                          |
+| shows a conversation it starts in                         | every desktop panel (selected, shown) | its own tab; the desktop keeps its view                    |
+| closes with "close session", or answers a choice in       | the conversation the desktop shows    | the conversation its own tab shows                         |
+| types into the application in front on the computer (D4)  | yes                                   | yes (unchanged)                                            |
+| starts conversations with the computer's screenshot (D17) | yes                                   | yes (unchanged)                                            |
+| pauses everything; switches the computer's microphone     | yes                                   | yes (unchanged)                                            |
+| can make another device's tab or the desktop select       | the desktop only                      | neither: only its own stream's tab receives `agent-select` |
+
 ### Tests
 
+`test/unit/speech-follows-device.test.ts` runs the table of cases through
+the real gateway, including that `agent-select` passes only for the
+connection's own open stream (another stream, no stream, an ended stream or
+a malformed message are dropped) and that a connection without a stream and
+the phone panel receive only the message kinds they received before.
 `test/unit/remote-audio.test.ts` tables these rules against the real gateway,
 the real listener control socket, synthetic audio and the test recogniser:
 each limit at and over its bound, binary without a stream, on an

@@ -66,8 +66,24 @@ export interface InteractionContext {
    * conversation, or a single pop-out beside the compact sidebar rail. For
    * logs and tests only; never sent to the model.
    */
-  readonly agentTargetSource?: 'navigation' | 'popout' | 'panel' | 'popout-only';
-  /** Local generation used to reject a target that changed while processing. */
+  readonly agentTargetSource?: 'navigation' | 'popout' | 'panel' | 'popout-only' | 'browser';
+  /**
+   * Present only for speech a listening browser heard: the remote connection
+   * whose view supplied `agentSessionId` and `agentNavigation`, and the
+   * stream that heard it. Absent for the computer's microphone and typed
+   * text, which follow the desktop as before (src/desktop/README.md,
+   * "Speech follows the device that recorded it").
+   */
+  readonly agentView?: {
+    readonly kind: 'browser';
+    readonly clientId: number;
+    readonly streamId: string;
+  };
+  /**
+   * Local generation used to reject a target that changed while processing.
+   * For a browser's speech (`agentView`) it is that connection's own view
+   * revision, not the desktop's.
+   */
   readonly revision: number;
   /** Capture choices and the running turn before ASR can outlive either one. */
   readonly agentChoices?: AgentChoiceSet;

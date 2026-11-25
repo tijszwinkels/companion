@@ -33,6 +33,7 @@ import {
   maximumAudioStreams,
   mutatingActions,
   parseRemoteRequest,
+  type AgentSelectMessage,
   type AudioEndedMessage,
   type AudioEndReason,
   type GatewayMessage,
@@ -125,6 +126,9 @@ const listenerAudioEndReasons = new Set<AudioEndReason>([
 ]);
 
 const streamIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** A conversation ID (a UUID), as the listener creates them. */
+const sessionIdPattern = streamIdPattern;
 
 /**
  * This connection's audio stream: none; starting (its `audio-start` waits
@@ -586,7 +590,10 @@ export class Relay {
     return this.phoneOpen && this.phone.readyState === this.phone.OPEN;
   }
 
-  private sendPhone(message: GatewayMessage | AudioEndedMessage, replaceable = false): void {
+  private sendPhone(
+    message: GatewayMessage | AudioEndedMessage | AgentSelectMessage,
+    replaceable = false,
+  ): void {
     if (!this.phoneIsOpen()) {
       return;
     }
@@ -872,6 +879,46 @@ export class Relay {
     this.sendAudioEnded(audio.streamId, reason);
   }
 
+  /**
+   * The listener asks this connection to show a conversation, because its
+   * own stream heard "go to session N" or started a conversation
+   * (src/remote/README.md, "Speech follows the device that recorded it").
+   * Passed on only while that stream is this connection's open stream and
+   * every field is well formed; otherwise dropped, so a connection that
+   * never streams, an ended stream or another device's stream never
+   * reaches the client. The stream ID itself is not passed on.
+   */
+  private listenerSelected(message: Record<string, unknown>): void {
+    const audio = this.audio;
+    if (!this.ready || audio.phase !== 'open' || message.streamId !== audio.streamId) {
+      return;
+    }
+
+    const id = message.id;
+    const from = message.from;
+    if (typeof id !== 'string' || !sessionIdPattern.test(id)) {
+      return;
+    }
+    if (typeof from !== 'string' || (from !== '' && !sessionIdPattern.test(from))) {
+      return;
+    }
+
+    if (message.started === true && message.orderRevision === undefined) {
+      this.sendPhone({ type: 'agent-select', id, from, started: true });
+      return;
+    }
+    const orderRevision = message.orderRevision;
+    if (
+      message.started === undefined &&
+      message.presentation === undefined &&
+      typeof orderRevision === 'string' &&
+      orderRevision.length > 0 &&
+      orderRevision.length <= 128
+    ) {
+      this.sendPhone({ type: 'agent-select', id, from, orderRevision });
+    }
+  }
+
   private sendAudioEnded(streamId: string, reason: AudioEndReason): void {
     const ended: AudioEndedMessage = {
       type: 'audio-ended',
@@ -947,6 +994,14 @@ export class Relay {
 
     if (message.type === 'audio-ended') {
       this.listenerEndedAudio(message);
+      return;
+    }
+
+    if (message.type === 'agent-select') {
+      // Desktop navigation, never relayed as an engine event. Only the
+      // navigation of speech this connection's own open stream heard
+      // passes, as a gateway message of its own.
+      this.listenerSelected(message);
       return;
     }
 

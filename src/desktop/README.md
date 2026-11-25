@@ -787,9 +787,11 @@ have it.
 paired device's speech is the user's speech at the computer. By speaking it
 can do everything speech can do there, including what its typed requests may
 not: type into the application in front on the computer ("insert …",
-"enter …", automatic dictation), go to or pop out the computer's selected
-conversation, and start conversations and quick questions with a fresh
-screenshot of the computer's window. Like every conversation a paired device
+"enter …", automatic dictation), and start conversations and quick questions
+with a fresh screenshot of the computer's window. Which conversation its
+speech addresses, and which view "go to session N" changes, follow that
+device's own tab (see [speech follows the device that recorded
+it](#speech-follows-the-device-that-recorded-it)). Like every conversation a paired device
 is shown, such a conversation's saved screenshot (capture storage on) can then
 be opened on that device: by speaking, a paired device can therefore obtain a
 new screenshot of the computer's window, which its typed requests cannot
@@ -797,6 +799,110 @@ new screenshot of the computer's window, which its typed requests cannot
 and on, as it could already pause listening. It still cannot hear the
 computer's microphone or another browser's, fetch a screenshot by any other
 route, or use Record.
+
+### Speech follows the device that recorded it
+
+Approved by the user (2026-11-25): **speech goes to whatever is open on the
+device that recorded it.** Every utterance carries the microphone that heard
+it (`microphone` on the transcript: the computer's, or one browser's stream);
+the rule uses only that. The pipeline passes it to
+`Activity.interactionContext(microphone)` at speech end, exactly where the
+desktop's context has always been captured. Source:
+[`browser-views.ts`](browser-views.ts) and the runtime's
+`browserInteractionContext`, `navigateBrowser` and `showStartedInBrowser`.
+
+1. **Heard by the computer's microphone** (and typed text): exactly as
+   before. The spoken-to conversation is the voice target above (the desktop
+   sidebar or an active pop-out window); "go to session N" moves the
+   desktop. Browsers do not follow.
+2. **Heard by a browser's microphone:** the spoken-to conversation is the one
+   the connection that owns the stream reports as selected (`panel-state`
+   `id`), also while its page is hidden or its settings screen covers it
+   (those reports say `visible: false` and keep the `id`). The desktop's
+   selection, pop-out windows and voice-navigation choice play no part. A
+   connection that reports no conversation (Activity, Previous sessions), or
+   a stream whose connection is gone, gives an utterance with no
+   conversation, as on a desktop that shows none; it never falls back to the
+   desktop's. A remote connection reports no composer focus, so a follow-up
+   is judged with the ordinary unfocused instruction (the prompt text is
+   unchanged). `agentTargetSource` is `browser`; `agentView` names the
+   connection and the stream.
+3. **"Go to session N" heard by a browser's microphone** selects conversation
+   N in that browser tab only, counted in the shared order as on the desktop
+   (the order is captured at speech end). It is sent as
+   `{"type":"agent-select","id","streamId","from","orderRevision"}` to that
+   connection alone; `from` is what the tab showed at speech end. "Pop out
+   session N" is refused (`popoutHost` is false for a browser). No
+   voice-navigation choice is recorded: once the tab reports the new
+   selection, its next utterance addresses it.
+4. **A conversation started by a browser's speech** (new session, quick
+   question, a Claude or Pi session) opens with `openInBackground: true`, so
+   desktop panels keep their selection and are not revealed, and that tab is
+   sent `{"type":"agent-select","id","streamId","from","started":true}`.
+   Before, every desktop panel selected and revealed a conversation started
+   by speech (`AgentSessionState.announce`); that is unchanged for the
+   computer's speech.
+5. **Unchanged on purpose:** typing into the application in front on the
+   computer by a browser's speech (D4), the computer's screenshot at a quick
+   question (D17), one Pause for everything, sounds on the computer. These
+   belong to a later step.
+
+**Staleness, mirrored from the desktop.** On the desktop, an utterance is
+delivered only while the interaction revision is unchanged since speech end
+(any selection, focus, pop-out or navigation change advances it, also away
+and back), its target is still the voice target and the conversation is
+open; otherwise the follow-up, close or choice is skipped ("The selected
+agent conversation or its focus changed"). For a browser's utterance the
+same check uses that connection's own **view revision**, which advances on
+every change of its reported selection (also away and back), when one of its
+reports is refused and its selection dropped, and when its conversation
+closes; a closed connection has no view at all. Desktop changes do not
+affect it, and a browser's changes do not affect the computer's utterances.
+The stream that heard the utterance may end meanwhile: accepted speech
+continues (as everywhere), and the tab still shows what the speaker saw. Its
+navigation is checked again immediately before dispatch: the connection, its
+view revision (the token), the order revision, the conversation at that
+position, and that the stream that heard it is still that connection's open
+stream (the gateway passes `agent-select` only for that stream). A started
+conversation is shown only while the view revision is unchanged and the
+stream is open; otherwise it waits in the list, in the background.
+
+| Microphone | What is open | Utterance            | Meanwhile (speech end → delivery)         | Result                                                 |
+| ---------- | ------------ | -------------------- | ----------------------------------------- | ------------------------------------------------------ |
+| Computer   | desktop X    | follow-up            | —                                         | X                                                      |
+| Computer   | desktop X    | go to session 3      | —                                         | the desktop selects 3; no browser is told              |
+| Computer   | desktop X    | new session          | —                                         | the desktop selects and reveals it, as before          |
+| Computer   | desktop X    | follow-up            | browser A selects another conversation    | X                                                      |
+| Computer   | desktop X    | follow-up            | the desktop selects another conversation  | skipped, as before                                     |
+| Browser A  | A shows Y    | follow-up            | —                                         | Y (not X)                                              |
+| Browser A  | A shows Y    | follow-up            | A hidden or under its settings screen     | Y                                                      |
+| Browser A  | A shows Y    | go to session 3      | —                                         | A is asked to select 3; desktop and B unchanged        |
+| Browser A  | A shows Y    | go to session 9      | — (only three open)                       | nothing                                                |
+| Browser A  | A shows Y    | go to session 3      | the order changed                         | nothing                                                |
+| Browser A  | A shows Y    | pop out session 1    | —                                         | refused                                                |
+| Browser A  | A shows Y    | new session, quick … | —                                         | started in the background; shown in A only             |
+| Browser A  | A shows Y    | close session        | —                                         | Y closes (not X)                                       |
+| Computer   | desktop X    | close session        | —                                         | X closes, as before                                    |
+| Browser A  | A shows Y    | new session          | A selects another conversation            | started in the background; not shown anywhere          |
+| Browser A  | A shows Y    | follow-up            | A selects another (or away and back to Y) | skipped                                                |
+| Browser A  | A shows Y    | follow-up            | the desktop selects another conversation  | Y                                                      |
+| Browser A  | A shows Y    | follow-up            | A's stream ends                           | Y                                                      |
+| Browser A  | A shows Y    | go to session 3      | A's stream ends                           | nothing                                                |
+| Browser A  | A shows Y    | follow-up            | A's connection closes                     | skipped                                                |
+| Browser A  | A shows Y    | follow-up            | Y closes                                  | skipped                                                |
+| Browser A  | A shows Y    | follow-up            | Pause                                     | cancelled, as all accepted work                        |
+| Browser B  | B shows none | follow-up            | —                                         | no conversation: not delivered, never to the desktop's |
+| Browser B  | B shows none | go to session 1      | —                                         | B is asked to select 1; A and the desktop unchanged    |
+
+Tests: `test/unit/speech-follows-device.test.ts` runs this table through the
+real gateway, the real control socket, the real processors, synthetic audio
+and the test recogniser; `test/unit/pipeline-one-microphone-reference.test.ts`
+is unchanged.
+
+Left out on purpose: speech from the computer's microphone following a
+browser on the same machine (switch the computer's microphone off and Listen
+here on in that browser instead), choosing a target by voice other than "go
+to session N", and a per-device setting for any of this.
 
 ## Agent sessions
 
@@ -1010,7 +1116,10 @@ selection. Successful dispatch records `selected`; this indicates admission to t
 owning connection's ordered stream, not a separate UI acknowledgement. If that
 connection is closed before the line is written, the command is lost with it and
 the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
-target, and a disconnected client cannot retain navigation ownership.
+target, and a disconnected client cannot retain navigation ownership. Speech
+a listening browser heard navigates that browser tab instead, with the same
+checks against its own view (see [speech follows the device that recorded
+it](#speech-follows-the-device-that-recorded-it)).
 
 `POP_OUT_SESSION` (“pop out session 1” through “pop out session 32”, also one
 through thirty-two; inference may choose it for “pop session three out into its own

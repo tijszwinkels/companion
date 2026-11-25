@@ -29,6 +29,7 @@ import { ActivityOverlay } from './layout/activity-overlay.ts';
 import type { LayoutStorage } from './layout/stored-layout.ts';
 import { BrowserCapture } from './listen/capture.ts';
 import { ListenHere } from './listen/listen-here.ts';
+import { isAgentSelect, SpokenSelection } from './listen/spoken-selection.ts';
 import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
 import { SettingsView } from './settings/settings-view.ts';
 import './styles.css';
@@ -153,6 +154,32 @@ bridge.inlineWidget = createInlineWidget(widgets);
 const chat = new ChatStore();
 chat.attach(bridge);
 
+// Spoken navigation in this tab (listen/spoken-selection.ts): a spoken "go to
+// session N", or a conversation this tab's speech started, selects it here
+// exactly as a click on it in the list does (Workspace's list: leave the
+// settings screen, then select).
+const spokenSelection = new SpokenSelection({
+  store,
+  open: (id) => {
+    settingsView.setShown(false);
+    store.open(id);
+  },
+});
+
+// Gateway messages that answer no request: `audio-ended` for Listen here and
+// `agent-select` for spoken navigation. Both concern this connection's own
+// audio stream only; the gateway sends neither to a page that never listens.
+let audioEndedListener: ((message: AudioEndedMessage) => void) | undefined;
+store.connection.onUnrequestedMessage = (message) => {
+  if (message.type === 'audio-ended') {
+    audioEndedListener?.(message as unknown as AudioEndedMessage);
+    return;
+  }
+  if (isAgentSelect(message)) {
+    spokenSelection.received(message);
+  }
+};
+
 // Listen here (listen/listen-here.ts): this browser's microphone as one more
 // microphone of Companion, on the page's existing connection. Created after
 // the bridge, so its Store subscription runs after the bridge's and
@@ -169,11 +196,7 @@ const listenHere = new ListenHere(
     bufferedAmount: () => store.connection.bufferedAmount,
     warn: (text) => store.toast(text, 'error'),
     onAudioEnded: (listener) => {
-      store.connection.onUnrequestedMessage = (message) => {
-        if (message.type === 'audio-ended') {
-          listener(message as unknown as AudioEndedMessage);
-        }
-      };
+      audioEndedListener = listener;
     },
   },
   new BrowserCapture(),

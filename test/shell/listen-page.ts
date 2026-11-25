@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { TestBrowser, type TestPage } from '../mobile/browser.ts';
-import { microphonesFixture } from '../microphones-fixture.ts';
+import { microphonesFixture, type MicrophonesFixtureOptions } from '../microphones-fixture.ts';
 import { remoteFixture, waitFor } from '../remote-fixture.ts';
 import { appDirectory, click, desktopPage, online, type Fixture } from './page.ts';
 
@@ -111,7 +111,11 @@ const pageProbe = `
 
 export async function listenSetup(
   context: { after(callback: () => Promise<void>): void },
-  options: { allowMicrophone?: boolean } = {},
+  options: {
+    allowMicrophone?: boolean;
+    /** Options of the listener's microphones (recogniser, processors), given the fixture. */
+    microphones?: (fixture: Fixture) => MicrophonesFixtureOptions;
+  } = {},
 ) {
   // Each resource's cleanup is registered as soon as it exists, so a setup
   // that fails halfway leaves nothing behind. `after` callbacks run in
@@ -127,7 +131,11 @@ export async function listenSetup(
     appDirectory,
     gateway: { allowMicrophone: options.allowMicrophone ?? true },
   });
-  const microphones = microphonesFixture(fixture.desktop.runtime, fixture.desktop.pause);
+  const microphones = microphonesFixture(
+    fixture.desktop.runtime,
+    fixture.desktop.pause,
+    options.microphones?.(fixture),
+  );
   context.after(async () => {
     await microphones.close();
     await fixture.close();

@@ -32,9 +32,16 @@ and the gateway's in [the remote guide](../../remote/README.md#listening-browser
    arrival (the queue's overload rule — one utterance active, two waiting —
    is shared too; it counts distinct utterances: while a continued
    utterance's earlier attempt still finishes its recognition, its
-   replacement waits at the front beside two other microphones' utterances). A browser's speech goes where the computer's goes and may do
-   what it does (D3, D4): the conversation selected on the computer, typing
-   into the window in front on the computer, the computer's screenshot.
+   replacement waits at the front beside two other microphones' utterances). A browser's speech may do
+   what the computer's does (D3, D4): typing into the window in front on the
+   computer, the computer's screenshot. **Which conversation it addresses
+   follows the device that recorded it** (approved 2026-11-25): speech the
+   computer's microphone heard addresses what the desktop shows, exactly as
+   before; speech a browser's microphone heard addresses what that browser
+   tab shows, and "go to session N" heard there moves that tab only. The
+   pipeline passes each utterance's microphone to
+   `Activity.interactionContext` at speech end; the rule and its table are in
+   [the desktop guide](../../desktop/README.md#speech-follows-the-device-that-recorded-it).
 3. **Pause stops every period** and cancels accepted work, as it always did.
    Each browser's stream ends with `paused`; the browser opens a new stream
    when the state says listening again. **Resume** starts the computer's
@@ -172,3 +179,5 @@ microphone off).
   table on a controlled clock.
 - `test/unit/pipeline-one-microphone-reference.test.ts`: one microphone as on
   the base revision.
+- `test/unit/speech-follows-device.test.ts`: which conversation and which
+  view each microphone's speech addresses.

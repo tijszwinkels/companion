@@ -211,6 +211,20 @@ export class BrowserMicrophones {
   }
 
   /**
+   * The connection that owns the stream `id` while that stream is open;
+   * undefined once it has ended (or for the computer's microphone). Speech
+   * a browser heard follows what that connection shows.
+   */
+  ownerOf(id: string): number | undefined {
+    for (const stream of this.streams.values()) {
+      if (stream.id === id) {
+        return stream.owner;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Start a stream for connection `owner`, named after its device. Ends the
    * connection's earlier stream first (`replaced`). Throws, starting
    * nothing, while paused, at shutdown, or when `maximumPeriods` periods

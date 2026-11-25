@@ -48,6 +48,11 @@
  * recogniser (test/microphones-fixture.ts), so switching Listen here on in
  * Activity sends the browser's microphone, and what it hears appears in
  * Activity as words for its loudness ("w3 w5"), named after the browser.
+ * Speech follows that browser tab: type a phrase into this terminal (for
+ * example "go to session 2", "quick question why is the sky blue", or a
+ * follow-up such as "please make it shorter") and press Enter; the next
+ * utterance a browser hears is recognised as that phrase and handled by the
+ * real processors, in the conversation that tab shows.
  *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
@@ -81,6 +86,13 @@ import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { syntheticWindowPng } from './synthetic-window.ts';
 import { microphonesFixture } from '../../test/microphones-fixture.ts';
+import { processor } from '../../test/helpers.ts';
+import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
+import { GoToSession } from '../../src/processors/go-to-session.ts';
+import { PopOutSession } from '../../src/processors/pop-out-session.ts';
+import { QuickQuestion } from '../../src/processors/quick-question.ts';
+import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
+import { createInterface, type Interface } from 'node:readline';
 import { useNodeRenderer } from '../../test/widget-node-renderer.ts';
 
 const { values } = parseArgs({
@@ -199,6 +211,7 @@ let runtime: DesktopRuntime | undefined;
 let runtimeStarted = false;
 let gateway: Gateway | undefined;
 let microphones: ReturnType<typeof microphonesFixture> | undefined;
+let phraseInput: Interface | undefined;
 
 try {
   // The demo's own agent profile, so defaults name the scripted demo models.
@@ -921,6 +934,15 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   // "Not saved" and no recording is written to the temporary directory.
   const demoRuntime = runtime;
   const liveActivity = { ...demoRuntime.activity, admitCapture: () => notAdmitted };
+  //
+  // Speech follows the device that recorded it: a phrase typed into this
+  // terminal is what the next utterance "said" (once); the real processors
+  // then go to session N, start a quick question or a coding session, or
+  // continue the conversation the listening tab shows. Without a typed
+  // phrase, the words for its loudness are dispatched as before.
+  let nextPhrase = '';
+  const typedPhrases = new Set<string>();
+  const demoSessions = sessions;
   microphones = microphonesFixture(
     {
       activity: liveActivity,
@@ -929,7 +951,53 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
       },
     } as unknown as DesktopRuntime,
     pause,
+    {
+      recognise: (words) => {
+        if (!nextPhrase) {
+          return words;
+        }
+        const phrase = nextPhrase;
+        nextPhrase = '';
+        typedPhrases.add(phrase);
+        console.log(`Heard as: ${phrase}`);
+        return phrase;
+      },
+      // A typed phrase without a shortcut is a follow-up to the
+      // conversation the tab shows; loudness words are "sent" as before.
+      detect: async (input) => {
+        if (!typedPhrases.has(input.utterance)) {
+          return 'SEND';
+        }
+        return input.interaction?.agentSessionId ? 'CONTINUE_OPEN_AGENT_CONVERSATION' : 'IGNORE';
+      },
+      processors: (liveRouter, live) => {
+        const log = () => {};
+        new StartCodingAgentSession({ sessions: demoSessions }, log, false, live).subscribe(
+          liveRouter,
+        );
+        new QuickQuestion({ sessions: demoSessions }, log, false, live).subscribe(liveRouter);
+        new GoToSession(log, false, live).subscribe(liveRouter);
+        new PopOutSession(log, false, live).subscribe(liveRouter);
+        new ContinueOpenAgentConversation({ sessions: demoSessions }, log, false, live).subscribe(
+          liveRouter,
+        );
+        processor('SEND', async (heardFrame) => {
+          live.outcome?.(heardFrame.id, 'sent');
+        }).subscribe(liveRouter);
+      },
+    },
   );
+
+  // Lines typed into this terminal; not a terminal interface, so Ctrl+C
+  // still stops the demo as before.
+  phraseInput = createInterface({ input: process.stdin, terminal: false });
+  phraseInput.on('line', (line) => {
+    const phrase = line.trim();
+    if (phrase) {
+      nextPhrase = phrase;
+      console.log(`The next utterance a browser hears will be: ${phrase}`);
+    }
+  });
 
   // The fixture keeps its diagnostics and transcripts for tests to inspect;
   // a demo left listening for hours must not keep them all.
@@ -1082,6 +1150,10 @@ Companion browser shell demo (synthetic data only)
                  paused for media). The browser asks for the microphone;
                  a test recogniser turns its sound into words such as
                  "w3 w5". Needs this loopback address (a secure page).
+  Speech follows the tab that heard it: type a phrase here and press
+                 Enter ("go to session 2", "quick question …", or a
+                 follow-up); the next utterance a browser hears is
+                 recognised as it, in the conversation that tab shows.
 
 New pairing code:
   bin/companion-remote pair --state-directory ${stateDirectory}
@@ -1104,6 +1176,7 @@ Press Ctrl+C to stop and delete it.
   if (gateway) {
     await gateway.close();
   }
+  phraseInput?.close();
   if (microphones) {
     await microphones.close();
   }
