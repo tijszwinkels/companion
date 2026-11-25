@@ -276,7 +276,9 @@ window", left of the gear). Rule (`src/workspace/new-window.ts`):
    bar of a conversation only, not on Previous sessions, the empty view or
    the settings screen.
 2. The new window is an ordinary tab of the shell: the same pairing (this
-   browser's storage), the same display settings and layout, and one more
+   browser's storage; a browser that refused to store the pairing keeps it
+   in the first window only, so the new one asks to pair), the same
+   display settings and layout, and one more
    of this browser's connections. The gateway admits at most four per
    device: a fifth window shows the [limit page](#the-limit-page) ("This
    browser already has four Companion tabs connected. Close one you do not
@@ -1760,6 +1762,12 @@ picker, and a Claude Code conversation's models and fixed effort.
 | `openrouter/openai/gpt-5` (`azure/gpt-5`)                  | `openai/gpt-5`                         |
 | `ghost/model/` (an empty last part)                        | `ghost/model/`                         |
 | None known yet                                             | `Model`                                |
+
+Known limit (open, 2026-11-25): at 1280 px with the widest list and
+Activity column together, a model whose closed text needs its provider
+part (another model has the same long ending) can have that part shortened
+to nothing while the long ending wraps, so the two look alike there; the
+title and the open list still tell them apart.
 
 Known limit: the picker keeps its "change on its way" state while it is
 drawn. Leaving the conversation for the settings screen and coming back
