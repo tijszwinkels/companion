@@ -275,6 +275,8 @@ export function microphonesFixture(
 
   return {
     pipeline,
+    /** The router of every microphone's speech (a demo connects it to the runtime). */
+    router,
     computer,
     browsers,
     detectors,

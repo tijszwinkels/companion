@@ -935,6 +935,14 @@ device reorders the conversations while the browser is still speaking, and
 the tab receives that new order before the `agent-select`, "go to session N"
 counts N in the new order (the desktop's navigation has the same timing).
 
+Also kept on purpose (decided after review): the updated shell and gateway
+in front of an older listener route a browser's speech as before (to the
+desktop's conversation): update the listener, the gateway and the shell
+together. And a reorder on another device while the browser's last piece of
+sound is still on its way can change what N means, also after the browser has
+finished speaking (the tab receives the new order before the
+`agent-select`); preventing it needs the tab's order sent with its sound.
+
 Left out on purpose: speech from the computer's microphone following a
 browser on the same machine (switch the computer's microphone off and Listen
 here on in that browser instead), choosing a target by voice other than "go

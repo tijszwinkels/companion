@@ -26,6 +26,14 @@ import { QuickQuestion } from '../../src/processors/quick-question.ts';
 
 const followUpText = 'please also add tests';
 
+/** Press and release Enter on whatever has the focus, as a key already on its way. */
+async function pressEnter(page: TestPage): Promise<void> {
+  const base = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 };
+  await page.call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+  await page.call('Input.dispatchKeyEvent', { type: 'char', ...base, text: '\r' });
+  await page.call('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+}
+
 /** The title in the chat bar: the conversation this tab shows. */
 function shownTitle(page: TestPage): Promise<string> {
   return page.evaluate<string>(`document.querySelector('.chat-bar-title')?.textContent ?? ''`);
@@ -111,7 +119,13 @@ test(
 
     // 2. "Go to session 3" while A's text box has the focus and holds unsent
     // text: A switches to Z, like a click; the desktop and the other device
-    // do not.
+    // do not. Z holds unsent text of its own, and Enter is pressed right
+    // after the switch: nothing is sent in Z, and both texts are kept.
+    await openConversation(page, 'Z conversation');
+    await page.evaluate(`document.querySelector('.chat textarea').focus()`);
+    await page.type('z draft');
+    await page.waitFor(`document.querySelector('.chat textarea').value === 'z draft'`);
+    await openConversation(page, 'Y conversation');
     await page.evaluate(`document.querySelector('.chat textarea').focus()`);
     await page.type('unsent words');
     await page.waitFor(`document.querySelector('.chat textarea').value === 'unsent words'`);
@@ -120,6 +134,15 @@ test(
       `document.querySelector('.chat-bar-title')?.textContent.includes('Z conversation')`,
       15_000,
     );
+    await pressEnter(page);
+    // After a spoken switch no text box has the focus (README "Rule: spoken
+    // navigation"); Enter therefore sent nothing.
+    assert.equal(
+      (await page.evaluate<string>(`document.activeElement?.tagName ?? ''`)) === 'TEXTAREA',
+      false,
+      'the text box does not have the focus after a spoken switch',
+    );
+    await page.waitFor(`document.querySelector('.chat textarea').value === 'z draft'`);
     assert.deepEqual(
       desktop.messages.filter((message) => message.type === 'agent-select'),
       [],
@@ -127,9 +150,25 @@ test(
     );
     assert.match(await shownTitle(other.page), /X conversation/);
 
-    // The unsent text stayed with Y: it is there on return.
+    // The unsent text stayed with Y: it is there on return. (First the
+    // listener has this tab's report of Z, so the wait for Y below cannot
+    // be met by the report from before the switch.)
+    const remotes = (
+      fixture.desktop.runtime as unknown as { remoteClients: Map<number, { selection: string }> }
+    ).remoteClients;
+    const shownBy = (id: string) => [...remotes.values()].some((remote) => remote.selection === id);
+    await waitFor(() => shownBy(ids[2]) && !shownBy(y), 15_000);
     await openConversation(page, 'Y conversation');
     await page.waitFor(`document.querySelector('.chat textarea').value === 'unsent words'`);
+    // Wait until the listener has this tab's later report (Y): a send of Z's
+    // text, sent before it on the same connection, would have arrived first.
+    await waitFor(() => shownBy(y), 15_000);
+    const z = sessions.snapshot().find((session) => session.id === ids[2])!;
+    assert.equal(
+      z.messages.some((message) => message.kind === 'user' && message.text === 'z draft'),
+      false,
+      "Z's unsent text was not sent",
+    );
 
     // 3. Under the settings screen A still has Y open: "go to session 1"
     // leaves the settings screen and shows X, as a click in the list does.

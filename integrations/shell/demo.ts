@@ -79,14 +79,12 @@ import { widgetTools } from '../../src/agents/widget-tools.ts';
 import { chatMessage, type AgentBackend, type AgentMessage } from '../../src/agents/types.ts';
 import type { UserSensorFrame, UserSensorProcessor } from '../../src/core/frame.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
-import { UserSensorRouter } from '../../src/core/router.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { CaptureStoragePolicy, notAdmitted } from '../../src/capture-storage/policy.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { syntheticWindowPng } from './synthetic-window.ts';
 import { microphonesFixture } from '../../test/microphones-fixture.ts';
-import { processor } from '../../test/helpers.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { GoToSession } from '../../src/processors/go-to-session.ts';
 import { PopOutSession } from '../../src/processors/pop-out-session.ts';
@@ -816,47 +814,9 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
 
   // ---- Intents and Activity ------------------------------------------------------
 
-  /** A registered intent that does nothing (the demo never routes speech). */
-  function demoProcessor(name: string, label: string, prefixes: string[], instruction?: string) {
-    const processor: UserSensorProcessor = {
-      id: name,
-      label,
-      dependencies: {},
-      name,
-      instruction,
-      prefixes,
-      async process() {},
-      subscribe(router) {
-        router.register(this);
-      },
-    };
-    return processor;
-  }
-
-  const router = new UserSensorRouter(
-    {
-      detector: {
-        id: 'demo-detector',
-        label: 'No detector (demo)',
-        dependencies: {},
-        async detect() {
-          throw Error('The demo does not classify speech');
-        },
-      },
-    },
-    () => {},
-    runtime.activity,
-  );
-  const processors = [
-    demoProcessor('IGNORE', 'Ignore', [], 'Not addressed to Companion'),
-    demoProcessor('SEND_TEXT_TO_APPLICATION', 'Type text', ['insert'], 'Dictation'),
-    demoProcessor('START_CODING_AGENT_SESSION', 'Coding session', ['new session'], 'Coding task'),
-    demoProcessor('QUICK_QUESTION', 'Quick question', ['quick question'], 'Short question'),
-  ];
-  for (const processor of processors) {
-    processor.subscribe(router);
-  }
-  await runtime.connectRouter(router);
+  // The runtime's intent controls (Settings) are connected to the router of
+  // the listener's microphones below, so its switches apply to the speech
+  // the demo hears.
   continueStartup();
 
   const activity = runtime.activity;
@@ -965,12 +925,13 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
         return phrase;
       },
       // A typed phrase without a shortcut is a follow-up to the
-      // conversation the tab shows; loudness words are "sent" as before.
+      // conversation the tab shows; loudness words are "typed" (recorded
+      // as sent, nothing is typed), as before.
       detect: async (input) => {
         const typed = typedPhrase !== '' && input.utterance === typedPhrase;
         typedPhrase = '';
         if (!typed) {
-          return 'SEND';
+          return 'SEND_TEXT_TO_APPLICATION';
         }
         return input.interaction?.agentSessionId ? 'CONTINUE_OPEN_AGENT_CONVERSATION' : 'IGNORE';
       },
@@ -985,12 +946,32 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
         new ContinueOpenAgentConversation({ sessions: demoSessions }, log, false, live).subscribe(
           liveRouter,
         );
-        processor('SEND', async (heardFrame) => {
-          live.outcome?.(heardFrame.id, 'sent');
-        }).subscribe(liveRouter);
+        // "Type text" as in the real listener's Settings, but the demo
+        // never types anything: it only records the outcome.
+        const typeText: UserSensorProcessor = {
+          id: 'SEND_TEXT_TO_APPLICATION',
+          label: 'Type text',
+          dependencies: {},
+          name: 'SEND_TEXT_TO_APPLICATION',
+          instruction: 'Dictation',
+          prefixes: ['insert'],
+          async process(heardFrame) {
+            live.outcome?.(heardFrame.id, 'sent');
+          },
+          subscribe(target) {
+            target.register(this);
+          },
+        };
+        typeText.subscribe(liveRouter);
       },
     },
   );
+
+  // One router for the demo's speech and the runtime's intent switches
+  // (Settings), as in src/cli.ts: switching an intent or shortcut off
+  // applies to what the demo hears.
+  await runtime.connectRouter(microphones.router);
+  continueStartup();
 
   // Lines typed into this terminal; not a terminal interface, so Ctrl+C
   // still stops the demo as before.
