@@ -10,6 +10,7 @@ import {
   defaultDisplaySettings,
   DisplaySettings,
   displaySettingKey,
+  listStyleKey,
   type DisplaySettingsValues,
 } from '../../integrations/shell/src/settings/display-settings.ts';
 import { ListenerClock } from '../../integrations/shell/src/times/listener-clock.ts';
@@ -592,7 +593,12 @@ test('display switches: each row of the README table', () => {
   assert.deepEqual(new DisplaySettings(() => fresh).values, allOn);
 
   // Each switched off: only its own entry is written, the others not at all.
-  for (const name of ['turnTimers', 'lastTurnDuration', 'messageTimestamps'] as const) {
+  for (const name of [
+    'turnTimers',
+    'lastTurnDuration',
+    'messageTimestamps',
+    'listSubtitles',
+  ] as const) {
     const storage = memoryStorage();
     const settings = new DisplaySettings(() => storage);
     settings.set(name, false);
@@ -631,7 +637,12 @@ test('display switches: each row of the README table', () => {
   there.set('lastTurnDuration', false);
   here.followStorage(durationKey);
   there.followStorage(timersKey);
-  const expected = { turnTimers: false, lastTurnDuration: false, messageTimestamps: false };
+  const expected = {
+    ...allOn,
+    turnTimers: false,
+    lastTurnDuration: false,
+    messageTimestamps: false,
+  };
   assert.deepEqual(here.values, expected);
   assert.deepEqual(there.values, expected);
   assert.deepEqual(new DisplaySettings(() => shared).values, expected);
@@ -685,6 +696,89 @@ test('display switches: each row of the README table', () => {
   cleared.items.clear();
   before.followStorage(null);
   assert.deepEqual(before.values, allOn);
+});
+
+test('list style: each row of the README table that concerns its entry', () => {
+  const styleKey = listStyleKey;
+  assert.equal(styleKey, 'companion.shell.display.listStyle');
+
+  // Nothing remembered: By width, the second line on.
+  const fresh = memoryStorage();
+  const freshValues = new DisplaySettings(() => fresh).values;
+  assert.equal(freshValues.listStyle, 'by-width');
+  assert.equal(freshValues.listSubtitles, true);
+
+  // Chosen: only its own entry is written; a reload reads it back.
+  for (const style of ['compact', 'full', 'by-width'] as const) {
+    const storage = memoryStorage();
+    const settings = new DisplaySettings(() => storage);
+    let changes = 0;
+    settings.subscribe(() => {
+      changes++;
+    });
+    settings.setListStyle(style);
+    assert.deepEqual([...storage.items.keys()], [styleKey], style);
+    assert.equal(storage.items.get(styleKey), entry(style));
+    assert.equal(settings.values.listStyle, style);
+    // Choosing the style shown already tells no one.
+    assert.equal(changes, style === 'by-width' ? 0 : 1, style);
+    assert.equal(new DisplaySettings(() => storage).values.listStyle, style);
+  }
+
+  // Another tab chooses: this tab follows the style only.
+  const shared = memoryStorage();
+  const here = new DisplaySettings(() => shared);
+  const there = new DisplaySettings(() => shared);
+  there.setListStyle('compact');
+  here.followStorage(styleKey);
+  assert.deepEqual(here.values, { ...allOn, listStyle: 'compact' });
+  // Two tabs change different entries at the same moment: both kept.
+  here.set('listSubtitles', false);
+  there.setListStyle('full');
+  here.followStorage(styleKey);
+  there.followStorage(displaySettingKey('listSubtitles'));
+  const expected = { ...allOn, listSubtitles: false, listStyle: 'full' as const };
+  assert.deepEqual(here.values, expected);
+  assert.deepEqual(there.values, expected);
+  assert.deepEqual(new DisplaySettings(() => shared).values, expected);
+
+  // Storage refuses writes: the style for this page; a reload shows By width.
+  const refusing = memoryStorage();
+  refusing.refuse = true;
+  const page = new DisplaySettings(() => refusing);
+  page.setListStyle('compact');
+  assert.equal(page.values.listStyle, 'compact');
+  assert.equal(new DisplaySettings(() => refusing).values.listStyle, 'by-width');
+
+  // No storage at all: By width; the choice works for this page.
+  const noStorage = new DisplaySettings(() => null);
+  noStorage.setListStyle('full');
+  assert.equal(noStorage.values.listStyle, 'full');
+
+  // Invalid entries give By width; the switches as remembered.
+  for (const invalid of [
+    'not json',
+    JSON.stringify({ version: 2, value: 'compact' }),
+    entry('wide'),
+    entry('Compact'),
+    entry(3),
+    entry(null),
+    JSON.stringify('compact'),
+  ]) {
+    const storage = memoryStorage({ [styleKey]: invalid, [durationKey]: entry(false) });
+    assert.deepEqual(
+      new DisplaySettings(() => storage).values,
+      { ...allOn, lastTurnDuration: false },
+      invalid,
+    );
+  }
+
+  // Another tab cleared the whole storage: By width again.
+  const cleared = memoryStorage({ [styleKey]: entry('compact') });
+  const before = new DisplaySettings(() => cleared);
+  cleared.items.clear();
+  before.followStorage(null);
+  assert.equal(before.values.listStyle, 'by-width');
 });
 
 // ---- Message times through the bridge ---------------------------------------------

@@ -11,16 +11,20 @@
  * here, entry by entry, so the last change of each wins. A storage that
  * cannot be written keeps this page's values. The window width follows
  * `resize`; the width the Activity column takes beside it is subtracted
- * first (see `reservedFor`).
+ * first (see `reservedFor`). The list's style (Settings → Display) decides
+ * which widths are valid and which appearance a width has; it is passed in
+ * by the workspace, which follows the Display settings.
  */
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import {
   appearanceOf,
+  defaultListStyle,
   shownListWidth,
   widestShownListWidth,
   type ListAppearance,
+  type ListStyle,
 } from './list-width.ts';
 import {
   listShownKey,
@@ -37,8 +41,10 @@ export interface ListLayoutView {
   shown: boolean;
   /** The width it is shown at now, in CSS pixels. */
   width: number;
-  /** The preferred width (what the window allows is `width`). */
+  /** The preferred width as remembered (what the style and the window allow is `width`). */
   preference: number;
+  /** The list's style it is shown in. */
+  style: ListStyle;
   /** Its appearance at that width. */
   appearance: ListAppearance;
   /** The widest width this window allows now (for the divider's range). */
@@ -69,10 +75,11 @@ function windowWidth(): number {
  * `reservedFor` gives the width something beside the list and the chat
  * takes from the window (the right column in a wide window), for whether
  * the list is shown and its preferred width; the list's width rules apply
- * to what remains.
+ * to what remains. `style` is the list's style now.
  */
 export function useListLayout(
   reservedFor: (listShown: boolean, listPreference: number) => number = () => 0,
+  style: ListStyle = defaultListStyle,
 ): ListLayoutView {
   const [layout, setLayout] = useState<ListLayout>(() => {
     const storage = pageStorage();
@@ -152,14 +159,15 @@ export function useListLayout(
   }
 
   const roomWidth = width - reservedFor(layout.listShown, layout.listWidth);
-  const shownWidth = shownListWidth(layout.listWidth, roomWidth);
+  const shownWidth = shownListWidth(layout.listWidth, roomWidth, style);
 
   return {
     shown: layout.listShown,
     width: shownWidth,
     preference: layout.listWidth,
-    appearance: appearanceOf(shownWidth),
-    widest: widestShownListWidth(roomWidth),
+    style,
+    appearance: appearanceOf(shownWidth, style),
+    widest: widestShownListWidth(roomWidth, style),
     setWidth(listWidth, remember) {
       change({ listWidth }, remember);
     },

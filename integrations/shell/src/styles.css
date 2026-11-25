@@ -739,6 +739,14 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   -webkit-box-orient: vertical;
 }
 
+/* A conversation's title: the desktop rail's title size (rail/styles.css
+   `.title`, 9 units at the tab unit, which is 1.25 × the theme unit:
+   11.25 px at theme unit 1). Activity, Previous sessions and Settings keep
+   the smaller size, so their one word stays whole. */
+.conversations.strip .conversation-entry .entry-title {
+  font-size: 11.25px;
+}
+
 .conversations.strip .conversation-entry.selected .entry-title {
   color: var(--accent);
 }
@@ -779,9 +787,20 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   white-space: nowrap;
 }
 
+/* A conversation's title a little larger than the other entries' (13 px). */
+.conversations.full .conversation-entry .entry-title {
+  font-size: 14px;
+}
+
 .conversations.full .entry-last-line {
   margin-top: 2px;
   font-size: 11.5px;
+}
+
+/* Settings → Display without the second line: each conversation shows its
+   title only (Activity, Previous sessions and Settings keep their line). */
+.conversations.full.no-subtitles .conversation-entry .entry-last-line {
+  display: none;
 }
 
 /* The running time, right-aligned next to the title and the last line; in
@@ -1098,8 +1117,47 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   flex-direction: row;
 }
 
+/* Beside the application the chat column is its header (ChatPaneHeader.tsx)
+   above the chat page, which takes the rest of the height. */
 .application-split .chat-column.beside-application {
+  display: flex;
   flex: none;
+  flex-direction: column;
+}
+
+.chat-column.beside-application > .chat {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+/* The chat's own header beside the application: "Chat" and ⇥ Hide chat at
+   its right end. Outside the chat page, so it sets the PanelAction
+   button's pixel unit as the application's bar does. */
+.chat-pane-header {
+  --u: 1px;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.chat-pane-hide {
+  flex: none;
+}
+
+.chat-pane-hide:hover {
+  color: var(--accent);
+}
+
+.chat-pane-hide:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* Switch layout: the application and the chat in the same place; the one
@@ -1463,6 +1521,65 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
 .setting-switch:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* The list's style: three choices side by side at the right of the row
+   (under its text where the row is too narrow). The row itself is not a
+   button; each choice is a native radio button drawn as a segment. */
+.setting-row.setting-choice-row {
+  flex-wrap: wrap;
+  cursor: default;
+}
+
+/* The text keeps at least 220 px; narrower, the choices go below it. */
+.setting-choice-row .setting-text {
+  flex: 1 1 220px;
+}
+
+.setting-choice {
+  display: flex;
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.setting-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.setting-option + .setting-option {
+  border-left: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+/* The native radio stays focusable and announced; its segment shows it. */
+.setting-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+.setting-option span {
+  padding: 5px 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.setting-option input:checked + span {
+  background: var(--accent);
+  color: var(--background);
+}
+
+.setting-option input:focus-visible + span {
+  outline: 2px solid var(--foreground);
+  outline-offset: -2px;
 }
 
 .settings-note,
@@ -2283,11 +2400,36 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
   outline-offset: 1px;
 }
 
+/* The closed picker's text (model-choice.ts `closedModelName`): a lead
+   that is often absent, then the part that tells the model apart. Where
+   the button is too narrow, the lead gives up its room long before the
+   distinct part, which is shortened last. */
 .model-name {
+  display: inline-flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.model-lead,
+.model-distinct {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.model-lead {
+  flex: 0 1000 auto;
+}
+
+.model-distinct {
+  flex: 0 1 auto;
+}
+
+/* Wide windows: room for a long model name in full. */
+@media (min-width: 1280px) {
+  .model-button {
+    max-width: 44ch;
+  }
 }
 
 .model-panel {

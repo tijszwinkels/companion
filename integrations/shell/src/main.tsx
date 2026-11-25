@@ -32,6 +32,7 @@ import { ListenHere } from './listen/listen-here.ts';
 import { isAgentSelect, SpokenSelection } from './listen/spoken-selection.ts';
 import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
 import { SettingsView } from './settings/settings-view.ts';
+import { showAddressedConversation } from './workspace/new-window.ts';
 import './styles.css';
 import { ListenerClock } from './times/listener-clock.ts';
 import type { PageTimes } from './times/page-times.ts';
@@ -106,6 +107,10 @@ const store = new Store({
 // reports again when that changes what it last reported.
 settingsView.subscribe(() => store.selectionShownChanged());
 activityOverlay.subscribe(() => store.selectionShownChanged());
+
+// A page opened on one conversation (the bar's ⧉, `#conversation=<id>`)
+// shows it once the first snapshot has arrived (workspace/new-window.ts).
+showAddressedConversation(store, window.location.hash);
 
 // The listener's clock offset is taken from each state message as the
 // Store applies it. Subscribed first, so the bridge and the page already

@@ -398,7 +398,9 @@ test(
         'cloud/synthetic-large',
     );
     await page.waitFor(
-      `document.querySelector('.model-button .model-name').textContent === 'cloud/synthetic-large'`,
+      // The closed picker names the part that tells the models apart; its
+      // title keeps the full name (README "Model picker", rule 9).
+      `document.querySelector('.model-button .model-name').textContent === 'synthetic-large' && document.querySelector('.model-button').title.includes('cloud/synthetic-large')`,
     );
 
     // Refused by the listener: its words, and the conversation's model stays.
@@ -448,7 +450,9 @@ test(
     // Changed elsewhere (another client): shown here.
     await fixture.sessions.setModel(id, 'local/qwen-synthetic', signal());
     await page.waitFor(
-      `document.querySelector('.model-button .model-name').textContent === 'local/qwen-synthetic'`,
+      // The closed picker names the part that tells the models apart; its
+      // title keeps the full name (README "Model picker", rule 9).
+      `document.querySelector('.model-button .model-name').textContent === 'qwen-synthetic' && document.querySelector('.model-button').title.includes('local/qwen-synthetic')`,
     );
 
     // The settings screen open: its bar has no picker; back, it is there.
