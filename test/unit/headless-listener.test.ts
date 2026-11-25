@@ -143,6 +143,22 @@ test('--headless cannot be combined with options that need the desktop or speech
   });
   assert.equal(await open.exited, 1);
   assert.match(open.output(), /--headless needs a private XDG_RUNTIME_DIR: .*chmod 700/);
+
+  // And a private one below a directory others may write to (the whole
+  // rule is tested in private-directory-path.test.ts).
+  const openParent = join(machine.directory, 'open-parent');
+  await mkdir(join(openParent, 'run'), { recursive: true });
+  await chmod(join(openParent, 'run'), 0o700);
+  await chmod(openParent, 0o777);
+  const below = startChild(process.execPath, listenerArguments(machine.config, ['--headless']), {
+    ...machine.env,
+    XDG_RUNTIME_DIR: join(openParent, 'run'),
+  });
+  assert.equal(await below.exited, 1);
+  assert.match(
+    below.output(),
+    /--headless needs a private XDG_RUNTIME_DIR: .*open-parent is writable/,
+  );
 });
 
 test('without a desktop: conversations work through the gateway, desktop abilities are refused with their reason', async (context) => {
@@ -172,6 +188,15 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
   const phone = await connectPhone(`ws://127.0.0.1:${port}/api/socket`, token, origin);
   context.after(async () => {
     phone.socket.terminate();
+  });
+
+  // Speech that follows its device selects a conversation in the tab that
+  // spoke (`agent-select`). Nothing can listen here, so none ever arrives.
+  let agentSelects = 0;
+  phone.socket.on('message', (data) => {
+    if (JSON.parse(String(data)).type === 'agent-select') {
+      agentSelects++;
+    }
   });
 
   // The honest state: listening paused, no sound, no media pause, no
@@ -302,6 +327,8 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
   phone.messages.length = 0;
   assert.equal((await remote(phone, { action: 'reopen-agent', id })).result, 'reopened');
   await phone.engine('agent-restored', (event) => event.session.id === id);
+
+  assert.equal(agentSelects, 0);
 
   // Nothing in the listener's log is an error; it stops cleanly on SIGINT.
   assert.doesNotMatch(listener.output(), / error /);

@@ -987,10 +987,20 @@ it is refused with a reason starting "This Companion runs without a desktop"
 `--text`, `--wav`, `--device`, `--seconds`, `--preview`, `--graph`,
 `--paused`, `--no-desktop`, `--no-startup-capture` and `--phone`.
 `--no-sounds` is accepted and changes nothing. The control socket still needs
-`XDG_RUNTIME_DIR` (a start without it is refused with that reason), and the
-locks need `flock`; the widget renderer needs `bwrap` and Chromium at
+`XDG_RUNTIME_DIR`, and the locks need `flock`; the widget renderer needs `bwrap` and Chromium at
 `/usr/lib/chromium/chromium`, as on the desktop. The transcription cleanup
 switch is neither loaded nor offered.
+
+The runtime directory holds the control socket that the gateway finds by
+its path, so a headless start refuses one that another user could replace
+(`assertPrivateDirectoryPath` in `src/remote/private-directory.ts`, the same
+rule as the same-user session API's). `XDG_RUNTIME_DIR` must be set, absolute
+and canonical; no component of it may be a symbolic link; every directory
+above it must be owned by this user or root and writable by nobody else,
+unless it is root-owned and sticky (like `/tmp`); and the directory itself
+must be a real directory owned by this user and closed to everyone else
+(`chmod 700`). The ordinary `/run/user/<uid>` passes. The check is made by
+path once at start. The default start does not make it.
 
 The browser reaches it through the gateway, started separately with the same
 `XDG_RUNTIME_DIR` and serving the browser shell instead of the phone app; its
@@ -1006,20 +1016,27 @@ bin/companion-remote pair   # in a second terminal: a one-time code for the brow
 ```
 
 Both ports stay on the server's loopback. A browser on another computer
-reaches them with the same port numbers through a tunnel that is itself
-bound to that computer's loopback and fails rather than half-works, for
-example
+reaches them with the same port numbers through a tunnel bound to that
+computer's loopback, for example
 `ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:8787:127.0.0.1:8787 -L 127.0.0.1:8788:127.0.0.1:8788 server`,
 and opens `http://127.0.0.1:8787/`. The page then has the gateway's loopback
 origin, and widget frames load from `http://127.0.0.1:8788`; forwarding only
 the first port leaves conversations working and widgets blank.
 
-The browser keeps its pairing per origin. Two servers reached through the
-same local port share one origin, so the second would receive the first
-one's device token and, refusing it, end that browser's pairing. Give each
-server its own pair of ports (`--port`, `--frames-listen` and
-`--frame-origin`, the same numbers on both ends of the tunnel), or use a
-separate browser profile for each.
+`ExitOnForwardFailure=yes` covers the local side only: `ssh` exits instead of
+running on when it cannot set up a requested forward, for example because a
+local port is already in use. It does not check the server side: the forwards
+are set up even when nothing listens on the server's ports (the gateway or
+its frame listener not running), and each connection through them then fails
+on its own while `ssh` keeps running. Both server listeners must be running.
+
+Each server needs its own gateway origin, so its own local port numbers
+(`--port`, `--frames-listen` and `--frame-origin`, the same numbers on both
+ends of its tunnel). The browser keeps a pairing per origin, and an open tab
+reconnects to its port by itself: if that port later leads to another
+server, the tab sends the first server's device token to it, and the
+refusal ends the tab's pairing. Never reuse a server's ports for another
+server, not even from another browser profile.
 
 Two desktop abilities are left as they are, because only a local desktop
 panel or an explicit opt-in reaches them: a widget pop-out still opens when
@@ -1027,6 +1044,12 @@ the listener inherits a working `WAYLAND_DISPLAY` and a local panel asks for
 one (the gateway never does), and the opt-in Claude Code desktop tools
 (`claude-tools.json`, see `src/agents/claude/parity/README.md`) are still
 offered and fail without a compositor.
+
+Known limit: a browser tab that was already open while the listener ran with
+a desktop can keep showing **Listen here** switched on after the listener is
+restarted without one. It then says it will listen again on Resume, but
+Resume is refused and its microphone stays closed. Reloading the tab clears
+the stale switch.
 
 Whether anything can listen is decided in one place
 (`DesktopRuntime.nothingCanListen`): without a desktop and without attached
