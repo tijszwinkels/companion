@@ -1027,7 +1027,8 @@ frames on a second port:
 ```sh
 npm run shell:build
 bin/companion-remote serve --app-directory integrations/shell/dist \
-  --frames-listen 127.0.0.1:8788 --frame-origin http://127.0.0.1:8788
+  --frames-listen 127.0.0.1:8788 --frame-origin http://127.0.0.1:8788 \
+  --allow-microphone
 bin/companion-remote pair   # in a second terminal: a one-time code for the browser
 ```
 
@@ -1067,11 +1068,9 @@ one (the gateway never does), and the opt-in Claude Code desktop tools
 (`claude-tools.json`, see `src/agents/claude/parity/README.md`) are still
 offered and fail without a compositor.
 
-Known limit: a browser tab that was already open while the listener ran with
-a desktop can keep showing **Listen here** switched on after the listener is
-restarted without one. It then says it will listen again on Resume, but
-Resume is refused and its microphone stays closed. Reloading the tab clears
-the stale switch.
+`--allow-microphone` lets the gateway's own page use the microphone, so
+**Listen here** works; without it conversations work but no browser can
+listen (the page is served with `Permissions-Policy: microphone=()`).
 
 Whether anything can listen is decided in one place
 (`DesktopRuntime.nothingCanListen`): without a desktop and without attached
@@ -1116,13 +1115,17 @@ application here:
 - **Everything else, without an intent model** (the default): a message to
   the conversation the listening tab shows (`CONTINUE_OPEN_AGENT_CONVERSATION`,
   with its usual checks: the tab's view and the conversation unchanged since
-  the speech). When the tab shows none (Activity, Previous sessions, or its
-  view changed since the speech), the words are not delivered anywhere:
-  Activity shows "Not delivered: this tab shows no conversation", Skipped
-  (`NO_CONVERSATION_SHOWN`). The fixed rule is `NoIntentModel`
-  (`src/core/no-intent-model.ts`); nothing leaves the machine. It cannot tell
-  side talk from a request: everything that is not a command reaches the
-  shown conversation.
+  the speech). When the tab showed none at speech end (Activity, Previous
+  sessions, or a view that changed while the sound waited for the voice
+  detector), the words are not delivered anywhere: Activity shows "Not
+  delivered: this tab shows no conversation", Skipped (`NO_CONVERSATION_SHOWN`).
+  When the tab showed Y at speech end but changes before delivery (during
+  recognition), the follow-up's own check refuses it: Activity shows
+  "Continue the open agent conversation", Skipped. The fixed rule is
+  `NoIntentModel` (`src/core/no-intent-model.ts`): no intent request is made.
+  It cannot tell side talk from a request: everything that is not a command
+  becomes a message of the shown conversation, and so goes wherever that
+  conversation's agent sends its turns (for example its model provider).
 - **Everything else, with an intent model** (`--intent-model`): the model
   chooses among this mode's intents, which never include typing or
   `NO_CONVERSATION_SHOWN`; with no conversation shown it usually answers

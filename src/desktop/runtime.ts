@@ -2543,6 +2543,11 @@ export class DesktopRuntime {
     if (!browsers) {
       throw Error('Listening here is not available');
     }
+    // Without a desktop the CLI connects the router just after start (see
+    // src/cli.ts); no stream opens before its intent switches apply.
+    if (this.options.headless && !this.router) {
+      throw Error('Companion is still starting; try again in a moment');
+    }
 
     if (request.action === 'audio-start') {
       const name = request.deviceName;

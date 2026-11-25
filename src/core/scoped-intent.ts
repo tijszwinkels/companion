@@ -5,7 +5,10 @@ export interface ScopedIntent {
   readonly name: string;
   readonly instruction?: string;
   readonly exactUtterance?: string;
-  process(frame: SensorFrame, signal: AbortSignal): Promise<void>;
+  // A function property, so strict parameter checks reject an implementation
+  // that accepts only frames with a screenshot (scoped intents also run
+  // without a desktop).
+  process: (frame: SensorFrame, signal: AbortSignal) => Promise<void>;
 }
 
 export type ScopedIntentSource = (

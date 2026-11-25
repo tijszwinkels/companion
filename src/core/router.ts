@@ -57,11 +57,13 @@ export interface Detector extends InspectableModule {
    * interaction context alone. Absent: such frames cannot be classified, and
    * the router refuses them with a reason instead of inventing a screen.
    */
-  detectWithoutScreenshot?(
+  // A function property, so strict parameter checks reject an implementation
+  // that accepts only frames with a screenshot.
+  detectWithoutScreenshot?: (
     frame: SensorFrame,
     intents: readonly Intent[],
     signal: AbortSignal,
-  ): Promise<string>;
+  ) => Promise<string>;
 
   /**
    * True when a provisional speech attempt must not start this detector's

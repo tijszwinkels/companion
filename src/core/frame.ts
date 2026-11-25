@@ -158,7 +158,9 @@ export type Log = (stage: string, detail: string, frameId?: number) => void;
  */
 export interface ScreenlessProcessor extends UserSensorProcessor {
   readonly screenless: true;
-  process(frame: SensorFrame, signal: AbortSignal, route?: IntentMode): Promise<void>;
+  // A function property, not a method: strict parameter checks then reject an
+  // implementation that accepts only frames with a screenshot.
+  process: (frame: SensorFrame, signal: AbortSignal, route?: IntentMode) => Promise<void>;
 }
 
 export function isScreenlessProcessor(
