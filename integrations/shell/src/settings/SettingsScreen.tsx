@@ -132,8 +132,8 @@ function ListStyleChoice(props: { style: ListStyle; onChoose: (style: ListStyle)
           Conversation list
         </span>
         <span class="setting-description" id={descriptionId}>
-          Compact: small names under the icons, at any width. Full: titles and a second line, at any
-          width. By width: compact when narrow, full when wider.
+          Compact: small names under the icons, at any width. Full: titles beside the icons, at any
+          width the window has room for. By width: compact when narrow, full when wider.
         </span>
       </div>
       <div

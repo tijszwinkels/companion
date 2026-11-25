@@ -103,6 +103,33 @@ test(
     assert.ok(narrow.distinct.width >= 40, `420 px: ${JSON.stringify(narrow)}`);
     assert.equal(await horizontalOverflow(page), 0, '420 px');
 
+    // A Compact list 200 px wide leaves the bar 320 px at 420 px: the
+    // picker shortens inside the heading, never reaching under the bar's
+    // buttons after it.
+    await page.evaluate(`(() => {
+      localStorage.setItem('companion.shell.display.listStyle', JSON.stringify({ version: 1, value: 'compact' }));
+      localStorage.setItem('companion.shell.layout.listWidth', JSON.stringify({ version: 1, value: 200 }));
+    })()`);
+    await page.navigate(await page.evaluate<string>('location.href'));
+    await openConversation(page, 'A conversation whose title');
+    await page.waitFor(
+      `Math.round(document.querySelector('.conversations').getBoundingClientRect().width) === 99`,
+    );
+    const crowded = await page.evaluate<{ button: number; heading: number; next: number }>(`(() => {
+      const button = document.querySelector('.model-button').getBoundingClientRect();
+      const heading = document.querySelector('.chat-bar-heading').getBoundingClientRect();
+      const next = document.querySelector('.chat-bar .new-window').getBoundingClientRect();
+      return { button: button.right, heading: heading.right, next: next.left };
+    })()`);
+    assert.ok(
+      crowded.button <= crowded.heading + 0.5 && crowded.button <= crowded.next,
+      JSON.stringify(crowded),
+    );
+    assert.equal(await horizontalOverflow(page), 0, '420 px, compact 99 px');
+    await page.evaluate(`localStorage.removeItem('companion.shell.display.listStyle')`);
+    await page.navigate(await page.evaluate<string>('location.href'));
+    await openConversation(page, 'A conversation whose title');
+
     // A model whose last part another model shares: once the catalogue is
     // read (the picker opened), the provider is kept, shortened first.
     await resize(page, 1280);

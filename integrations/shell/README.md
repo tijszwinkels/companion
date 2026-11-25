@@ -270,8 +270,9 @@ the bar above a conversation has **⧉** ("Open this conversation in a new
 window", left of the gear). Rule (`src/workspace/new-window.ts`):
 
 1. ⧉ opens this page's own address with `#conversation=<id>` in a new
-   browser window (a small window of 560 × 860 px where the browser allows
-   it), without a handle between the two windows (`noopener`). It is on the
+   browser window (760 × 860 px where the browser allows it: wider than a
+   narrow window, so a remembered Activity column is beside the chat, not
+   over it), without a handle between the two windows (`noopener`). It is on the
    bar of a conversation only, not on Previous sessions, the empty view or
    the settings screen.
 2. The new window is an ordinary tab of the shell: the same pairing (this

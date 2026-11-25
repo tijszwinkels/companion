@@ -26,6 +26,16 @@
  */
 
 import type { Store } from '../../../mobile/src/store.ts';
+import { narrowWindowBelow } from '../layout/activity-width.ts';
+
+/**
+ * The new window's width in CSS pixels: wider than a narrow window
+ * (../layout/activity-width.ts), so an Activity column this browser
+ * remembers as shown sits beside the chat instead of over it, and the chat
+ * keeps about 360 px beside it and the strip.
+ */
+const newWindowWidth = narrowWindowBelow + 120;
+const newWindowHeight = 860;
 
 /** The fragment's name: `#conversation=<id>`. */
 const fragmentName = 'conversation';
@@ -115,5 +125,9 @@ export function showAddressedConversation(store: Store, hash: string): void {
  */
 export function openConversationWindow(id: string): void {
   const address = conversationAddress(window.location, id);
-  window.open(address, '_blank', 'noopener,popup,width=560,height=860');
+  window.open(
+    address,
+    '_blank',
+    `noopener,popup,width=${newWindowWidth},height=${newWindowHeight}`,
+  );
 }
