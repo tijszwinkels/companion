@@ -1720,8 +1720,10 @@ The rule:
    name. The open list and the button's title text and accessible name
    keep the full name. At 1280 px and wider the button may take the
    heading's whole width (on a line of its own under the title where it
-   does not fit beside it; 22 characters below 1280 px), so that part is
-   shown in full unless the heading itself is narrower; where the
+   does not fit beside it; 22 characters below 1280 px), and where even
+   the heading is narrower (the widest list and Activity column together)
+   that part wraps onto a second line, so it is shown in full; below
+   1280 px, where the
    button is narrower than its text (a 420 px window), the part before the
    last `/` (when shown) gives up its room first and the last part is
    shortened last, so the button never shows a prefix alone. Until the

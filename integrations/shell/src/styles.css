@@ -2435,10 +2435,17 @@ body:has(.list-divider.dragging, .band-edge.dragging) iframe {
 
 /* Wide windows: no cap of its own, so a long model name is shown in full
    (on a line of its own under the title where it does not fit beside it);
-   only a heading narrower than the name shortens it. */
+   where even the heading is narrower than the name (the widest list and
+   Activity column together), its distinct part wraps instead of being
+   shortened. */
 @media (min-width: 1280px) {
   .model-button {
     max-width: 100%;
+  }
+
+  .model-distinct {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 

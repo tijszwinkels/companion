@@ -175,5 +175,43 @@ test(
       assert.equal(drawn.distinct.cut, false, `${width} px: shown in full`);
       assert.equal(await horizontalOverflow(page), 0, `${width} px`);
     }
+
+    // At 1280 px with the widest full list (420 px) and Activity column
+    // (520 px) the heading is narrower than that name: it wraps, whole,
+    // inside the heading.
+    await page.evaluate(`(() => {
+      const remember = (key, value) => localStorage.setItem('companion.shell.' + key, JSON.stringify({ version: 1, value }));
+      remember('display.listStyle', 'full');
+      remember('layout.listWidth', 420);
+      remember('layout.activityWidth', 520);
+      remember('layout.activityShown', true);
+    })()`);
+    await page.navigate(await page.evaluate<string>('location.href'));
+    await openConversation(page, 'A conversation whose title');
+    await page.waitFor(`Boolean(document.querySelector('.activity-column'))`);
+    await page.waitFor(
+      `document.querySelector('.model-button .model-distinct')?.textContent === 'global.anthropic.claude-haiku-4-5-20251001-v1:0'`,
+    );
+    const wrapped = await page.evaluate<{
+      cut: boolean;
+      lines: number;
+      right: number;
+      heading: number;
+    }>(`(() => {
+      const distinct = document.querySelector('.model-button .model-distinct');
+      const button = document.querySelector('.model-button').getBoundingClientRect();
+      const heading = document.querySelector('.chat-bar-heading').getBoundingClientRect();
+      const lineHeight = parseFloat(getComputedStyle(distinct).lineHeight) || 16;
+      return {
+        cut: distinct.scrollWidth > distinct.clientWidth || distinct.scrollHeight > distinct.clientHeight,
+        lines: Math.round(distinct.getBoundingClientRect().height / lineHeight),
+        right: button.right,
+        heading: heading.right,
+      };
+    })()`);
+    assert.equal(wrapped.cut, false, JSON.stringify(wrapped));
+    assert.ok(wrapped.lines >= 2, JSON.stringify(wrapped));
+    assert.ok(wrapped.right <= wrapped.heading + 0.5, JSON.stringify(wrapped));
+    assert.equal(await horizontalOverflow(page), 0, '1280 px, widest list and Activity');
   },
 );
