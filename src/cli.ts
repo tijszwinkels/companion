@@ -82,6 +82,7 @@ async function main(): Promise<void> {
       seconds: { type: 'string' },
       'no-sounds': { type: 'boolean', default: false },
       'no-desktop': { type: 'boolean', default: false },
+      headless: { type: 'boolean', default: false },
       'external-sessions': { type: 'boolean', default: false },
       'external-socket': { type: 'string' },
       'widget-library': { type: 'string' },
@@ -105,6 +106,9 @@ Usage: npm start -- [options]
   --graph format     Print pipeline connections as json or mermaid, then exit
   --no-sounds        Start with audible feedback muted
   --no-desktop       Disable history, sounds, and desktop control
+  --headless         Run without a desktop (a server or VM): conversations, agents,
+                     widgets and the control socket for the gateway only; no
+                     microphone, screenshots, typing, sounds or pop-out windows
   --external-sessions Enable the same-user Unix session API (off by default)
   --external-socket PATH Override its private socket path; requires --external-sessions
   --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
@@ -133,6 +137,24 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   }
 
   // Validate CLI input before opening the microphone or contacting the model.
+  if (values.headless) {
+    const desktopOptions = [
+      ['text', values.text !== undefined],
+      ['wav', values.wav !== undefined],
+      ['device', values.device !== undefined],
+      ['seconds', values.seconds !== undefined],
+      ['preview', values.preview],
+      ['graph', values.graph !== undefined],
+      ['paused', values.paused],
+      ['no-desktop', values['no-desktop']],
+      ['no-startup-capture', values['no-startup-capture']],
+      ['phone', values.phone],
+    ] as const;
+    const conflicting = desktopOptions.filter(([, given]) => given).map(([name]) => `--${name}`);
+    if (conflicting.length > 0) {
+      throw Error(`--headless cannot be combined with ${conflicting.join(', ')}`);
+    }
+  }
   if (values.graph !== undefined && !['json', 'mermaid'].includes(values.graph)) {
     throw Error('--graph requires json or mermaid');
   }
@@ -241,16 +263,19 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // the switch. Without the desktop service it stays off.
   const cleanup = new TranscriptionCleanupSetting();
 
+  // Without a desktop (--headless) the runtime itself shows listening as
+  // paused, because nothing can listen (DesktopRuntime.nothingCanListen).
   if (values.paused) {
     pause.toggle();
   }
 
   try {
     if (!values.graph) {
-      log(
-        'start',
-        `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
-      );
+      let mode = values.preview ? 'preview' : 'type into focused application';
+      if (values.headless) {
+        mode = 'headless: conversations and agents, no desktop';
+      }
+      log('start', `Companion · ${config.llm.model} · ${mode}`);
       log('widgets', `Library ${widgetLibrary}`);
     }
 
@@ -259,8 +284,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       desktop = new DesktopRuntime(pause, log, controller.signal, {
         ...desktopPaths(),
         preview: values.preview,
-        sounds: !values['no-sounds'] && !values.preview,
-        mediaPause: values.text === undefined && !values.wav,
+        sounds: !values['no-sounds'] && !values.preview && !values.headless,
+        mediaPause: values.text === undefined && !values.wav && !values.headless,
+        headless: values.headless,
         agents,
         cleanup,
         captureStorage,
@@ -278,6 +304,24 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       );
       await external.start();
       log('external', 'Same-user session API enabled');
+    }
+
+    // Without a desktop the listener serves conversations only: the control
+    // socket (for the gateway), the conversations and their store, widgets,
+    // agents and their wake timers, all owned by the runtime and `agents`
+    // above. Nothing below is built: no intent routing, transcription,
+    // screenshots, voice detection or microphone. Runs until Ctrl+C or
+    // SIGTERM; the finally block closes everything as in the other modes.
+    if (values.headless) {
+      log('listening', 'Without a desktop: typed conversations only · Ctrl+C to stop');
+      await new Promise<void>((resolveStop) => {
+        if (controller.signal.aborted) {
+          resolveStop();
+          return;
+        }
+        controller.signal.addEventListener('abort', () => resolveStop(), { once: true });
+      });
+      return;
     }
 
     // Opt-in only: phone access follows this listener. Started once the

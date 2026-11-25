@@ -164,6 +164,32 @@ const desktopOnlyActions = new Set([
   'recording-append-result',
 ]);
 
+/** The start of every refusal of a listener started without a desktop. */
+const withoutDesktop = 'This Companion runs without a desktop';
+
+/**
+ * Requests that need the computer's own desktop, refused for every client
+ * (desktop or remote) when the listener runs without one (`--headless`, see
+ * "Running without a desktop" in src/desktop/README.md). Each refusal says
+ * plainly what this Companion cannot do, so a panel shows it as the reason.
+ * Checked before the remote rule above, so a paired browser hears why too.
+ * Without `--headless` this table is never consulted.
+ */
+const withoutDesktopRefusals: ReadonlyMap<string, string> = new Map([
+  // Pause and Resume are not here: whether anything can listen is decided
+  // in one place, `nothingCanListen`.
+  ['set-computer-microphone', `${withoutDesktop} and has no microphone of its own.`],
+  ['start-recording', `${withoutDesktop} and has no microphone to record with.`],
+  ['stop-recording', `${withoutDesktop} and has no microphone to record with.`],
+  ['recording-append-result', `${withoutDesktop} and has no microphone to record with.`],
+  // No speakers: sound feedback stays off.
+  ['toggle-sounds', `${withoutDesktop} and has no sound feedback.`],
+  // No compositor: no focused application to type into, no media to follow.
+  ['paste', `${withoutDesktop}: it cannot type into applications.`],
+  ['submit-utterance', `${withoutDesktop}: it cannot type into applications.`],
+  ['media-playback', `${withoutDesktop}: it does not pause for media playback.`],
+]);
+
 /**
  * A remote panel observes and controls conversations without becoming the
  * desktop's selected conversation. Its selection is private to its connection,
@@ -413,6 +439,14 @@ export class DesktopRuntime {
       sounds: boolean;
       agents?: AgentSessions;
       mediaPause?: boolean;
+      /**
+       * Started without a desktop (`--headless`): no sound feedback, no
+       * typing into applications, no microphone of the computer, no panel
+       * browser and no pop-out windows. Each of these is refused with a
+       * plain reason (`withoutDesktopRefusals`); conversations, their store,
+       * widgets and the control socket work as usual. Absent: the desktop.
+       */
+      headless?: boolean;
       /** The live transcription cleanup switch; absent hides the UI control. */
       cleanup?: TranscriptionCleanupSetting;
       /**
@@ -431,7 +465,12 @@ export class DesktopRuntime {
       join(dirname(options.database), 'transcription-cleanup.json'),
     );
     this.databaseLock = new InstanceLock(options.database + '.lock');
-    this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview, run);
+    this.sounds = new SoundFeedback(
+      log,
+      signal,
+      options.sounds && !options.preview && !options.headless,
+      run,
+    );
     this.server = new DesktopServer(
       options.socket,
       (snapshotOptions) => this.snapshot(snapshotOptions),
@@ -1052,9 +1091,15 @@ export class DesktopRuntime {
       }
 
       // Prepare cues even when starting muted, so the desktop can enable them
-      // later without restarting. Preview mode remains silent throughout.
-      if (!this.options.preview) {
+      // later without restarting. Preview mode remains silent throughout,
+      // and without a desktop there is nothing to play them on.
+      if (!this.options.preview && !this.options.headless) {
         await this.sounds.initialize();
+      }
+
+      // Nothing can listen: shown as paused, and Resume is refused.
+      if (this.nothingCanListen() && !this.pause.paused) {
+        this.pause.toggle();
       }
 
       this.ready = true;
@@ -1065,6 +1110,19 @@ export class DesktopRuntime {
       await this.close();
       throw error;
     }
+  }
+
+  /**
+   * Whether this listener has no microphone at all, so listening is off for
+   * good: without a desktop (`--headless`) no microphone of the computer is
+   * opened, and no listening browsers are attached either. This is the one
+   * place that decides it; `start` then shows listening as paused and
+   * `toggle-pause` refuses to resume. Once browsers may listen without a
+   * desktop, Pause and Resume apply to them (one Pause for everything) and
+   * this answer becomes false.
+   */
+  private nothingCanListen(): boolean {
+    return this.options.headless === true && this.microphones === undefined;
   }
 
   private readonly cleanupChanged = () => {
@@ -2087,6 +2145,15 @@ export class DesktopRuntime {
     if (signal.aborted) {
       return Promise.resolve({ outcome: 'offline', reason: 'The agent turn has ended.' });
     }
+    // The panel browser belongs to the native desktop panel. Without a
+    // desktop the agent learns that, rather than "no panel is connected"
+    // while a paired browser shows the conversation.
+    if (this.options.headless) {
+      return Promise.resolve({
+        outcome: 'unsupported',
+        reason: `${withoutDesktop}; it has no panel browser.`,
+      });
+    }
     const clientId = this.browserClient();
     if (clientId === undefined) {
       // A connected panel without a browser (Quickshell, an older UI) is not
@@ -2183,6 +2250,13 @@ export class DesktopRuntime {
   ): Promise<AgentPresentOutcome> {
     if (signal.aborted) {
       return Promise.resolve({ outcome: 'offline', reason: 'The agent turn has ended.' });
+    }
+    // Pop-out windows are native desktop windows (see requestBrowserOpen).
+    if (this.options.headless) {
+      return Promise.resolve({
+        outcome: 'unsupported',
+        reason: `${withoutDesktop}; it has no conversation windows.`,
+      });
     }
     const clientId = this.presentClient();
     if (clientId === undefined) {
@@ -2404,6 +2478,15 @@ export class DesktopRuntime {
         this.publishRemoteAgentActions(clientId);
       }
       return 'report-refused';
+    }
+
+    // Without a desktop, its abilities are refused with their reason for
+    // every client, before the remote rule below would give a vaguer one.
+    if (this.options.headless && typeof request.action === 'string') {
+      const refusal = withoutDesktopRefusals.get(request.action);
+      if (refusal !== undefined) {
+        throw Error(refusal);
+      }
     }
 
     if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
@@ -3331,6 +3414,9 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'toggle-pause') {
+      if (this.nothingCanListen()) {
+        throw Error(`${withoutDesktop} and has no microphone: listening stays off.`);
+      }
       this.pause.toggle();
       return this.pause.paused ? 'paused' : 'listening';
     }

@@ -290,6 +290,41 @@ Gateway and remote-role unit tests use temporary state and synthetic backends.
 Pairing a real phone, serving on a Tailscale address and running the production
 listener with this protocol are separate user decisions.
 
+## Running without a desktop
+
+`npm start -- --headless` runs the listener on a machine without a desktop (a
+server or VM): the control socket for the gateway, conversations and their
+store, widgets, agents and wake timers stay; the computer's microphone,
+screenshots, typing into applications, sounds, media pause, the panel browser
+and pop-out windows are absent. Each absent ability is refused with a reason
+starting "This Companion runs without a desktop", or shown honestly (listening
+**Paused**, no microphone switch); never a crash, hang or silent nothing.
+Speech is not started in this mode yet. Without the option nothing changes.
+
+| Ability                                    | With a desktop          | Without a desktop                                                 |
+| ------------------------------------------ | ----------------------- | ----------------------------------------------------------------- |
+| Typed conversations, store, widgets, wakes | Yes                     | The same, through the gateway                                     |
+| Listening and Resume                       | On; Pause/Resume        | Paused from the start; Resume refused (no microphone)             |
+| Computer's microphone switch, Listen here  | Offered                 | Not offered; requests refused                                     |
+| Record into the text box                   | Desktop panel           | Refused (no microphone)                                           |
+| Sound feedback                             | `pw-play` cues          | Switch stays off; `toggle-sounds` refused                         |
+| Typing into applications                   | `wtype`                 | `paste`/`submit-utterance` refused                                |
+| Screenshots, media pause                   | `grim`/`hyprctl`, panel | None; `media-playback` refused                                    |
+| Panel browser, pop-out windows (agents)    | Native panel            | Agent gets `unsupported` "runs without a desktop", not "no panel" |
+| Widget pop-out                             | Native window           | Refused ("requires a Wayland desktop")                            |
+
+The exact refusals, the options it cannot be combined with and its
+requirements are in the [desktop protocol](../src/desktop/README.md#running-without-a-desktop).
+`test/unit/headless-listener.test.ts` plays this table against a real
+`src/cli.ts --headless` process, its control socket and a real gateway, with a
+`PATH` that holds only `node` and `flock` (no desktop program) and the
+synthetic Claude Code fixture as the agent (`test/headless-fixture.ts`). The
+agent-tool rows (panel browser, pop-out windows) use the runtime in-process
+with `headless: true`. `test/shell/headless.test.ts` (in `npm run test:shell`)
+plays the user's path in the built browser shell against the same processes:
+pair, Resume refused, start a typed conversation, follow up, Stop, close and
+reopen.
+
 ## Self-wake scheduling
 
 The backend-owned one-shot scheduler is under `src/agents/wakes/`, independent
