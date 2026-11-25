@@ -773,11 +773,13 @@ The gateway's part ([`relay.ts`](relay.ts) `listenerSelected`):
    that conversation as a click in its list would, but only while it still
    shows `from`, and for a go-to only while its order revision is still
    `orderRevision` and the conversation is listed.
-4. While the connection's stream is open, a `panel-state` the gateway
-   refuses as malformed (before it reaches the listener) is followed by the
-   bounded `report-refused` notice for no conversation, so the listener never
-   keeps the previous selection as where this page's speech goes. A
-   connection without an open stream is answered exactly as before.
+4. A `panel-state` the gateway refuses as malformed (before it reaches the
+   listener) still means the page moved on. Once the connection has started
+   a stream, it is followed at once by the bounded `report-refused` notice
+   for no conversation; before that it is remembered and the notice is sent
+   just before the first `audio-start`. So the listener never keeps the
+   previous selection as where this page's speech goes, and a connection
+   that never listens is answered exactly as before.
 
 **What a paired device can now steer.** Nothing a paired device may reach
 changes: it could already select any open conversation in its own view and

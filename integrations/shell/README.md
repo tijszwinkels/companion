@@ -3012,7 +3012,8 @@ navigation, type a phrase into the demo's terminal and press Enter ("go to
 session 2", "quick question why is the sky blue", or a follow-up such as
 "please make it shorter"): the next utterance a browser hears is recognised
 as that phrase and handled by the real processors, in the conversation that
-tab shows. Ctrl+C stops
+tab shows. Say it in one go: when speech resumes after a short
+pause, the joined utterance is recognised again as words for its loudness. Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
 picks another port.

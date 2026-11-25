@@ -370,6 +370,11 @@ export class DesktopRuntime {
   private readonly remoteClients = new Map<number, RemoteClient>();
   // Allocates RemoteClient.viewRevision values, unique across connections.
   private remoteViewRevision = 0;
+  // The order of open conversations (IDs and revision) as last seen, and
+  // when it last changed (`performance.now()`): a browser's buffered "go to
+  // session N" is refused when the order changed after its sound arrived.
+  private lastOrderKey = '';
+  private orderChangedAt = 0;
   // Desktop connections that reported panel state, with the fingerprint of
   // the `agent-view-actions` last sent to each (see publishViewAgentActions).
   private readonly viewActionKeys = new Map<number, string>();
@@ -515,6 +520,7 @@ export class DesktopRuntime {
     });
     options.agents?.setViewers({ showsVisibly: (id) => this.showsVisibly(id) });
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
+      this.noteOrderChange();
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
       }
@@ -1438,6 +1444,19 @@ export class DesktopRuntime {
     this.advanceRemoteView(remote);
   }
 
+  /** Record when the order of open conversations (or its membership) changed. */
+  private noteOrderChange(): void {
+    const order = this.options.agents?.order();
+    if (!order) {
+      return;
+    }
+    const key = JSON.stringify([order.revision, order.ids]);
+    if (key !== this.lastOrderKey) {
+      this.lastOrderKey = key;
+      this.orderChangedAt = performance.now();
+    }
+  }
+
   /** Invalidate speech captured for this connection's view until now. */
   private advanceRemoteView(remote: RemoteClient): void {
     remote.viewRevision = ++this.remoteViewRevision;
@@ -1466,6 +1485,7 @@ export class DesktopRuntime {
       order: agents?.order(),
       isOpen: (id) => agents?.has(id) === true,
       heardAt: browsers?.heardAt(streamId),
+      orderChangedAt: this.orderChangedAt,
     });
     return { ...context, ...agents?.interaction(context.agentSessionId) };
   }

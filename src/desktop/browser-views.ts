@@ -71,6 +71,12 @@ export function browserInteraction(input: {
    * stale, exactly as if the view had changed after speech end.
    */
   heardAt: number | undefined;
+  /**
+   * When the order of open conversations (or its membership) last changed
+   * (`performance.now()`). Numbers are counted in the order the speaker saw:
+   * a change after the sound arrived refuses "go to session N".
+   */
+  orderChangedAt: number;
 }): Omit<InteractionContext, 'agentChoices' | 'agentRunId' | 'agentConversation'> {
   const agentView = {
     kind: 'browser',
@@ -88,16 +94,19 @@ export function browserInteraction(input: {
     };
   }
 
-  let id = '';
-  if (view.selection && input.isOpen(view.selection)) {
-    id = view.selection;
-  }
-
   // Stale from the start: no delivery, no navigation and no started
-  // conversation shown can match this revision or token.
+  // conversation shown can match this revision or token. The conversation
+  // the tab shows now is not the one the speaker saw, so it is not named
+  // at all: none of its text reaches the intent request.
   const stale = input.heardAt !== undefined && view.viewChangedAt > input.heardAt;
   const revision = stale ? -1 : view.viewRevision;
-  const token = stale ? 'browser:stale' : navigationToken(view);
+  const orderStale = input.heardAt !== undefined && input.orderChangedAt > input.heardAt;
+  const token = stale || orderStale ? 'browser:stale' : navigationToken(view);
+
+  let id = '';
+  if (!stale && view.selection && input.isOpen(view.selection)) {
+    id = view.selection;
+  }
 
   let agentNavigation: InteractionContext['agentNavigation'];
   if (input.order) {

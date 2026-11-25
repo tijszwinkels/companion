@@ -856,14 +856,19 @@ agent conversation or its focus changed"). For a browser's utterance the
 same check uses that connection's own **view revision**, which advances on
 every change of its reported selection (also away and back), when one of its
 reports is refused and its selection dropped (also a report the gateway
-itself refuses as malformed while the stream is open), when its conversation closes, and when its page
+itself refuses as malformed), when its conversation closes, and when its page
 has gone while its requests still drain (`withdraw-visibility`); a closed
 connection has no view at all. A browser's sound can wait for the voice
 detector (up to five seconds, for example while the detector loads), so the
 view is the one the tab showed when the sound at speech end **arrived**: if
 the view changed after that, the utterance counts as changed since speech
 end (the piece being read gives the time, so a change at most one piece,
-100 ms, before the speech end can still count as before it). Desktop changes do not
+100 ms, before the speech end can still count as before it). Such an
+utterance names no conversation at all, so none of the later conversation's
+title or text reaches the intent request. In the same way, a "go to session
+N" whose sound arrived before the order of open conversations (or its
+membership) last changed is refused: N is counted in the order the speaker
+saw. Desktop changes do not
 affect it, and a browser's changes do not affect the computer's utterances.
 The stream that heard the utterance may end meanwhile: accepted speech
 continues (as everywhere), and the tab still shows what the speaker saw. Its
@@ -915,7 +920,14 @@ Previous sessions (both report no conversation), can still select; an
 still reaches the tab that heard the speech; and a conversation a browser's
 speech started carries `openInBackground: true` to every client, as
 conversations started from a paired device's typed request or by an agent
-already do (remote clients ignore it).
+already do (remote clients ignore it). A browser's stop and choice
+identities (the running turn, the offered choices) are read at speech end
+like the desktop's, so with a detector that is seconds behind, "stop" can
+reach a turn that started in the same conversation after the words were
+spoken (the desktop has the same timing, with less delay). A visit away
+from Activity that the gateway refuses for its request rate, followed by a
+return to Activity, leaves a pending go-to valid (the tab is back on what it
+showed at speech end).
 
 Left out on purpose: speech from the computer's microphone following a
 browser on the same machine (switch the computer's microphone off and Listen

@@ -81,14 +81,21 @@ async function createWorld() {
   // (that bound is tested in remote-audio.test.ts).
   const fixture = await remoteFixture({ gateway: { audioClock: () => performance.now() * 100 } });
   const { desktop, sessions } = fixture;
+  const detected: { id: string; conversation?: string }[] = [];
 
   const microphones = microphonesFixture(desktop.runtime, desktop.pause, {
     holdTranscriptions: true,
     // Cases wait between utterances; the stream must not end as stalled.
     maximumLagMs: 600_000,
     phrases,
-    detect: async (input) =>
-      input.interaction?.agentSessionId ? 'CONTINUE_OPEN_AGENT_CONVERSATION' : 'IGNORE',
+    detect: async (input) => {
+      // What the intent request would name: the conversation and its text.
+      detected.push({
+        id: input.interaction?.agentSessionId ?? '',
+        conversation: input.interaction?.agentConversation?.title,
+      });
+      return input.interaction?.agentSessionId ? 'CONTINUE_OPEN_AGENT_CONVERSATION' : 'IGNORE';
+    },
     processors: (router, activity) => {
       const log = () => {};
       new StartCodingAgentSession({ sessions }, log, false, activity).subscribe(router);
@@ -239,6 +246,8 @@ async function createWorld() {
     fixture,
     sessions,
     microphones,
+    detected,
+    browser,
     ids: { x, y, z },
     a,
     b,
@@ -751,12 +760,68 @@ test('sound that waited for the voice detector counts from when it arrived', asy
     await setup.deliver();
     await setup.settled();
     assert.deepEqual(setup.followedUp(), []);
+    // Z's title and text were not part of the intent request either.
+    assert.deepEqual(setup.detected, [{ id: '', conversation: undefined }]);
 
     // A later utterance, heard while A shows Z, goes to Z.
     await setup.say(setup.a, 'follow-up');
     await setup.deliver();
     await setup.settled();
     assert.deepEqual(setup.followedUp(), [setup.ids.z]);
+  } finally {
+    await setup.close();
+  }
+});
+
+test('a buffered "go to session N" is refused when the order changed after its sound arrived', async () => {
+  const setup = await createWorld();
+  try {
+    const detector = setup.microphones.detectors[0];
+    let release!: () => void;
+    detector.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    for (const piece of pieces(utterance(markers['go to 3']))) {
+      setup.a.phone.socket.send(piece);
+    }
+    await waitFor(() => detector.held > 0, 5000);
+    await setup.shows(setup.a.phone, setup.ids.y);
+    // Another device moves Z first: "session 3" is now Y.
+    setup.sessions.move(setup.ids.z, setup.ids.x, setup.sessions.order().revision);
+    detector.gate = undefined;
+    release();
+
+    await waitFor(() => setup.microphones.transcriptions.length === 1, 5000);
+    await setup.deliver();
+    await setup.settled();
+    assert.deepEqual(setup.selects(setup.a.phone), []);
+  } finally {
+    await setup.close();
+  }
+});
+
+test('a selection report refused by the gateway before listening still ends the old target', async () => {
+  const setup = await createWorld();
+  try {
+    // Browser C reports X, then a report the gateway refuses (it moved on),
+    // and only then starts listening: its speech must not reach X.
+    const { token } = await setup.fixture.pair('Browser C');
+    const phone = await setup.fixture.phone(token, setup.fixture.origin, true);
+    await phone.engine('state');
+    await setup.shows(phone, setup.ids.x);
+    const refused = await setup.request(phone, {
+      action: 'panel-state',
+      id: setup.ids.z.toUpperCase(),
+      visible: true,
+    });
+    assert.equal(refused.type, 'error');
+    const answer = await setup.request(phone, { action: 'audio-start' });
+    assert.equal(answer.type, 'result', JSON.stringify(answer));
+
+    await setup.say({ phone, streamId: answer.result.streamId }, 'follow-up');
+    await setup.deliver();
+    await setup.settled();
+    assert.deepEqual(setup.followedUp(), []);
   } finally {
     await setup.close();
   }

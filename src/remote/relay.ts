@@ -224,6 +224,14 @@ export class Relay {
    */
   private reportedSelection = '';
   private reportedVisible = false;
+  /**
+   * Speech following this page (src/remote/README.md, "Speech follows the
+   * device that recorded it"): whether this connection has opened an audio
+   * stream (its speech may still be on its way), and whether a selection
+   * report was refused as malformed and not followed by an accepted one.
+   */
+  private listened = false;
+  private selectionUnresolved = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   /**
    * Whether this connection is a draft host (the client asked with
@@ -347,8 +355,8 @@ export class Relay {
       // notice (sent only when it lowers what the listener holds) ends it.
       // A page that does not listen is answered exactly as before.
       const action = (value as { action?: unknown } | null)?.action;
-      if (action === 'panel-state' && this.audio.phase === 'open') {
-        this.reportRefused('');
+      if (action === 'panel-state') {
+        this.selectionRefused();
       }
       return;
     }
@@ -516,6 +524,13 @@ export class Relay {
     // The listener names a listening browser after its paired device. The
     // client cannot send this field (protocol.ts); the gateway adds it.
     if (request.action === 'audio-start') {
+      // A refused selection report before listening: the listener learns
+      // that the earlier selection has ended before the stream starts.
+      this.listened = true;
+      if (this.selectionUnresolved) {
+        this.selectionUnresolved = false;
+        this.reportRefused('');
+      }
       const deviceName = this.options.deviceName ?? 'Paired device';
       this.writeUpstream({ ...fields, deviceName, requestId: upstreamId });
       return;
@@ -533,6 +548,7 @@ export class Relay {
     if (request.action === 'panel-state') {
       this.reportedSelection = request.id;
       this.reportedVisible = request.visible === true;
+      this.selectionUnresolved = false;
     }
     this.writeUpstream({ ...fields, ...draftHost, requestId: upstreamId });
   }
@@ -558,6 +574,22 @@ export class Relay {
    * listener never waits on it and takes no slot for it; nobody waits for its
    * reply. The client's next accepted report replaces its effect.
    */
+  /**
+   * A selection report the gateway cannot pass on (malformed) still means
+   * the page moved on. Once this connection has listened, the listener must
+   * not keep the previous selection as where its speech goes: the bounded
+   * refusal notice ends it at once. Before that, it is remembered and sent
+   * just before the first `audio-start`, so a page that never listens is
+   * answered exactly as before.
+   */
+  private selectionRefused(): void {
+    if (this.listened) {
+      this.reportRefused('');
+      return;
+    }
+    this.selectionUnresolved = true;
+  }
+
   private reportRefused(id: string): void {
     if (!this.ready) {
       const marker = refusedReportMarker + id;
