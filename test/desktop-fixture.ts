@@ -118,6 +118,8 @@ export async function desktopFixture(
     mediaPause?: boolean;
     sounds?: boolean;
     preview?: boolean;
+    /** Run as started with `--headless` (no desktop). */
+    headless?: boolean;
     cleanup?: TranscriptionCleanupSetting;
     /** Defaults to a policy that is already on, as before capture storage. */
     captureStorage?: CaptureStoragePolicy;

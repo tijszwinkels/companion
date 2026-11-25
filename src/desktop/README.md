@@ -948,6 +948,123 @@ browser on the same machine (switch the computer's microphone off and Listen
 here on in that browser instead), choosing a target by voice other than "go
 to session N", and a per-device setting for any of this.
 
+### Running without a desktop
+
+`npm start -- --headless` starts the listener on a machine without a desktop
+(a server or a VM), reached only through the gateway from a browser. Without
+the option nothing changes.
+
+**Rule.** Everything that serves conversations stays: the control socket
+(for the gateway), the conversations and their store, Previous sessions,
+widgets and their private socket, agents and their wake timers, the
+same-user session API when asked for. Everything that touches the computer's
+own desktop is absent: its microphone, screenshots of a window, typing into
+an application, sounds, media pause, the panel browser and pop-out windows.
+An absent ability is never a crash, a hang or a silent nothing: a request for
+it is refused with a reason starting "This Companion runs without a desktop"
+(for any client, desktop or remote), or the state says it honestly. Speech
+(voice detection, recognition, intents) is not started in this mode yet.
+
+| Ability                                                | With a desktop                          | Without a desktop: what the user sees                                                                                                             | Without a desktop: what an agent gets                                                                                                                            |
+| ------------------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed conversations (start, send, Stop, close, reopen) | As described in this guide              | The same, from a paired browser through the gateway                                                                                               | The same turns, in the agent directory                                                                                                                           |
+| Conversation store, Previous sessions, wakes           | Yes                                     | The same                                                                                                                                          | The same session tools and wake timers                                                                                                                           |
+| Widgets inline, pinned, session applications           | Yes                                     | The same, on the gateway's frame origin; the widget renderer is headless Chromium in its sandbox                                                  | The same widget tools                                                                                                                                            |
+| Widget pop-out window                                  | A native Chromium window                | Refused: "Widget pop-out requires a Wayland desktop" (only the native panel offers it)                                                            | —                                                                                                                                                                |
+| Listening (the computer's microphone, speech)          | On, with Pause and Resume               | Listening shows **Paused** from the start; Resume is refused: "This Companion runs without a desktop and has no microphone: listening stays off." | No spoken input                                                                                                                                                  |
+| The computer's microphone switch                       | Offered (`microphones.computer`)        | Not offered (`microphones` absent); `set-computer-microphone` is refused: "… and has no microphone of its own."                                   | —                                                                                                                                                                |
+| Listen here (a browser's microphone)                   | With the gateway's `--allow-microphone` | Not offered yet (`microphones` absent); `audio-start` is refused: "Listening here is not available"                                               | —                                                                                                                                                                |
+| Record into the text box                               | The desktop panel                       | Refused: "… and has no microphone to record with." (`start-recording`, `stop-recording`, `recording-append-result`)                               | —                                                                                                                                                                |
+| Sound feedback                                         | Cues through `pw-play`                  | The switch stays off; `toggle-sounds` is refused: "… and has no sound feedback."                                                                  | —                                                                                                                                                                |
+| Typing into applications                               | `wtype` into the focused window         | Refused: "This Companion runs without a desktop: it cannot type into applications." (`paste`, `submit-utterance`)                                 | —                                                                                                                                                                |
+| Screenshots of a window                                | With each utterance, and at start       | None are taken (no utterances); typed conversations never carried one                                                                             | Conversations start without a screenshot                                                                                                                         |
+| Media pause                                            | Reported by the native panel            | `mediaPauseAvailable: false`; `media-playback` is refused: "… it does not pause for media playback."                                              | —                                                                                                                                                                |
+| Panel browser                                          | The native panel opens the page         | —                                                                                                                                                 | Not opened: "this Companion panel has no built-in browser. This Companion runs without a desktop; it has no panel browser." (instead of "no panel is connected") |
+| Pop-out conversation windows                           | The native panel                        | —                                                                                                                                                 | The tool is not offered (no native panel); a request still answers `unsupported`: "… it has no conversation windows."                                            |
+| Intent and shortcut switches                           | Shown in settings                       | None are shown (no intent routing runs)                                                                                                           | —                                                                                                                                                                |
+
+`--headless` cannot be combined with options that need the desktop or speech:
+`--text`, `--wav`, `--device`, `--seconds`, `--preview`, `--graph`,
+`--paused`, `--no-desktop`, `--no-startup-capture` and `--phone`.
+`--no-sounds` is accepted and changes nothing. The control socket still needs
+`XDG_RUNTIME_DIR`, and the locks need `flock`; the widget renderer needs `bwrap` and Chromium at
+`/usr/lib/chromium/chromium`, as on the desktop. The transcription cleanup
+switch is neither loaded nor offered.
+
+The runtime directory holds the control socket that the gateway finds by
+its path, so a headless start refuses one that another user could replace
+(`assertPrivateDirectoryPath` in `src/remote/private-directory.ts`, the same
+rule as the same-user session API's). `XDG_RUNTIME_DIR` must be set, absolute
+and canonical; no component of it may be a symbolic link; every directory
+above it must be owned by this user or root and writable by nobody else,
+unless it is root-owned and sticky (like `/tmp`); and the directory itself
+must be a real directory owned by this user and closed to everyone else
+(`chmod 700`). A trailing slash is refused, and `/` itself counts as an
+ancestor. The ordinary `/run/user/<uid>` passes. The check is made by
+path once at start. The default start does not make it.
+
+The browser reaches it through the gateway, started separately with the same
+`XDG_RUNTIME_DIR` and serving the browser shell instead of the phone app; its
+transport rules are the same as with a desktop (see the
+[gateway guide](../remote/README.md)). For example, on loopback with widget
+frames on a second port:
+
+```sh
+npm run shell:build
+bin/companion-remote serve --app-directory integrations/shell/dist \
+  --frames-listen 127.0.0.1:8788 --frame-origin http://127.0.0.1:8788
+bin/companion-remote pair   # in a second terminal: a one-time code for the browser
+```
+
+Both ports stay on the server's loopback. A browser on another computer
+reaches them with the same port numbers through a tunnel bound to that
+computer's loopback, for example
+`ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:8787:127.0.0.1:8787 -L 127.0.0.1:8788:127.0.0.1:8788 server`,
+and opens `http://127.0.0.1:8787/`. The page then has the gateway's loopback
+origin, and widget frames load from `http://127.0.0.1:8788`; forwarding only
+the first port leaves conversations working and widgets blank.
+
+`ExitOnForwardFailure=yes` covers the local side only: `ssh` exits instead of
+running on when it cannot set up a requested forward, for example because a
+local port is already in use. It does not check the server side: the forwards
+are set up even when nothing listens on the server's ports (the gateway or
+its frame listener not running), and each connection through them then fails
+on its own while `ssh` keeps running. Both server listeners must be running.
+
+The gateway's loopback ports are not private on the server: while the
+gateway is down, another user of that machine could bind them and a
+reconnecting tab would hand its device token to them (see "TCP route" in the
+[gateway guide](../remote/README.md#reaching-it-from-a-phone-over-tailscale)).
+This setup assumes a server whose other users are trusted.
+
+Each server needs its own gateway origin, so its own local port numbers
+(`--port`, `--frames-listen` and `--frame-origin`, the same numbers on both
+ends of its tunnel). The browser keeps a pairing per origin, and an open tab
+reconnects to its port by itself: if that port later leads to another
+server, the tab sends the first server's device token to it, and the
+refusal ends the tab's pairing. Never reuse a server's ports for another
+server, not even from another browser profile.
+
+Two desktop abilities are left as they are, because only a local desktop
+panel or an explicit opt-in reaches them: a widget pop-out still opens when
+the listener inherits a working `WAYLAND_DISPLAY` and a local panel asks for
+one (the gateway never does), and the opt-in Claude Code desktop tools
+(`claude-tools.json`, see `src/agents/claude/parity/README.md`) are still
+offered and fail without a compositor.
+
+Known limit: a browser tab that was already open while the listener ran with
+a desktop can keep showing **Listen here** switched on after the listener is
+restarted without one. It then says it will listen again on Resume, but
+Resume is refused and its microphone stays closed. Reloading the tab clears
+the stale switch.
+
+Whether anything can listen is decided in one place
+(`DesktopRuntime.nothingCanListen`): without a desktop and without attached
+microphones it is true, so the runtime shows listening as paused at start and
+refuses Resume. When listening browsers are attached without a desktop
+(later), Pause and Resume apply to them as one Pause for everything, and the
+microphones state reports no computer microphone while browsers may listen.
+
 ## Agent sessions
 
 The panel tab controls use a local 1.25× scale on top of the host theme. At the
