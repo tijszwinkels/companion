@@ -826,3 +826,44 @@ test('a selection report refused by the gateway before listening still ends the 
     await setup.close();
   }
 });
+
+test('a page whose stream never opened is answered as before after a refused report', async () => {
+  const setup = await createWorld();
+  try {
+    // Listening is paused: C's audio-start is refused, so C never listens.
+    const { token } = await setup.fixture.pair('Browser C');
+    const phone = await setup.fixture.phone(token, setup.fixture.origin, true);
+    await phone.engine('state');
+    await setup.shows(phone, setup.ids.x);
+    await phone.engine(
+      'remote-agent-actions',
+      (message) => message.actions.sessionId === setup.ids.x,
+    );
+    setup.fixture.desktop.pause.toggle();
+    const answer = await setup.request(phone, { action: 'audio-start' });
+    assert.equal(answer.type, 'error', JSON.stringify(answer));
+
+    // A malformed report: refused by the gateway, and nothing reaches the
+    // listener, exactly as before (C keeps the controls of X).
+    const before = phone.messages.length;
+    const refused = await setup.request(phone, {
+      action: 'panel-state',
+      id: setup.ids.z.toUpperCase(),
+      visible: true,
+    });
+    assert.equal(refused.type, 'error');
+    await setup.settled();
+    const cleared = (phone.messages as Json[])
+      .slice(before)
+      .filter(
+        (message) =>
+          message.type === 'engine' &&
+          message.message.type === 'remote-agent-actions' &&
+          message.message.actions.sessionId === '',
+      );
+    assert.deepEqual(cleared, []);
+    setup.fixture.desktop.pause.toggle();
+  } finally {
+    await setup.close();
+  }
+});

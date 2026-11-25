@@ -2,9 +2,12 @@
 
 Companion hears through one or more microphones at the same time: the
 computer's own microphone, and one more for every paired browser that switched
-on **Listen here** (browser shell). Everything after the microphone is shared
-and unchanged: speech from a browser is recognised, routed and acted on exactly
-as speech at the computer (decisions D1–D8 of the browser voice design). This
+on **Listen here** (browser shell). Recognition, routing and what speech may
+do are shared: speech from a browser is recognised, routed and acted on as
+speech at the computer (decisions D1–D8 of the browser voice design), except
+that the conversation it addresses, and the view "go to session N" moves,
+follow the device that recorded it ([the
+rule](../../desktop/README.md#speech-follows-the-device-that-recorded-it)). This
 directory holds the listening side; the pipeline's part is in
 [`src/core/pipeline.ts`](../../core/pipeline.ts), the control-socket protocol in
 [the desktop guide](../../desktop/README.md#microphones-and-listening-browsers)

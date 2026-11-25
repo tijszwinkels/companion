@@ -360,6 +360,11 @@ export class Relay {
       }
       return;
     }
+    // A valid selection report received after a refused one says where the
+    // page is now (in the client's order, whenever it is forwarded).
+    if (parsed.request.action === 'panel-state') {
+      this.selectionUnresolved = false;
+    }
 
     // Ending a stream only ever frees resources: it never waits for the
     // request rate, so a client can always stop listening.
@@ -524,13 +529,6 @@ export class Relay {
     // The listener names a listening browser after its paired device. The
     // client cannot send this field (protocol.ts); the gateway adds it.
     if (request.action === 'audio-start') {
-      // A refused selection report before listening: the listener learns
-      // that the earlier selection has ended before the stream starts.
-      this.listened = true;
-      if (this.selectionUnresolved) {
-        this.selectionUnresolved = false;
-        this.reportRefused('');
-      }
       const deviceName = this.options.deviceName ?? 'Paired device';
       this.writeUpstream({ ...fields, deviceName, requestId: upstreamId });
       return;
@@ -548,7 +546,6 @@ export class Relay {
     if (request.action === 'panel-state') {
       this.reportedSelection = request.id;
       this.reportedVisible = request.visible === true;
-      this.selectionUnresolved = false;
     }
     this.writeUpstream({ ...fields, ...draftHost, requestId: upstreamId });
   }
@@ -578,9 +575,10 @@ export class Relay {
    * A selection report the gateway cannot pass on (malformed) still means
    * the page moved on. Once this connection has listened, the listener must
    * not keep the previous selection as where its speech goes: the bounded
-   * refusal notice ends it at once. Before that, it is remembered and sent
-   * just before the first `audio-start`, so a page that never listens is
-   * answered exactly as before.
+   * refusal notice ends it at once. Before that, it is remembered (until a
+   * valid report arrives from the client) and sent when the first stream
+   * opens, before the client is told it may send sound, so a page that never
+   * opens a stream is answered exactly as before.
    */
   private selectionRefused(): void {
     if (this.listened) {
@@ -779,6 +777,14 @@ export class Relay {
 
     const rate = this.options.audioStreams!.rate(this.options.deviceId);
     this.audio = { phase: 'open', streamId, rate };
+    // The page listens from now on. A selection report refused before this
+    // ends the listener's selection now, before the client may send any
+    // sound (it waits for this answer), so no speech can follow it.
+    this.listened = true;
+    if (this.selectionUnresolved) {
+      this.selectionUnresolved = false;
+      this.reportRefused('');
+    }
     this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
   }
 

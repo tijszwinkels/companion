@@ -776,8 +776,9 @@ The gateway's part ([`relay.ts`](relay.ts) `listenerSelected`):
 4. A `panel-state` the gateway refuses as malformed (before it reaches the
    listener) still means the page moved on. Once the connection has started
    a stream, it is followed at once by the bounded `report-refused` notice
-   for no conversation; before that it is remembered and the notice is sent
-   just before the first `audio-start`. So the listener never keeps the
+   for no conversation; before that it is remembered (until the client sends
+   a valid report) and the notice is sent when the first stream opens,
+   before the client is told it may send sound. So the listener never keeps the
    previous selection as where this page's speech goes, and a connection
    that never listens is answered exactly as before.
 

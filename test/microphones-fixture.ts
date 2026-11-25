@@ -13,6 +13,7 @@ import { NetworkAudioSource } from '../src/sensors/audio/network-source.ts';
 import { SpeechIndicator } from '../src/sensors/audio/speech-indicator.ts';
 import type { VoiceActivityDetector } from '../src/sensors/audio/vad.ts';
 import type { Activity } from '../src/core/activity.ts';
+import { Ignore } from '../src/processors/ignore.ts';
 import type { Detector } from '../src/core/router.ts';
 import { computerMicrophone } from '../src/core/pipeline.ts';
 import { processor, screenshot, testDetector, testSensors } from './helpers.ts';
@@ -159,9 +160,19 @@ export function microphonesFixture(
   const detect: Detector['detect'] = options.processors
     ? (options.detect ?? (async () => 'IGNORE'))
     : async () => 'SEND';
-  const router = new UserSensorRouter({ detector: testDetector({ detect }) }, () => {});
-  processor('IGNORE').subscribe(router);
   const activity = runtime.activity;
+  // With the real processors (`processors`), the router reports to the
+  // runtime's Activity as in src/cli.ts, and IGNORE is the real processor,
+  // so every utterance ends with an outcome. The recording SEND setup is
+  // unchanged.
+  const router = options.processors
+    ? new UserSensorRouter({ detector: testDetector({ detect }) }, () => {}, activity)
+    : new UserSensorRouter({ detector: testDetector({ detect }) }, () => {});
+  if (options.processors) {
+    new Ignore(() => {}, activity).subscribe(router);
+  } else {
+    processor('IGNORE').subscribe(router);
+  }
   if (options.processors) {
     options.processors(router, activity);
   } else {

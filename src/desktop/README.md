@@ -927,7 +927,13 @@ reach a turn that started in the same conversation after the words were
 spoken (the desktop has the same timing, with less delay). A visit away
 from Activity that the gateway refuses for its request rate, followed by a
 return to Activity, leaves a pending go-to valid (the tab is back on what it
-showed at speech end).
+showed at speech end). Sound also waits briefly in the browser before it
+is sent (its 100 ms piece, and the page's own work); a click in the tab
+within that moment after the speech end can count as before it, as a click
+within the voice detector's own delay does on the desktop. And when another
+device reorders the conversations while the browser is still speaking, and
+the tab receives that new order before the `agent-select`, "go to session N"
+counts N in the new order (the desktop's navigation has the same timing).
 
 Left out on purpose: speech from the computer's microphone following a
 browser on the same machine (switch the computer's microphone off and Listen
