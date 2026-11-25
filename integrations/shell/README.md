@@ -873,10 +873,14 @@ own first reading.
 
 A paired browser can be one more microphone of Companion. While **Listen
 here** is on, the browser's microphone goes to the listener on the
-computer, and its speech is handled exactly as speech at the computer: it
-goes to the conversation selected there, and it can do there whatever speech
-can (also type into the application in front). Every microphone that is on
-feeds the same queue. Pause is one state for all of them. The design is in
+computer, and its speech is handled as speech at the computer, with one
+difference: **speech goes to whatever is open on the device that recorded
+it.** What this tab's microphone hears goes to the conversation this tab
+shows, "go to session N" selects conversation N in this tab, and a
+conversation this tab's speech starts is shown in this tab (see [Rule:
+spoken navigation](#rule-spoken-navigation)). It can still do on the
+computer whatever speech can (also type into the application in front).
+Every microphone that is on feeds the same queue. Pause is one state for all of them. The design is in
 the gateway's [listening browsers](../../src/remote/README.md#listening-browsers)
 and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening-browsers).
 
@@ -1009,6 +1013,59 @@ Further rules:
 Sound is never dropped inside a stream: what was handed to the socket is
 delivered, or the connection, and with it the stream, ends.
 
+### Rule: spoken navigation
+
+`src/listen/spoken-selection.ts`. The listener decides where this tab's
+speech goes ([the desktop
+protocol](../../src/desktop/README.md#speech-follows-the-device-that-recorded-it)):
+a follow-up goes to the conversation this tab reported as selected (also
+while the tab is in the background or the settings screen covers it), and
+nowhere when it shows none. For a spoken "go to session N", and for a
+conversation this tab's speech started, the gateway sends this tab an
+`agent-select` message (only while this tab's own stream is open; never to a
+tab that does not listen, nor to the desktop's view).
+
+The page then **acts exactly like the reader's own click on that
+conversation in the list**: it leaves the settings screen and selects the
+conversation. A focused text box does not stop it, and unsent text stays with
+its conversation, as on a click (it is there again on return). **After a
+spoken switch nothing in the page has the keyboard focus**: a click moves the
+focus to what was clicked, speech does not, so whatever had the focus (a text
+box, a list button) is left first. Otherwise the chat page would hand a text
+box's focus to the next conversation's text box, and an Enter already on its
+way would send that conversation's unsent text, or activate a focused list
+button and switch back. Click or press Tab to type again. It refuses
+only what the desktop's own go-to refuses (`AgentSessionState.qml`: the
+navigation token, the order revision, the conversation listed): nothing
+happens when this tab no longer shows what it showed at speech end (`from`;
+also away and back is caught by the listener), when the order of
+conversations changed, or when the conversation is no longer listed. A send
+or a choice awaiting its answer does not stop it, as it does not stop the
+desktop's go-to (the desktop refuses only "pop out session N" then, which a
+browser does not offer). A started conversation is selected once it is
+listed, unless what is shown changed meanwhile (the rule of Start in
+Activity, `src/activity/select-started.ts`).
+
+| Case                                                                   | What happens                                                                                                   |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Follow-up spoken here; this tab shows Y, the desktop X                 | goes to Y                                                                                                      |
+| Follow-up spoken here; this tab shows Activity or Previous sessions    | no conversation: not delivered                                                                                 |
+| "Go to session 3" spoken here                                          | this tab selects conversation 3; the desktop stays                                                             |
+| … while the text box has the focus and holds unsent text               | selects it; the text stays with its conversation; nothing has the focus, so an Enter right after sends nothing |
+| … while a list button has the focus (after a click)                    | selects it; nothing has the focus, so an Enter right after does not switch back                                |
+| … while a send or a choice of the shown conversation awaits its answer | selects it (the send or choice continues there)                                                                |
+| … under the settings screen                                            | leaves the settings screen and selects it                                                                      |
+| … while the tab is in the background                                   | selects it there                                                                                               |
+| … after the reader selected another conversation meanwhile             | nothing                                                                                                        |
+| … after the order changed meanwhile, or the conversation closed        | nothing                                                                                                        |
+| "Pop out session 1" spoken here                                        | nothing (refused by the listener)                                                                              |
+| A quick question or new session spoken here                            | shown here once listed; the desktop keeps its view                                                             |
+| … after the reader selected another conversation meanwhile             | listed, not selected                                                                                           |
+| Speech heard by the computer's microphone, or by another device's tab  | this tab does not change                                                                                       |
+
+The Listen here row does not name the target conversation: the chat bar
+already shows which conversation this tab has open.
+
 ### The phone Connection's additions
 
 The shell uses the phone panel's `Connection`
@@ -1021,8 +1078,10 @@ unchanged:
 - `bufferedAmount`: the socket's `bufferedAmount` (0 without one), for the
   2-second rule.
 - `onUnrequestedMessage`: an optional listener for gateway messages that
-  answer no request and are not otherwise handled (`audio-ended`). Without
-  one, such messages are ignored as before.
+  answer no request and are not otherwise handled (`audio-ended`, and
+  `agent-select` for spoken navigation). Without one, such messages are
+  ignored as before; the phone panel sets none, and the gateway sends neither
+  to a connection that never opened a stream.
 
 ### Known limits and what is left out
 
@@ -1030,9 +1089,12 @@ unchanged:
   it twice. Switch one off (the computer's switch is for that).
 - Not built: spoken replies or sounds in the browser, Record in the shell,
   choosing among microphones on one device (the browser's own picker does
-  that), less data (Opus, skipping silence: about 115 MB an hour), speech
-  following the browser's selection, detecting the same sentence from two
-  microphones.
+  that), less data (Opus, skipping silence: about 115 MB an hour),
+  detecting the same sentence from two microphones, speech from the
+  computer's microphone following a browser on the same machine (switch the
+  computer's microphone off and Listen here on there instead), choosing a
+  target by voice other than "go to session N", and a per-device setting for
+  any of this.
 - No microphone found: the switch goes off with "No microphone found.
   Connect one, then switch Listen here on again." The page does not watch
   for a microphone being plugged in.
@@ -1077,6 +1139,20 @@ unchanged:
   origin and no policy violation, and the header with and without
   `--allow-microphone`. With COMPANION_SHELL_SCREENSHOTS set, it saves each
   state at 420 and 1280 px.
+- `spoken-selection-rules.test.ts` (Node) plays the spoken navigation rule
+  against a stand-in for the Store: from, order revision, listing, a started
+  conversation listed later, malformed messages.
+- `spoken-navigation.test.ts` runs the built shell in headless Chromium with
+  the fake audio device, the real gateway and a real listener with the real
+  processors: a spoken follow-up arrives in the conversation the tab shows
+  while the desktop fixture shows another, "go to session 3" switches the tab
+  (not the desktop fixture, not another device's tab) while the text box has
+  the focus and holds unsent text, which is still there on return, with
+  Enter pressed right after the switch sending nothing of the destination's
+  own unsent text (and no text box keeping the focus), the same after a click
+  in the list with Enter not switching back, "go to
+  session 1" under the settings screen, and a quick question shown in the tab
+  only.
 - `listen-soak.test.ts` (opt-in, COMPANION_LISTEN_SOAK_MINUTES) listens for
   that many minutes in a background tab and compares the pieces sent with
   the pieces expected.
@@ -1177,7 +1253,11 @@ switches means `inferenceEnabled` and `shortcutEnabled` are booleans on every
 intent. An older listener reports per intent only the combined `enabled`
 (for deciding from speech and its shortcut together, without
 `supportsInference`): each of its intents is shown as one read-only switch
-with that value ("Intent and shortcut together"). A refusal
+with that value ("Intent and shortcut together"). Each line shows the
+switch's value (On, Off, Always on), not the phone's "Needs conversation
+context": that availability describes what the desktop shows, the context of
+the computer's microphone, while this browser's own speech follows what this
+tab shows ([Rule: spoken navigation](#rule-spoken-navigation)). A refusal
 shows the Store's error toast. An unavailable switch stays focusable
 (`aria-disabled`, dimmed), so focus is never lost while an answer is on its
 way.
@@ -2941,7 +3021,14 @@ works (Resume first): what the browser hears appears in Activity as words
 for its loudness ("w3 w5"), named after the browser. No model or screen
 capture is involved. The microphone is used only when Listen here is
 switched on in the browser: its real sound then reaches the demo process,
-and is never stored (its entries say "Not saved"). Ctrl+C stops
+and is never stored (its entries say "Not saved"). To try spoken
+navigation, type a phrase into the demo's terminal and press Enter ("go to
+session 2", "quick question why is the sky blue", or a follow-up such as
+"please make it shorter"): the next utterance a browser hears is recognised
+as that phrase and handled by the real processors, in the conversation that
+tab shows. Its Settings switches apply to that speech (one router, as in the
+listener). Say it in one go: when speech resumes after a short
+pause, the joined utterance is recognised again as words for its loudness. Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
 picks another port.
@@ -3438,6 +3525,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/models/model-choice.ts`              | What the model picker shows and offers, without DOM access                    |
 | `src/models/ModelPicker.tsx`              | The model button and picker in the bar                                        |
 | `src/listen/listen-here.ts`               | Listen here's rule: when the microphone and the stream are open; sending      |
+| `src/listen/spoken-selection.ts`          | Spoken navigation: `agent-select` from this tab's speech, as a list click     |
 | `src/listen/capture.ts`                   | The browser's microphone, worklet, wake lock and tab-title mark               |
 | `src/listen/capture-worklet.ts`           | The AudioWorklet (built as `listen-worklet.js`): 100 ms pieces at 16 kHz      |
 | `src/listen/pcm-pieces.ts`                | Conversion to 16 kHz signed 16-bit pieces; the meter's level                  |

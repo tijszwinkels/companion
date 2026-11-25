@@ -33,6 +33,7 @@ import {
   maximumAudioStreams,
   mutatingActions,
   parseRemoteRequest,
+  type AgentSelectMessage,
   type AudioEndedMessage,
   type AudioEndReason,
   type GatewayMessage,
@@ -125,6 +126,9 @@ const listenerAudioEndReasons = new Set<AudioEndReason>([
 ]);
 
 const streamIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** A conversation ID (a UUID), as the listener creates them. */
+const sessionIdPattern = streamIdPattern;
 
 /**
  * This connection's audio stream: none; starting (its `audio-start` waits
@@ -220,6 +224,14 @@ export class Relay {
    */
   private reportedSelection = '';
   private reportedVisible = false;
+  /**
+   * Speech following this page (src/remote/README.md, "Speech follows the
+   * device that recorded it"): whether this connection has opened an audio
+   * stream (its speech may still be on its way), and whether a selection
+   * report was refused as malformed and not followed by an accepted one.
+   */
+  private listened = false;
+  private selectionUnresolved = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   /**
    * Whether this connection is a draft host (the client asked with
@@ -337,7 +349,21 @@ export class Relay {
     const parsed = parseRemoteRequest(value, { drafts: this.drafts });
     if (!parsed.ok) {
       this.sendPhone({ type: 'error', requestId: parsed.requestId, message: parsed.message });
+      // A selection report the gateway cannot pass on still means the page
+      // moved on: while this page listens, the listener must not keep the
+      // previous selection as where its speech goes. The bounded refusal
+      // notice (sent only when it lowers what the listener holds) ends it.
+      // A page that does not listen is answered exactly as before.
+      const action = (value as { action?: unknown } | null)?.action;
+      if (action === 'panel-state') {
+        this.selectionRefused();
+      }
       return;
+    }
+    // A valid selection report received after a refused one says where the
+    // page is now (in the client's order, whenever it is forwarded).
+    if (parsed.request.action === 'panel-state') {
+      this.selectionUnresolved = false;
     }
 
     // Ending a stream only ever frees resources: it never waits for the
@@ -545,6 +571,23 @@ export class Relay {
    * listener never waits on it and takes no slot for it; nobody waits for its
    * reply. The client's next accepted report replaces its effect.
    */
+  /**
+   * A selection report the gateway cannot pass on (malformed) still means
+   * the page moved on. Once this connection has listened, the listener must
+   * not keep the previous selection as where its speech goes: the bounded
+   * refusal notice ends it at once. Before that, it is remembered (until a
+   * valid report arrives from the client) and sent when the first stream
+   * opens, before the client is told it may send sound, so a page that never
+   * opens a stream is answered exactly as before.
+   */
+  private selectionRefused(): void {
+    if (this.listened) {
+      this.reportRefused('');
+      return;
+    }
+    this.selectionUnresolved = true;
+  }
+
   private reportRefused(id: string): void {
     if (!this.ready) {
       const marker = refusedReportMarker + id;
@@ -586,7 +629,10 @@ export class Relay {
     return this.phoneOpen && this.phone.readyState === this.phone.OPEN;
   }
 
-  private sendPhone(message: GatewayMessage | AudioEndedMessage, replaceable = false): void {
+  private sendPhone(
+    message: GatewayMessage | AudioEndedMessage | AgentSelectMessage,
+    replaceable = false,
+  ): void {
     if (!this.phoneIsOpen()) {
       return;
     }
@@ -731,6 +777,14 @@ export class Relay {
 
     const rate = this.options.audioStreams!.rate(this.options.deviceId);
     this.audio = { phase: 'open', streamId, rate };
+    // The page listens from now on. A selection report refused before this
+    // ends the listener's selection now, before the client may send any
+    // sound (it waits for this answer), so no speech can follow it.
+    this.listened = true;
+    if (this.selectionUnresolved) {
+      this.selectionUnresolved = false;
+      this.reportRefused('');
+    }
     this.sendPhone({ type: 'result', requestId, action: 'audio-start', result: { streamId } });
   }
 
@@ -872,6 +926,49 @@ export class Relay {
     this.sendAudioEnded(audio.streamId, reason);
   }
 
+  /**
+   * The listener asks this connection to show a conversation, because its
+   * own stream heard "go to session N" or started a conversation
+   * (src/remote/README.md, "Speech follows the device that recorded it").
+   * Passed on only while that stream is this connection's open stream and
+   * every field is well formed; otherwise dropped, so a connection that
+   * never streams, an ended stream or another device's stream never
+   * reaches the client. The stream ID itself is not passed on.
+   */
+  private listenerSelected(message: Record<string, unknown>): void {
+    const audio = this.audio;
+    if (!this.ready || audio.phase !== 'open' || message.streamId !== audio.streamId) {
+      return;
+    }
+
+    const id = message.id;
+    const from = message.from;
+    if (typeof id !== 'string' || !sessionIdPattern.test(id)) {
+      return;
+    }
+    if (typeof from !== 'string' || (from !== '' && !sessionIdPattern.test(from))) {
+      return;
+    }
+    // A browser has no pop-out windows: a presentation is never passed on.
+    if (message.presentation !== undefined) {
+      return;
+    }
+
+    if (message.started === true && message.orderRevision === undefined) {
+      this.sendPhone({ type: 'agent-select', id, from, started: true });
+      return;
+    }
+    const orderRevision = message.orderRevision;
+    if (
+      message.started === undefined &&
+      typeof orderRevision === 'string' &&
+      orderRevision.length > 0 &&
+      orderRevision.length <= 128
+    ) {
+      this.sendPhone({ type: 'agent-select', id, from, orderRevision });
+    }
+  }
+
   private sendAudioEnded(streamId: string, reason: AudioEndReason): void {
     const ended: AudioEndedMessage = {
       type: 'audio-ended',
@@ -947,6 +1044,14 @@ export class Relay {
 
     if (message.type === 'audio-ended') {
       this.listenerEndedAudio(message);
+      return;
+    }
+
+    if (message.type === 'agent-select') {
+      // Desktop navigation, never relayed as an engine event. Only the
+      // navigation of speech this connection's own open stream heard
+      // passes, as a gateway message of its own.
+      this.listenerSelected(message);
       return;
     }
 

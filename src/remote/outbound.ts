@@ -5,7 +5,7 @@
  * Reconnect hydration is always ordered, even for an incremental phone.
  */
 import type { WebSocket } from 'ws';
-import type { AudioEndedMessage, GatewayMessage } from './protocol.ts';
+import type { AgentSelectMessage, AudioEndedMessage, GatewayMessage } from './protocol.ts';
 
 export interface PhoneOutputLimits {
   queuedBytes: number;
@@ -37,7 +37,10 @@ export class PhoneOutput {
     },
   ) {}
 
-  send(message: GatewayMessage | AudioEndedMessage, replaceable = false): void {
+  send(
+    message: GatewayMessage | AudioEndedMessage | AgentSelectMessage,
+    replaceable = false,
+  ): void {
     if (this.closed) {
       return;
     }

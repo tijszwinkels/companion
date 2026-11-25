@@ -72,14 +72,27 @@ export type LabelPreviousResult =
 
 /** Optional feedback keeps the sensor pipeline independent of desktop services. */
 export interface Activity {
-  /** Copy interaction state and bounded conversation text at speech end. */
-  interactionContext?(): InteractionContext;
+  /**
+   * Copy interaction state and bounded conversation text at speech end.
+   * `microphone` names the microphone that heard the speech (the computer's
+   * or a listening browser's stream ID); absent for typed text and every
+   * caller from before. Only a browser's stream changes the view it is
+   * taken from (src/desktop/README.md, "Speech follows the device that
+   * recorded it").
+   */
+  interactionContext?(microphone?: string): InteractionContext;
   /** Recheck that the captured target still represents the same interaction. */
   interactionCurrent?(context: InteractionContext): boolean;
   /** Select a captured visible conversation only while its UI/order are current. */
   selectSession?(context: InteractionContext, index: number): boolean;
   /** Like selectSession, but show the conversation in its own pop-out window. */
   popOutSession?(context: InteractionContext, index: number): boolean;
+  /**
+   * A conversation was just started by speech from a listening browser
+   * (`context.agentView`): ask that browser tab, and only it, to show it.
+   * Returns whether the request was sent.
+   */
+  showStartedSession?(context: InteractionContext, id: string): boolean;
 
   /** Live VAD state, independent of work already queued for transcription. */
   speechChanged?(speaking: boolean): void;

@@ -41,9 +41,17 @@ export class StartedSelection {
   private readonly unsubscribe: () => void;
   private timer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Start watching what is shown: call before the start request is sent. */
-  constructor(store: Store) {
+  /** How the started conversation is selected; `Store.open` by default. */
+  private readonly open: (id: string) => void;
+
+  /**
+   * Start watching what is shown: call before the start request is sent.
+   * `open` selects the started conversation (by default `Store.open`); a
+   * spoken start passes the list's own click (listen/spoken-selection.ts).
+   */
+  constructor(store: Store, open?: (id: string) => void) {
     this.store = store;
+    this.open = open ?? ((id) => store.open(id));
     this.lastShown = shownKey(store.state);
     this.unsubscribe = store.subscribe(() => this.changed());
   }
@@ -98,7 +106,7 @@ export class StartedSelection {
     }
     // Finished first: the selection below changes what is shown.
     this.finish();
-    this.store.open(this.startedId);
+    this.open(this.startedId);
   }
 
   private finish(): void {

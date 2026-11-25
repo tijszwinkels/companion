@@ -358,6 +358,26 @@ export interface AudioEndedMessage {
 }
 
 /**
+ * Sent by the gateway to the connection whose audio stream heard a spoken
+ * "go to session N", or a spoken request that started a conversation
+ * (`started`): show conversation `id` in this tab, as a click on it in the
+ * list would, but only while this tab still shows `from` (what it reported at
+ * speech end; empty for no conversation). For a go-to, also only while the
+ * client's order revision is still `orderRevision` and `id` is listed; a
+ * started conversation may be listed a moment later. The listener sends it
+ * only for speech that this connection's own stream heard, and the gateway
+ * passes it only while that stream is this connection's open stream, so a
+ * connection that never streams never receives it. Declared apart from
+ * `GatewayMessage`, like `AudioEndedMessage`. See src/remote/README.md,
+ * "Speech follows the device that recorded it".
+ */
+export type AgentSelectMessage = {
+  type: 'agent-select';
+  id: string;
+  from: string;
+} & ({ orderRevision: string; started?: never } | { started: true; orderRevision?: never });
+
+/**
  * A session application as a remote client receives it: no `viewUrl` (the
  * listener's loopback view capability), `frameUrl` instead when the gateway
  * has a frame origin, and `chatAccess` without the send grant's ID.
