@@ -17,7 +17,7 @@ import {
 } from '../session-apps/types.ts';
 import { applicationChatSnapshot } from '../session-apps/chat.ts';
 import type { ApplicationSendReceipt } from '../session-apps/sending.ts';
-import type { UserSensorFrame, Log } from '../core/frame.ts';
+import type { SensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import {
   agentDirectory,
@@ -1443,7 +1443,7 @@ export class AgentSessions implements InspectableModule {
    * Remote history starts preserve the saved frame but suppress desktop reveal.
    */
   start(
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     profile: AgentProfile = 'coding',
     harness?: AgentHarness,
@@ -1493,7 +1493,7 @@ export class AgentSessions implements InspectableModule {
   private create(
     request: {
       text: string;
-      screenshot?: UserSensorFrame['screenshot'];
+      screenshot?: SensorFrame['screenshot'];
       /** The frame's admission; absent (history recovery) is decided now. */
       storage?: CaptureAdmission;
       frameId?: number;

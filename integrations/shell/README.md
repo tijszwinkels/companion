@@ -900,6 +900,8 @@ and the [desktop protocol](../../src/desktop/README.md#microphones-and-listening
   so the computer's microphone can be off while a browser beside it
   listens), a row for **This browser** with the Listen here switch, one row
   per other browser that listens now, and a notice that explains the state.
+  A listener without a desktop has no microphone of its own
+  (`microphones.computerAvailable: false`): then there is no Computer row.
 - **The mark** in the bar above the chat while Listen here is on, on every
   page (the settings screen too), and in Activity's header, which covers
   the bar where Activity lies over the chat. It is red with a level meter

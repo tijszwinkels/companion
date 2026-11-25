@@ -1,12 +1,14 @@
-import type { Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { Activity } from '../core/activity.ts';
 
 /** A normal routing result for speech that calls for no application action. */
-export class Ignore implements UserSensorProcessor {
+export class Ignore implements ScreenlessProcessor {
   readonly label = 'Ignore';
   readonly dependencies = {};
   readonly name = 'IGNORE';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
 
   // This is the user's prompt text; formatting must not change its contents.
   readonly instruction =
@@ -22,7 +24,7 @@ export class Ignore implements UserSensorProcessor {
     router.register(this);
   }
 
-  async process(frame: UserSensorFrame): Promise<void> {
+  async process(frame: SensorFrame): Promise<void> {
     this.log('processor', 'Ignored', frame.id);
     this.activity.outcome?.(frame.id, 'ignored');
   }

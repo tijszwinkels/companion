@@ -1,12 +1,14 @@
 import type { Activity } from '../core/activity.ts';
-import type { Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 
 /** Explicit evaluation feedback; never offered as an LLM-selected action. */
-export class LabelPreviousCorrect implements UserSensorProcessor {
+export class LabelPreviousCorrect implements ScreenlessProcessor {
   readonly id = 'label-previous-correct';
   readonly label = 'Label previous correct';
   readonly name = 'LABEL_PREVIOUS_CORRECT';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes = ['label previous correct'];
   readonly acceptsEmptyPrefix = true;
   readonly dependencies = {};
@@ -21,7 +23,7 @@ export class LabelPreviousCorrect implements UserSensorProcessor {
     router.register(this);
   }
 
-  async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
+  async process(frame: SensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
 
     if (frame.utterance.trim()) {

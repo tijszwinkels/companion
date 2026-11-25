@@ -26,9 +26,12 @@ export interface Screenshot {
 
 /**
  * The message that flows from the sensors through the router to a processor.
- * Its screenshot is captured at speech end, before transcription can delay it.
+ * With a desktop it is always a `UserSensorFrame`, with the screenshot
+ * captured at speech end. Without a desktop (`--headless`) there is no
+ * screen: the frame has no screenshot, and nothing is captured, sent to a
+ * model or attached to a conversation in its place.
  */
-export interface UserSensorFrame {
+export interface SensorFrame {
   /** Session-local sequence number, also used to correlate CLI log messages. */
   id: number;
 
@@ -36,7 +39,8 @@ export interface UserSensorFrame {
   observedAt: number;
 
   utterance: string;
-  screenshot: Screenshot;
+  /** Absent only without a desktop; see above. */
+  screenshot?: Screenshot;
   /** Sidebar state captured with the screenshot, before transcription/inference. */
   interaction?: InteractionContext;
   /**
@@ -45,6 +49,11 @@ export interface UserSensorFrame {
    * decide when the conversation starts. Never makes anything saveable alone.
    */
   storage?: CaptureAdmission;
+}
+
+/** A frame captured with a desktop: it always carries its screenshot. */
+export interface UserSensorFrame extends SensorFrame {
+  screenshot: Screenshot;
 }
 
 export interface InteractionContext {
@@ -139,3 +148,25 @@ export interface UserSensorProcessor extends InspectableModule {
 
 /** Logging is injected so the modules do not depend on terminal presentation. */
 export type Log = (stage: string, detail: string, frameId?: number) => void;
+
+/**
+ * A processor that never reads the screenshot, so it also handles frames
+ * without one (a listener without a desktop, `--headless`). The router gives
+ * a frame without a screenshot only to processors that say so; any other
+ * processor is skipped for it (see `UserSensorRouter`). With a desktop every
+ * frame has its screenshot and nothing changes.
+ */
+export interface ScreenlessProcessor extends UserSensorProcessor {
+  readonly screenless: true;
+  process(frame: SensorFrame, signal: AbortSignal, route?: IntentMode): Promise<void>;
+}
+
+export function isScreenlessProcessor(
+  processor: UserSensorProcessor,
+): processor is ScreenlessProcessor {
+  return (processor as Partial<ScreenlessProcessor>).screenless === true;
+}
+
+export function hasScreenshot(frame: SensorFrame): frame is UserSensorFrame {
+  return frame.screenshot !== undefined;
+}

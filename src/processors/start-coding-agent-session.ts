@@ -1,14 +1,16 @@
 import type { Activity } from '../core/activity.ts';
-import type { Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { AgentHarness, AgentProfile } from '../agents/types.ts';
 
 /** Start an independent question with the same captured context as detection. */
-export class StartCodingAgentSession implements UserSensorProcessor {
+export class StartCodingAgentSession implements ScreenlessProcessor {
   readonly id: string = 'start-agent-session';
   readonly label: string = 'Start a coding session';
   readonly name: string = 'START_CODING_AGENT_SESSION';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes: readonly string[] = ['new session'];
   readonly instruction: string | undefined =
     'Choose this if the user is asking the AI assistant on this computer a question or requesting its help, including a question about what is visible on the screen. Do not choose this for text that the user is dictating into the active application or for speech not addressed to the assistant.';
@@ -28,7 +30,7 @@ export class StartCodingAgentSession implements UserSensorProcessor {
     router.register(this);
   }
 
-  async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
+  async process(frame: SensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     if (this.preview) {
       this.log(

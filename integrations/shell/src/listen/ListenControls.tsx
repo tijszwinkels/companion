@@ -156,9 +156,10 @@ export function MicrophoneRows(props: {
   const running = admitted && engine?.ready === true;
   const paused = engine?.paused === true;
 
-  // The computer's switch (D8): only where the listener has microphones.
+  // The computer's switch (D8): only where the listener has microphones,
+  // and not when the computer has none of its own (no desktop).
   let computerRow = null;
-  if (microphones) {
+  if (microphones && microphones.computerAvailable !== false) {
     const pending = props.requests.isPending(computerSwitchKey);
     let status = 'Off';
     if (microphones.computer && paused) {

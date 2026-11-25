@@ -230,8 +230,11 @@ interface RemoteClient {
  * (`connectMicrophones`). See src/sensors/audio/README.md.
  */
 export interface ListenerMicrophones {
-  /** The computer's microphone switch (D8). */
-  computer: ComputerMicrophoneSwitch;
+  /**
+   * The computer's microphone switch (D8). Absent without a desktop
+   * (`--headless`): the computer has no microphone, only browsers listen.
+   */
+  computer?: ComputerMicrophoneSwitch;
   /** Listening browsers' streams. */
   browsers: BrowserMicrophones;
 }
@@ -241,8 +244,15 @@ export interface ListenerMicrophones {
  * modes and in older listeners. See src/desktop/README.md, "Microphones and listening browsers".
  */
 export interface MicrophonesState {
-  /** The computer's microphone switch is on. */
+  /** The computer's microphone switch is on (always false without one). */
   computer: boolean;
+  /**
+   * Present, and false, only when the computer has no microphone of its own
+   * (a listener without a desktop, `--headless`): no switch is offered and
+   * `set-computer-microphone` is refused. Absent everywhere else, so the
+   * state of a listener with a desktop is exactly as before.
+   */
+  computerAvailable?: false;
   /**
    * The microphones that listen now, the computer's first: empty while
    * paused, and when the computer's is switched off and no browser listens
@@ -1153,9 +1163,10 @@ export class DesktopRuntime {
    * good: without a desktop (`--headless`) no microphone of the computer is
    * opened, and no listening browsers are attached either. This is the one
    * place that decides it; `start` then shows listening as paused and
-   * `toggle-pause` refuses to resume. Once browsers may listen without a
-   * desktop, Pause and Resume apply to them (one Pause for everything) and
-   * this answer becomes false.
+   * `toggle-pause` refuses to resume. The CLI attaches the listening
+   * browsers without a desktop before `start` (src/cli.ts), so there this
+   * answer is false from the first snapshot on, and Pause and Resume apply
+   * to the browsers (one Pause for everything).
    */
   private nothingCanListen(): boolean {
     return this.options.headless === true && this.microphones === undefined;
@@ -1210,7 +1221,7 @@ export class DesktopRuntime {
    */
   connectMicrophones(microphones: ListenerMicrophones): void {
     this.microphones = microphones;
-    microphones.computer.on('change', this.microphonesChanged);
+    microphones.computer?.on('change', this.microphonesChanged);
     microphones.browsers.changed = this.microphonesChanged;
     microphones.browsers.ended = (owner, streamId, reason) => {
       this.browserStreamEnded(owner, streamId, reason);
@@ -1237,12 +1248,13 @@ export class DesktopRuntime {
       return undefined;
     }
 
+    const computer = microphones.computer;
     const listening: MicrophonesState['listening'] = [];
     if (!this.pause.paused) {
       // Listed only while its ordinary listening period actually runs: not
       // while switched off, between a lost recorder and its retry, or while
       // Record has the microphone.
-      if (microphones.computer.enabled && microphones.computer.listening) {
+      if (computer && computer.enabled && computer.listening) {
         listening.push({ ...computerMicrophoneEntry });
       }
       for (const browser of microphones.browsers.list) {
@@ -1250,7 +1262,11 @@ export class DesktopRuntime {
       }
     }
 
-    return { computer: microphones.computer.enabled, listening, streams: true };
+    // Without a desktop the computer has no microphone (see MicrophonesState).
+    if (!computer) {
+      return { computer: false, computerAvailable: false, listening, streams: true };
+    }
+    return { computer: computer.enabled, listening, streams: true };
   }
 
   /** Remember which browser heard frame `id`, for its Activity entry. */
@@ -2678,13 +2694,14 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'set-computer-microphone') {
-      if (!this.microphones) {
+      const computer = this.microphones?.computer;
+      if (!computer) {
         throw Error("The computer's microphone switch is unavailable");
       }
       if (typeof request.enabled !== 'boolean') {
         throw Error('Expected enabled: true or false');
       }
-      if (this.microphones.computer.set(request.enabled)) {
+      if (computer.set(request.enabled)) {
         this.log(
           'microphone',
           request.enabled ? "Computer's microphone on" : "Computer's microphone off",
@@ -3699,7 +3716,7 @@ export class DesktopRuntime {
     this.dictation?.abandon('shutdown');
     this.dictation?.off('change', this.dictationChanged);
     this.dictation?.off('finished', this.dictationFinished);
-    this.microphones?.computer.off('change', this.microphonesChanged);
+    this.microphones?.computer?.off('change', this.microphonesChanged);
     this.options.agents?.setCloseGuard(undefined);
     this.abandonRecordingAppends(undefined, 'Companion is shutting down.');
     this.ready = false;

@@ -1,13 +1,15 @@
 import type { Activity } from '../core/activity.ts';
-import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { IntentContext, Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 
 /** Close the captured visible conversation, retaining its saved transcript. */
-export class CloseAgentSession implements UserSensorProcessor {
+export class CloseAgentSession implements ScreenlessProcessor {
   readonly id = 'close-agent-session';
   readonly label = 'Close session';
   readonly name = 'CLOSE_AGENT_SESSION';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes = ['close session'];
   readonly acceptsEmptyPrefix = true;
 
@@ -27,7 +29,7 @@ export class CloseAgentSession implements UserSensorProcessor {
     return Boolean(context.interaction?.agentSessionId);
   }
 
-  async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
+  async process(frame: SensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     const context = frame.interaction;
 

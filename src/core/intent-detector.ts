@@ -2,7 +2,7 @@ import { Agent, type StreamFn } from '@earendil-works/pi-agent-core';
 import type { Model, UserMessage } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
 
-import type { Intent, UserSensorFrame } from './frame.ts';
+import { hasScreenshot, type Intent, type SensorFrame, type UserSensorFrame } from './frame.ts';
 import type { CleanupDetection, Detector } from './router.ts';
 import type { Activity } from './activity.ts';
 import { snapshotIntentRequest } from './intent-request.ts';
@@ -117,6 +117,41 @@ export function frameMessage(frame: UserSensorFrame): UserMessage {
 }
 
 /**
+ * Added to the system prompt for a frame without a screenshot (a listener
+ * without a desktop, `--headless`), so the model is not told about a screen
+ * that does not exist. The desktop's prompt is unchanged.
+ */
+export const WITHOUT_SCREEN_NOTE = `This utterance was spoken into a browser connected to a Companion that runs without a desktop: no screenshot or application metadata is attached, and nothing can be typed into an application. Judge from the utterance and the interaction context alone.`;
+
+/**
+ * The user message of a frame without a screenshot: the same text part as
+ * `frameMessage`, without `application` and without an image.
+ */
+export function screenlessFrameMessage(frame: SensorFrame): UserMessage {
+  return {
+    role: 'user',
+    timestamp: frame.observedAt,
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          utterance: frame.utterance,
+          interaction: frame.interaction
+            ? {
+                agentSessionId: frame.interaction.agentSessionId,
+                agentComposerFocused: frame.interaction.agentComposerFocused,
+                agentConversation: frame.interaction.agentSessionId
+                  ? frame.interaction.agentConversation
+                  : undefined,
+              }
+            : undefined,
+        }),
+      },
+    ],
+  };
+}
+
+/**
  * Runs one Pi turn and returns only a validated, registered intent name.
  *
  * With transcription cleanup on, `detectWithCleanup` sends the json-cleanup-v1
@@ -159,6 +194,28 @@ export class IntentDetector implements Detector {
     signal: AbortSignal,
   ): Promise<string> {
     const reply = await this.requestReply(frame, buildPrompt(intents), this.model, null, signal);
+    const name = reply.trim();
+
+    if (!intents.some((intent) => intent.name === name)) {
+      throw Error(`Invalid intent response: ${JSON.stringify(name)}`);
+    }
+
+    return name;
+  }
+
+  /**
+   * The same bare-name request for a frame without a screenshot (no
+   * desktop): no image, no application, and the note above appended to the
+   * prompt. Such requests are not recorded for evaluation (`intentRequested`):
+   * the recording format holds exactly one screenshot.
+   */
+  async detectWithoutScreenshot(
+    frame: SensorFrame,
+    intents: readonly Intent[],
+    signal: AbortSignal,
+  ): Promise<string> {
+    const systemPrompt = `${buildPrompt(intents)}\n${WITHOUT_SCREEN_NOTE}\n`;
+    const reply = await this.requestReply(frame, systemPrompt, this.model, null, signal);
     const name = reply.trim();
 
     if (!intents.some((intent) => intent.name === name)) {
@@ -213,7 +270,7 @@ export class IntentDetector implements Detector {
    * the bare-name prompt (null for today's bare-name request).
    */
   private async requestReply(
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     systemPrompt: string,
     model: Model<'openai-completions'>,
     promptVariant: CleanupPromptVariant | null,
@@ -222,6 +279,22 @@ export class IntentDetector implements Detector {
     // Either application shutdown or the per-frame deadline can stop inference.
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
     deadline.throwIfAborted();
+
+    // Only a frame with a screenshot is recorded (see detectWithoutScreenshot).
+    const screenshot = frame.screenshot;
+    let recordRequest: ((payload: unknown) => void) | undefined;
+    if (this.activity.intentRequested && screenshot) {
+      recordRequest = (payload) => {
+        deadline.throwIfAborted();
+        const record = snapshotIntentRequest(
+          payload,
+          screenshot.png,
+          this.config.baseUrl,
+          promptVariant,
+        );
+        this.activity.intentRequested!(frame.id, record);
+      };
+    }
 
     // A fresh Pi agent keeps each request to one frame, with no growing history.
     const agent = new Agent({
@@ -235,18 +308,7 @@ export class IntentDetector implements Detector {
       // Pi calls this after provider conversion, immediately before HTTP. Store
       // exactly that payload, including dynamic instructions and adapter flags.
       // Recording failures stop this request, like existing PNG/WAV failures.
-      onPayload: this.activity.intentRequested
-        ? (payload) => {
-            deadline.throwIfAborted();
-            const record = snapshotIntentRequest(
-              payload,
-              frame.screenshot.png,
-              this.config.baseUrl,
-              promptVariant,
-            );
-            this.activity.intentRequested!(frame.id, record);
-          }
-        : undefined,
+      onPayload: recordRequest,
       shouldStopAfterTurn: () => true,
     });
 
@@ -254,7 +316,11 @@ export class IntentDetector implements Detector {
     deadline.addEventListener('abort', abort, { once: true });
 
     try {
-      await agent.prompt(frameMessage(frame));
+      if (hasScreenshot(frame)) {
+        await agent.prompt(frameMessage(frame));
+      } else {
+        await agent.prompt(screenlessFrameMessage(frame));
+      }
       deadline.throwIfAborted();
 
       // Never dispatch partial output, reasoning, a tool call, or an explanation.

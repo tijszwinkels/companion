@@ -728,6 +728,10 @@ The state snapshot carries:
   listening period runs (not between a lost recorder and its retry, nor while
   Record has the microphone). Empty while paused, and when the computer's
   switch is off and no browser listens: Companion then hears nothing.
+- `computerAvailable`: present, and false, only on a listener without a
+  desktop, whose computer has no microphone (`computer` is then always false
+  and no switch is offered; see [running without a desktop](#speech-without-a-desktop)).
+  Absent everywhere else.
 - `streams`: a remote connection may open an audio stream.
 - Absent in older listeners and outside microphone mode: no switch, and no
   browser can listen.
@@ -845,7 +849,8 @@ desktop's context has always been captured. Source:
 5. **Unchanged on purpose:** typing into the application in front on the
    computer by a browser's speech (D4), the computer's screenshot at a quick
    question (D17), one Pause for everything, sounds on the computer. These
-   belong to a later step.
+   belong to a later step. (Without a desktop there is no application, no
+   screenshot and no sound: see [speech without a desktop](#speech-without-a-desktop).)
 
 **Staleness, mirrored from the desktop.** On the desktop, an utterance is
 delivered only while the interaction revision is unchanged since speech end
@@ -963,33 +968,43 @@ an application, sounds, media pause, the panel browser and pop-out windows.
 An absent ability is never a crash, a hang or a silent nothing: a request for
 it is refused with a reason starting "This Companion runs without a desktop"
 (for any client, desktop or remote), or the state says it honestly. Speech
-(voice detection, recognition, intents) is not started in this mode yet.
+stays too, with paired browsers as the only microphones ("Listen here"):
+voice detection, recognition and intent routing run on the machine; see
+[speech without a desktop](#speech-without-a-desktop) for its rule.
 
-| Ability                                                | With a desktop                          | Without a desktop: what the user sees                                                                                                             | Without a desktop: what an agent gets                                                                                                                            |
-| ------------------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Typed conversations (start, send, Stop, close, reopen) | As described in this guide              | The same, from a paired browser through the gateway                                                                                               | The same turns, in the agent directory                                                                                                                           |
-| Conversation store, Previous sessions, wakes           | Yes                                     | The same                                                                                                                                          | The same session tools and wake timers                                                                                                                           |
-| Widgets inline, pinned, session applications           | Yes                                     | The same, on the gateway's frame origin; the widget renderer is headless Chromium in its sandbox                                                  | The same widget tools                                                                                                                                            |
-| Widget pop-out window                                  | A native Chromium window                | Refused: "Widget pop-out requires a Wayland desktop" (only the native panel offers it)                                                            | —                                                                                                                                                                |
-| Listening (the computer's microphone, speech)          | On, with Pause and Resume               | Listening shows **Paused** from the start; Resume is refused: "This Companion runs without a desktop and has no microphone: listening stays off." | No spoken input                                                                                                                                                  |
-| The computer's microphone switch                       | Offered (`microphones.computer`)        | Not offered (`microphones` absent); `set-computer-microphone` is refused: "… and has no microphone of its own."                                   | —                                                                                                                                                                |
-| Listen here (a browser's microphone)                   | With the gateway's `--allow-microphone` | Not offered yet (`microphones` absent); `audio-start` is refused: "Listening here is not available"                                               | —                                                                                                                                                                |
-| Record into the text box                               | The desktop panel                       | Refused: "… and has no microphone to record with." (`start-recording`, `stop-recording`, `recording-append-result`)                               | —                                                                                                                                                                |
-| Sound feedback                                         | Cues through `pw-play`                  | The switch stays off; `toggle-sounds` is refused: "… and has no sound feedback."                                                                  | —                                                                                                                                                                |
-| Typing into applications                               | `wtype` into the focused window         | Refused: "This Companion runs without a desktop: it cannot type into applications." (`paste`, `submit-utterance`)                                 | —                                                                                                                                                                |
-| Screenshots of a window                                | With each utterance, and at start       | None are taken (no utterances); typed conversations never carried one                                                                             | Conversations start without a screenshot                                                                                                                         |
-| Media pause                                            | Reported by the native panel            | `mediaPauseAvailable: false`; `media-playback` is refused: "… it does not pause for media playback."                                              | —                                                                                                                                                                |
-| Panel browser                                          | The native panel opens the page         | —                                                                                                                                                 | Not opened: "this Companion panel has no built-in browser. This Companion runs without a desktop; it has no panel browser." (instead of "no panel is connected") |
-| Pop-out conversation windows                           | The native panel                        | —                                                                                                                                                 | The tool is not offered (no native panel); a request still answers `unsupported`: "… it has no conversation windows."                                            |
-| Intent and shortcut switches                           | Shown in settings                       | None are shown (no intent routing runs)                                                                                                           | —                                                                                                                                                                |
+| Ability                                                | With a desktop                          | Without a desktop: what the user sees                                                                                                      | Without a desktop: what an agent gets                                                                                                                            |
+| ------------------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed conversations (start, send, Stop, close, reopen) | As described in this guide              | The same, from a paired browser through the gateway                                                                                        | The same turns, in the agent directory                                                                                                                           |
+| Conversation store, Previous sessions, wakes           | Yes                                     | The same                                                                                                                                   | The same session tools and wake timers                                                                                                                           |
+| Widgets inline, pinned, session applications           | Yes                                     | The same, on the gateway's frame origin; the widget renderer is headless Chromium in its sandbox                                           | The same widget tools                                                                                                                                            |
+| Widget pop-out window                                  | A native Chromium window                | Refused: "Widget pop-out requires a Wayland desktop" (only the native panel offers it)                                                     | —                                                                                                                                                                |
+| Listening, Pause and Resume                            | On, with Pause and Resume               | On from the start, with Pause and Resume (one Pause for every listening browser); nothing is heard until a browser switches Listen here on | Spoken input from listening browsers                                                                                                                             |
+| The computer's microphone switch                       | Offered (`microphones.computer`)        | Not offered (`microphones.computerAvailable: false`); `set-computer-microphone` is refused: "… and has no microphone of its own."          | —                                                                                                                                                                |
+| Listen here (a browser's microphone)                   | With the gateway's `--allow-microphone` | Offered, the same; the only microphones                                                                                                    | —                                                                                                                                                                |
+| Speech: where it goes                                  | The desktop's or the tab's view         | The view of the tab that heard it (rule below)                                                                                             | Follow-ups and new conversations as with a desktop                                                                                                               |
+| Speech the desktop would type ("insert …", "enter …")  | Typed into the application in front     | Never typed: Activity shows "Not typed: this Companion runs without a desktop" (Skipped)                                                   | —                                                                                                                                                                |
+| Plain dictation, no intent model (the default)         | Typed, as the model decides             | A message to the conversation the listening tab shows; with none: "Not delivered: this tab shows no conversation" (Skipped)                | The words, as a follow-up                                                                                                                                        |
+| Record into the text box                               | The desktop panel                       | Refused: "… and has no microphone to record with." (`start-recording`, `stop-recording`, `recording-append-result`)                        | —                                                                                                                                                                |
+| Sound feedback                                         | Cues through `pw-play`                  | The switch stays off; `toggle-sounds` is refused: "… and has no sound feedback."                                                           | —                                                                                                                                                                |
+| Typing into applications                               | `wtype` into the focused window         | Refused: "This Companion runs without a desktop: it cannot type into applications." (`paste`, `submit-utterance`)                          | —                                                                                                                                                                |
+| Screenshots of a window                                | With each utterance, and at start       | None are taken; spoken and typed input carry none, and Activity names no application                                                       | Conversations start without a screenshot                                                                                                                         |
+| Media pause                                            | Reported by the native panel            | `mediaPauseAvailable: false`; `media-playback` is refused: "… it does not pause for media playback."                                       | —                                                                                                                                                                |
+| Panel browser                                          | The native panel opens the page         | —                                                                                                                                          | Not opened: "this Companion panel has no built-in browser. This Companion runs without a desktop; it has no panel browser." (instead of "no panel is connected") |
+| Pop-out conversation windows                           | The native panel                        | —                                                                                                                                          | The tool is not offered (no native panel); a request still answers `unsupported`: "… it has no conversation windows."                                            |
+| Intent and shortcut switches                           | Shown in settings                       | Shown, for the intents of this mode (no typing intents)                                                                                    | —                                                                                                                                                                |
 
-`--headless` cannot be combined with options that need the desktop or speech:
-`--text`, `--wav`, `--device`, `--seconds`, `--preview`, `--graph`,
-`--paused`, `--no-desktop`, `--no-startup-capture` and `--phone`.
-`--no-sounds` is accepted and changes nothing. The control socket still needs
+`--headless` cannot be combined with options that need the desktop or its
+microphone: `--text`, `--wav`, `--device`, `--seconds`, `--preview`,
+`--graph`, `--paused`, `--no-desktop`, `--no-startup-capture` and `--phone`.
+`--no-sounds` is accepted and changes nothing. `--intent-model` is accepted
+only with `--headless` (below). The control socket still needs
 `XDG_RUNTIME_DIR`, and the locks need `flock`; the widget renderer needs `bwrap` and Chromium at
 `/usr/lib/chromium/chromium`, as on the desktop. The transcription cleanup
-switch is neither loaded nor offered.
+switch is neither loaded nor offered. Speech needs the recognition worker and
+its model (`asr.workerBinary`, `asr.modelDir`; see the
+[installation guide](../../docs/installation.md), steps 2 and 3) and the
+bundled voice detector model: both are loaded before the control socket
+opens, and a missing one stops the start with its reason, as with a desktop.
 
 The runtime directory holds the control socket that the gateway finds by
 its path, so a headless start refuses one that another user could replace
@@ -1060,10 +1075,90 @@ the stale switch.
 
 Whether anything can listen is decided in one place
 (`DesktopRuntime.nothingCanListen`): without a desktop and without attached
-microphones it is true, so the runtime shows listening as paused at start and
-refuses Resume. When listening browsers are attached without a desktop
-(later), Pause and Resume apply to them as one Pause for everything, and the
-microphones state reports no computer microphone while browsers may listen.
+microphones it would be true, and the runtime would show listening as paused
+at start and refuse Resume. The listener attaches the listening browsers
+(and the router) before the control socket opens, so the answer is false from
+the first snapshot on, and Pause and Resume apply to the browsers as one
+Pause for everything.
+
+#### Speech without a desktop
+
+Every utterance comes from a listening browser's stream, so [speech follows
+the device that recorded it](#speech-follows-the-device-that-recorded-it)
+applies to all of them: the spoken-to conversation is the one the tab that
+heard it shows (not another tab of the same device, nor the desktop's),
+"go to session N" selects in that tab, and a conversation started by speech
+is shown in that tab. No screenshot is taken anywhere on this path: frames
+carry none (`SensorFrame`), the router hands them only to processors that
+never read one (`ScreenlessProcessor`), a conversation starts without one,
+and its Activity entry names no application.
+
+The microphones state is
+`{"computer": false, "computerAvailable": false, "listening": [...], "streams": true}`:
+`computerAvailable` appears (always false) only without a desktop, so the
+state with a desktop is exactly as before; the browser shell then offers no
+switch for the computer's microphone. Listening starts on, as with a desktop:
+nothing is heard until a tab switches Listen here on, so starting paused
+would only add a click.
+
+**The rule.** Commands work by their spoken prefix, with or without an intent
+model, exactly as on a desktop: "new session …", "new claude session …",
+"new pi session …", "quick question …" (quick questions use Pi), "continue
+session …", "close session", "go to session N", "label previous correct" /
+"incorrect", and an offered choice's label or "stop" for the running turn of
+the conversation the tab shows. "pop out session N" is refused (a browser has
+no windows). What the desktop would type into the application in front has no
+application here:
+
+- **"insert …" and "enter …"** are never typed and go nowhere else. Activity
+  shows them as "Not typed: this Companion runs without a desktop", Skipped
+  (`TYPING_WITHOUT_DESKTOP`, a prefix-only processor).
+- **Everything else, without an intent model** (the default): a message to
+  the conversation the listening tab shows (`CONTINUE_OPEN_AGENT_CONVERSATION`,
+  with its usual checks: the tab's view and the conversation unchanged since
+  the speech). When the tab shows none (Activity, Previous sessions, or its
+  view changed since the speech), the words are not delivered anywhere:
+  Activity shows "Not delivered: this tab shows no conversation", Skipped
+  (`NO_CONVERSATION_SHOWN`). The fixed rule is `NoIntentModel`
+  (`src/core/no-intent-model.ts`); nothing leaves the machine. It cannot tell
+  side talk from a request: everything that is not a command reaches the
+  shown conversation.
+- **Everything else, with an intent model** (`--intent-model`): the model
+  chooses among this mode's intents, which never include typing or
+  `NO_CONVERSATION_SHOWN`; with no conversation shown it usually answers
+  IGNORE. The request carries no image and no `application`; the prompt is the
+  desktop's with one sentence added: "This utterance was spoken into a
+  browser connected to a Companion that runs without a desktop: …"
+  (`WITHOUT_SCREEN_NOTE`). These requests are not recorded for evaluation
+  (the recording format holds exactly one screenshot). The model is the
+  `llm` section of the configuration (`baseUrl`, `model`, `requestProfile`,
+  `timeoutMs`) with the key in `COMPANION_LLM_API_KEY`, as with a desktop.
+
+| Utterance                     | The tab shows a conversation Y | The tab shows none (also: another tab of the device shows Y) |
+| ----------------------------- | ------------------------------ | ------------------------------------------------------------ |
+| follow-up, plain dictation    | Y, as a message                | not delivered (no model); as the model says (model)          |
+| insert …, enter …             | not typed                      | not typed                                                    |
+| new session …, quick question | started, shown in this tab     | started, shown in this tab                                   |
+| go to session N               | this tab selects N             | this tab selects N                                           |
+| stop (Y's turn runs)          | Y's turn stops                 | words like any others (no run named)                         |
+| close session                 | Y closes                       | skipped                                                      |
+| anything, while paused        | not heard                      | not heard                                                    |
+
+While paused nothing is heard: Pause ends every browser's stream (the tab is
+told `paused`) and `audio-start` is refused ("Listening is paused") until
+Resume. Pause, as everywhere, cancels accepted speech that has not been
+delivered yet.
+
+Tests: `test/headless-voice-table.ts` holds this table (utterance × what the
+listening tab shows × intent model absent or present, and the paused row);
+`test/unit/headless-voice.test.ts` and `test/unit/headless-voice-model.test.ts`
+play it against a real `src/cli.ts --headless` and a real gateway, with real
+speech (part of the public fixture) through the real voice detector, the test
+recogniser (`test/fixtures/asr-scripted.cjs`), the synthetic Claude Code and,
+for the model, a synthetic OpenAI-compatible server on loopback.
+`test/shell/headless.test.ts` switches Listen here on in the built shell
+(Chromium's fake microphone playing the same fixture) and sees the words
+reach the conversation the tab shows.
 
 ## Agent sessions
 

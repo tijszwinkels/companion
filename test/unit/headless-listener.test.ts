@@ -113,6 +113,34 @@ test('--headless cannot be combined with options that need the desktop or speech
     assert.match(output, new RegExp(`--headless cannot be combined with ${options[0]}`));
   }
 
+  // The intent model option belongs to --headless.
+  const modelAlone = startChild(
+    process.execPath,
+    listenerArguments(machine.config, ['--intent-model']),
+    machine.env,
+  );
+  assert.equal(await modelAlone.exited, 1);
+  assert.match(modelAlone.output(), /--intent-model applies only to --headless/);
+
+  // Without its speech recogniser the start stops with the reason, as with a
+  // desktop, before the control socket opens.
+  const noRecogniser = join(machine.directory, 'no-recogniser.json');
+  await writeFile(
+    noRecogniser,
+    JSON.stringify({
+      llm: { baseUrl: 'http://127.0.0.1:1/v1' },
+      asr: { workerBinary: join(machine.directory, 'missing-worker'), modelDir: machine.directory },
+    }),
+  );
+  const missing = startChild(
+    process.execPath,
+    listenerArguments(noRecogniser, ['--headless']),
+    machine.env,
+  );
+  assert.equal(await missing.exited, 1);
+  assert.match(missing.output(), /error/);
+  assert.doesNotMatch(missing.output(), /Utterances:/);
+
   // Without a runtime directory the reason names it, not --no-desktop.
   const withoutRuntime = { ...machine.env };
   delete withoutRuntime.XDG_RUNTIME_DIR;
@@ -191,7 +219,7 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
   });
 
   // Speech that follows its device selects a conversation in the tab that
-  // spoke (`agent-select`). Nothing can listen here, so none ever arrives.
+  // spoke (`agent-select`). Nothing is spoken here, so none ever arrives.
   let agentSelects = 0;
   phone.socket.on('message', (data) => {
     if (JSON.parse(String(data)).type === 'agent-select') {
@@ -199,21 +227,34 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
     }
   });
 
-  // The honest state: listening paused, no sound, no media pause, no
-  // microphone switch, no intent switches.
+  // The honest state: listening (browsers may listen), no microphone of the
+  // computer, no sound, no media pause, no typing intents.
   const state = await phone.engine('state');
   assert.equal(state.ready, true);
-  assert.equal(state.paused, true);
+  assert.equal(state.paused, false);
   assert.equal(state.soundsEnabled, false);
-  assert.equal(state.microphones, undefined);
-  assert.deepEqual(state.intents, []);
+  assert.deepEqual(state.microphones, {
+    computer: false,
+    computerAvailable: false,
+    listening: [],
+    streams: true,
+  });
+  const intents = (state.intents as { name: string }[]).map((intent) => intent.name);
+  assert.ok(intents.includes('TYPING_WITHOUT_DESKTOP'));
+  assert.ok(!intents.includes('SEND_TEXT_TO_APPLICATION'));
+
+  // Pause and Resume work; Listen here opens a stream (the voice rows are
+  // in headless-voice.test.ts).
+  assert.equal((await remote(phone, { action: 'toggle-pause' })).result, 'paused');
+  assert.equal((await remote(phone, { action: 'toggle-pause' })).result, 'listening');
+  const stream = await remote(phone, { action: 'audio-start' });
+  assert.equal(stream.type, 'result', JSON.stringify(stream));
+  assert.equal((await remote(phone, { action: 'audio-stop' })).result, 'stopped');
 
   // Desktop abilities, asked for by the paired browser.
   const remoteRefusals: Array<[Record<string, unknown>, RegExp]> = [
-    [{ action: 'toggle-pause' }, /has no microphone: listening stays off/],
     [{ action: 'toggle-sounds' }, /has no sound feedback/],
     [{ action: 'set-computer-microphone', enabled: true }, /has no microphone of its own/],
-    [{ action: 'audio-start' }, /Listening here is not available/],
   ];
   for (const [request, reason] of remoteRefusals) {
     const reply = await remote(phone, request);
@@ -227,14 +268,18 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
     local.socket.destroy();
   });
 
-  // Its first snapshot already says paused; no cleanup switch is offered.
+  // Its first snapshot already offers the browsers' microphones; no cleanup
+  // switch is offered.
   await waitFor(() => local.messages.some((message) => message.type === 'state'), 5000);
   const firstState = local.messages.find((message) => message.type === 'state')!;
-  assert.equal(firstState.paused, true);
+  assert.equal(firstState.paused, false);
+  assert.equal(
+    (firstState.microphones as { computerAvailable?: boolean }).computerAvailable,
+    false,
+  );
   assert.equal(firstState.transcriptionCleanup, null);
 
   const localRefusals: Array<[Record<string, unknown>, RegExp]> = [
-    [{ action: 'toggle-pause' }, /has no microphone: listening stays off/],
     [{ action: 'toggle-sounds' }, /has no sound feedback/],
     [{ action: 'set-computer-microphone', enabled: true }, /has no microphone of its own/],
     [{ action: 'start-recording', id: randomUUID(), draftLength: 0 }, /no microphone to record/],
@@ -258,7 +303,7 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
   const after = await local.request({ action: 'toggle-sounds' });
   assert.equal(after.type, 'error');
   const latest = [...local.messages].reverse().find((message) => message.type === 'state');
-  assert.equal(latest?.paused, true);
+  assert.equal(latest?.paused, false);
   assert.equal(latest?.soundsEnabled, false);
   assert.equal(latest?.mediaPauseAvailable, false);
 
