@@ -424,8 +424,8 @@ export class DesktopRuntime {
   // The computer's microphone switch and listening browsers; absent outside
   // microphone mode.
   private microphones?: ListenerMicrophones;
-  /** Whether this runtime holds the database lock (claimDatabase). */
-  private databaseClaimed = false;
+  /** The database lock was taken by claimDatabase and not yet used by start. */
+  private databasePreclaimed = false;
   /** The router to attach during `start` (connectRouterAtStart, headless only). */
   private routerAtStart?: UserSensorRouter;
   // This run's Activity entries heard by a browser's microphone, by entry ID:
@@ -1115,18 +1115,24 @@ export class DesktopRuntime {
    * takes it itself when this was not called. Released by `close`.
    */
   async claimDatabase(): Promise<void> {
-    if (this.databaseClaimed) {
+    if (this.databasePreclaimed) {
       return;
     }
     await this.databaseLock.acquire();
-    this.databaseClaimed = true;
+    this.databasePreclaimed = true;
   }
 
   async start(): Promise<void> {
     // Hold database ownership from before recovery until after SQLite closes.
     // The separate socket lock protects stale-socket recovery, including when
     // another caller uses the same database with a different socket path.
-    await this.claimDatabase();
+    // A claim made ahead (claimDatabase) serves this one start only, so a
+    // second start is refused by the lock before anything is cleaned up.
+    if (this.databasePreclaimed) {
+      this.databasePreclaimed = false;
+    } else {
+      await this.databaseLock.acquire();
+    }
 
     try {
       // Nothing can listen: shown as paused, and Resume is refused. Decided
@@ -3784,6 +3790,7 @@ export class DesktopRuntime {
       await this.sounds.close();
     } finally {
       this.history.close();
+      this.databasePreclaimed = false;
       await this.databaseLock.close();
     }
   }
