@@ -1112,8 +1112,10 @@ model, exactly as on a desktop: "new session …", "new claude session …",
 session …", "close session", "go to session N", "label previous correct" /
 "incorrect", and an offered choice's label or "stop" for the running turn of
 the conversation the tab shows. "pop out session N" is refused (a browser has
-no windows). "label previous …" is recognised but skipped: labeling needs the
-utterance's original screenshot, and without a desktop there is none. What the desktop would type into the application in front has no
+no windows). "label previous …" is recognised and always skipped ("This Companion runs
+without a desktop: spoken labels need a screenshot."): labeling needs the
+original screenshot, and the previous labelable entry would be one of an
+earlier run with a desktop. What the desktop would type into the application in front has no
 application here:
 
 - **"insert …" and "enter …"** are never typed and go nowhere else. Activity
@@ -1152,6 +1154,7 @@ application here:
 | go to session N               | this tab selects N             | this tab selects N                                           |
 | stop (Y's turn runs)          | Y's turn stops                 | words like any others (no run named)                         |
 | close session                 | Y closes                       | skipped                                                      |
+| label previous …              | skipped                        | skipped                                                      |
 | anything, while paused        | not heard                      | not heard                                                    |
 
 While paused nothing is heard: Pause ends every browser's stream (the tab is

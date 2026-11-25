@@ -383,8 +383,6 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // the switch. Without the desktop service it stays off.
   const cleanup = new TranscriptionCleanupSetting();
 
-  // Without a desktop (--headless) the runtime itself shows listening as
-  // paused, because nothing can listen (DesktopRuntime.nothingCanListen).
   if (values.paused) {
     pause.toggle();
   }
@@ -424,6 +422,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       // start, once legacy settings have been moved into place and before
       // the runtime reports itself ready.
       if (values.headless) {
+        // A second listener stops here, before loading the recogniser.
+        await desktop.claimDatabase();
         const speech = await startHeadlessSpeech({
           desktop,
           agents,

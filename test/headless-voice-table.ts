@@ -2,7 +2,7 @@
 // one table of cases:
 //
 //   utterance (follow-up, plain dictation, insert, enter, new session, quick
-//     question, go to session N, stop, close session)
+//     question, go to session N, stop, label previous, close session)
 //   × what the listening browser tab shows (a conversation; none; none, while
 //     another tab of the same device shows one)
 //   × intent model absent (the default) or present (`--intent-model`)
@@ -110,6 +110,13 @@ export const rows: Row[] = [
       none: { absent: notDelivered, present: ignoredByModel },
       'other tab': { absent: notDelivered, present: ignoredByModel },
     },
+  },
+  {
+    // Never labels: there is no original screenshot, and the previous
+    // labelable entry could be one of an earlier run with a desktop.
+    utterance: 'label previous correct',
+    phrase: 'label previous correct',
+    expected: always({ intent: 'LABEL_PREVIOUS_CORRECT', outcome: 'skipped' }),
   },
   {
     utterance: 'close session',

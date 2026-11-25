@@ -424,6 +424,8 @@ export class DesktopRuntime {
   // The computer's microphone switch and listening browsers; absent outside
   // microphone mode.
   private microphones?: ListenerMicrophones;
+  /** Whether this runtime holds the database lock (claimDatabase). */
+  private databaseClaimed = false;
   /** The router to attach during `start` (connectRouterAtStart, headless only). */
   private routerAtStart?: UserSensorRouter;
   // This run's Activity entries heard by a browser's microphone, by entry ID:
@@ -1106,11 +1108,25 @@ export class DesktopRuntime {
     }
   }
 
+  /**
+   * Take database ownership ahead of `start`, so a second listener stops
+   * with "Companion is already running" before it loads anything heavy
+   * (without a desktop, the recogniser is loaded before `start`). `start`
+   * takes it itself when this was not called. Released by `close`.
+   */
+  async claimDatabase(): Promise<void> {
+    if (this.databaseClaimed) {
+      return;
+    }
+    await this.databaseLock.acquire();
+    this.databaseClaimed = true;
+  }
+
   async start(): Promise<void> {
     // Hold database ownership from before recovery until after SQLite closes.
     // The separate socket lock protects stale-socket recovery, including when
     // another caller uses the same database with a different socket path.
-    await this.databaseLock.acquire();
+    await this.claimDatabase();
 
     try {
       // Nothing can listen: shown as paused, and Resume is refused. Decided
@@ -1976,6 +1992,13 @@ export class DesktopRuntime {
    * is never revived by turning storage on before it is routed.
    */
   private async labelPrevious(frameId: number, correct: boolean): Promise<LabelPreviousResult> {
+    // Without a desktop no utterance has an original screenshot to label,
+    // and the previous labelable entry would be one of an earlier run with
+    // a desktop: never label across that boundary.
+    if (this.options.headless) {
+      return { outcome: 'skipped', reason: `${withoutDesktop}: spoken labels need a screenshot.` };
+    }
+
     const storage = this.options.captureStorage;
     const command = this.frameStorage.get(frameId);
     if (!storage.allows(command)) {
