@@ -163,6 +163,15 @@ export interface ScreenlessProcessor extends UserSensorProcessor {
   process: (frame: SensorFrame, signal: AbortSignal, route?: IntentMode) => Promise<void>;
 }
 
+/**
+ * What the router accepts: a processor that needs a screenshot (no
+ * `screenless` marker), or one that is screenless in full, so a subclass
+ * that only adds the marker to a screenshot-reading `process` does not
+ * compile.
+ */
+export type RegisteredSensorProcessor =
+  (UserSensorProcessor & { readonly screenless?: undefined }) | ScreenlessProcessor;
+
 export function isScreenlessProcessor(
   processor: UserSensorProcessor,
 ): processor is ScreenlessProcessor {

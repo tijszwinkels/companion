@@ -91,12 +91,7 @@ async function startHeadlessSpeech(options: {
   pause: PauseControl;
   intentModel: boolean;
   signal: AbortSignal;
-}): Promise<{
-  transcriber: Transcriber;
-  pipeline: SensorPipeline;
-  browsers: BrowserMicrophones;
-  router: UserSensorRouter;
-}> {
+}): Promise<{ transcriber: Transcriber; pipeline: SensorPipeline; browsers: BrowserMicrophones }> {
   const { desktop, config, signal } = options;
   const activity = desktop.activity;
 
@@ -115,9 +110,10 @@ async function startHeadlessSpeech(options: {
     activity,
     intentModel: options.intentModel,
   });
-  // The router is connected by the caller after `desktop.start()`: the
-  // runtime moves legacy settings (the intent switches among them) into
-  // place there, and the switches must be read from that place.
+  // Attached during `desktop.start()`, once the runtime has moved legacy
+  // settings (the intent switches among them) into place, and before it
+  // reports itself ready (DesktopRuntime.connectRouterAtStart).
+  desktop.connectRouterAtStart(router);
 
   const transcriber = new Transcriber(config.asr);
   const pipeline = new SensorPipeline({ transcriber, router }, log, signal, activity);
@@ -156,7 +152,7 @@ async function startHeadlessSpeech(options: {
   desktop.connectMicrophones({ browsers });
 
   log('registered', 'Without a desktop: ' + [...router.processors.keys()].join(', '));
-  return { transcriber, pipeline, browsers, router };
+  return { transcriber, pipeline, browsers };
 }
 
 /** Compose the modules, run the chosen input mode, and own their shared lifetime. */
@@ -424,11 +420,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       // Without a desktop, speech is attached before the control socket
       // opens: the runtime decides at start whether anything can listen
       // (DesktopRuntime.nothingCanListen), and the first snapshot a browser
-      // gets must already offer Listen here. The router is connected right
-      // after start, once legacy settings have been moved into place; until
-      // then the runtime refuses `audio-start`, so no speech is routed with
-      // the intent switches not yet applied.
-      let headlessRouter: UserSensorRouter | undefined;
+      // gets must already offer Listen here. The router is attached during
+      // start, once legacy settings have been moved into place and before
+      // the runtime reports itself ready.
       if (values.headless) {
         const speech = await startHeadlessSpeech({
           desktop,
@@ -441,13 +435,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         transcriber = speech.transcriber;
         pipeline = speech.pipeline;
         browsers = speech.browsers;
-        headlessRouter = speech.router;
       }
 
       await desktop.start();
-      if (headlessRouter) {
-        await desktop.connectRouter(headlessRouter);
-      }
     }
 
     if (values['external-sessions']) {

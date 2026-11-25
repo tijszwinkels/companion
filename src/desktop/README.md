@@ -1069,16 +1069,22 @@ one (the gateway never does), and the opt-in Claude Code desktop tools
 offered and fail without a compositor.
 
 `--allow-microphone` lets the gateway's own page use the microphone, so
-**Listen here** works; without it conversations work but no browser can
-listen (the page is served with `Permissions-Policy: microphone=()`).
+**Listen here** works in the browser shell; without it the page is served
+with `Permissions-Policy: microphone=()` and cannot capture. It does not
+switch the audio protocol off: a paired client can still open a stream and
+send sound (for example recorded speech), with the effects of speech (see
+[microphone permission](../remote/README.md#microphone-permission)).
 
 Whether anything can listen is decided in one place
 (`DesktopRuntime.nothingCanListen`): without a desktop and without attached
 microphones it would be true, and the runtime would show listening as paused
 at start and refuse Resume. The listener attaches the listening browsers
-(and the router) before the control socket opens, so the answer is false from
-the first snapshot on, and Pause and Resume apply to the browsers as one
-Pause for everything.
+before the control socket opens, so the answer is false from the first
+snapshot on, and Pause and Resume apply to the browsers as one Pause for
+everything. The router is attached during start, after legacy settings
+(the intent switches among them) have been moved into place and before the
+runtime reports itself ready (`connectRouterAtStart`); `audio-start` is
+refused until then.
 
 #### Speech without a desktop
 
@@ -1106,7 +1112,8 @@ model, exactly as on a desktop: "new session …", "new claude session …",
 session …", "close session", "go to session N", "label previous correct" /
 "incorrect", and an offered choice's label or "stop" for the running turn of
 the conversation the tab shows. "pop out session N" is refused (a browser has
-no windows). What the desktop would type into the application in front has no
+no windows). "label previous …" is recognised but skipped: labeling needs the
+utterance's original screenshot, and without a desktop there is none. What the desktop would type into the application in front has no
 application here:
 
 - **"insert …" and "enter …"** are never typed and go nowhere else. Activity
@@ -1151,6 +1158,14 @@ While paused nothing is heard: Pause ends every browser's stream (the tab is
 told `paused`) and `audio-start` is refused ("Listening is paused") until
 Resume. Pause, as everywhere, cancels accepted speech that has not been
 delivered yet.
+
+Known limits, kept on purpose: the shell's Activity entry says "Not saved ·
+audio and screenshot were not kept" whenever capture storage is off, also
+without a desktop, where no screenshot ever existed (shell wording); the
+agents' instruction still mentions an attached image (as for typed
+conversations); and conversations and wake timers are loaded before the
+recogniser, so a wake that comes due while a start then fails to load speech
+is recorded as failed (the start with a desktop has the same order).
 
 Tests: `test/headless-voice-table.ts` holds this table (utterance × what the
 listening tab shows × intent model absent or present, and the paused row);

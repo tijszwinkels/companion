@@ -424,6 +424,8 @@ export class DesktopRuntime {
   // The computer's microphone switch and listening browsers; absent outside
   // microphone mode.
   private microphones?: ListenerMicrophones;
+  /** The router to attach during `start` (connectRouterAtStart, headless only). */
+  private routerAtStart?: UserSensorRouter;
   // This run's Activity entries heard by a browser's microphone, by entry ID:
   // the device name shown with the entry. The computer's speech and typed
   // text have none.
@@ -775,6 +777,20 @@ export class DesktopRuntime {
   }
 
   /** Attach after processor registration, before accepting any sensor frames. */
+  /**
+   * Without a desktop (`--headless`): attach `router` during `start`, right
+   * after legacy settings (the intent switches among them) have been moved
+   * into place and before the runtime reports itself ready. A browser that
+   * reconnects then never sees `ready` while the router is missing, and its
+   * Listen here is not refused. Call before `start`.
+   */
+  connectRouterAtStart(router: UserSensorRouter): void {
+    if (this.router || this.routerAtStart) {
+      throw Error('Desktop router already connected');
+    }
+    this.routerAtStart = router;
+  }
+
   async connectRouter(router: UserSensorRouter): Promise<void> {
     if (this.router) {
       throw Error('Desktop router already connected');
@@ -1126,6 +1142,12 @@ export class DesktopRuntime {
         if (migrated) {
           this.log('desktop', `Migrated history from ${legacyDatabase}`);
         }
+      }
+
+      // Only without a desktop (connectRouterAtStart); otherwise the CLI
+      // connects the router after start, as before.
+      if (this.routerAtStart) {
+        await this.connectRouter(this.routerAtStart);
       }
 
       await this.history.open();
@@ -2543,8 +2565,9 @@ export class DesktopRuntime {
     if (!browsers) {
       throw Error('Listening here is not available');
     }
-    // Without a desktop the CLI connects the router just after start (see
-    // src/cli.ts); no stream opens before its intent switches apply.
+    // Without a desktop the router is attached during start, before the
+    // runtime is ready (connectRouterAtStart); no stream opens before its
+    // intent switches apply.
     if (this.options.headless && !this.router) {
       throw Error('Companion is still starting; try again in a moment');
     }

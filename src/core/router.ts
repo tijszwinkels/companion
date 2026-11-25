@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import {
   hasScreenshot,
   isScreenlessProcessor,
+  type RegisteredSensorProcessor,
   type Intent,
   type IntentContext,
   type Log,
@@ -295,7 +296,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     return registrations;
   }
 
-  register(processor: UserSensorProcessor): void {
+  register(processor: RegisteredSensorProcessor): void {
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(processor.name)) {
       throw Error('Processor requires an intent identifier (letters, digits, and underscores)');
     }
@@ -469,10 +470,12 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       await commitment?.commit('shortcut', signal);
 
       const intentSignal = this.intentControllers.get(processor.name)!.shortcut.signal;
+      // `handles` first: a processor that needs a screenshot is never asked
+      // about a frame without one, not even for its availability.
       if (
         intentSignal.aborted ||
-        processor.availableForPrefix?.(frame) === false ||
-        !this.handles(processor, frame)
+        !this.handles(processor, frame) ||
+        processor.availableForPrefix?.(frame) === false
       ) {
         // Consume a disabled explicit command instead of reinterpreting it as
         // dictation, or as a shorter prefix owned by another processor.
@@ -569,8 +572,8 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       if (
         processor.instruction !== undefined &&
         !this.intentControllers.get(processor.name)!.inference.signal.aborted &&
-        (processor.availableForInference?.(frame) ?? true) &&
-        this.handles(processor, frame)
+        this.handles(processor, frame) &&
+        (processor.availableForInference?.(frame) ?? true)
       ) {
         // Resolve once from the captured frame. Keep the result local instead
         // of mutating registration state shared by UI reads and later frames.
