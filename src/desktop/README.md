@@ -837,10 +837,30 @@ it is refused with a reason starting "This Companion runs without a desktop"
 `--text`, `--wav`, `--device`, `--seconds`, `--preview`, `--graph`,
 `--paused`, `--no-desktop`, `--no-startup-capture` and `--phone`.
 `--no-sounds` is accepted and changes nothing. The control socket still needs
-`XDG_RUNTIME_DIR`, and the locks need `flock`; the widget renderer needs
-`bwrap` and Chromium, as on the desktop. The gateway is started separately
-(`bin/companion-remote serve`, see the gateway guide); its transport rules are
-the same as with a desktop.
+`XDG_RUNTIME_DIR` (a start without it is refused with that reason), and the
+locks need `flock`; the widget renderer needs `bwrap` and Chromium at
+`/usr/lib/chromium/chromium`, as on the desktop. The transcription cleanup
+switch is neither loaded nor offered.
+
+The browser reaches it through the gateway, started separately with the same
+`XDG_RUNTIME_DIR` and serving the browser shell instead of the phone app; its
+transport rules are the same as with a desktop (see the
+[gateway guide](../remote/README.md)). For example, on loopback with widget
+frames on a second port:
+
+```sh
+npm run shell:build
+bin/companion-remote serve --app-directory integrations/shell/dist \
+  --frames-listen 127.0.0.1:8788 --frame-origin http://127.0.0.1:8788
+bin/companion-remote pair   # a one-time code for the browser
+```
+
+Two desktop abilities are left as they are, because only a local desktop
+panel or an explicit opt-in reaches them: a widget pop-out still opens when
+the listener inherits a working `WAYLAND_DISPLAY` and a local panel asks for
+one (the gateway never does), and the opt-in Claude Code desktop tools
+(`claude-tools.json`, see `src/agents/claude/parity/README.md`) are still
+offered and fail without a compositor.
 
 Whether anything can listen is decided in one place
 (`DesktopRuntime.nothingCanListen`): without a desktop and without attached

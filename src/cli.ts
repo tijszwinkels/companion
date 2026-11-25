@@ -154,6 +154,16 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     if (conflicting.length > 0) {
       throw Error(`--headless cannot be combined with ${conflicting.join(', ')}`);
     }
+
+    // A server started outside a login session may have no runtime
+    // directory. The default message would suggest --no-desktop, which
+    // conflicts with --headless.
+    if (!process.env.XDG_RUNTIME_DIR) {
+      throw Error(
+        '--headless needs XDG_RUNTIME_DIR: a private (0700) directory for the control ' +
+          'socket, the same one the gateway is started with',
+      );
+    }
   }
   if (values.graph !== undefined && !['json', 'mermaid'].includes(values.graph)) {
     throw Error('--graph requires json or mermaid');
@@ -288,7 +298,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         mediaPause: values.text === undefined && !values.wav && !values.headless,
         headless: values.headless,
         agents,
-        cleanup,
+        // Transcription cleanup only applies to speech; without a desktop it
+        // is neither loaded nor offered.
+        cleanup: values.headless ? undefined : cleanup,
         captureStorage,
       });
       await desktop.start();

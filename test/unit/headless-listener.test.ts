@@ -112,6 +112,18 @@ test('--headless cannot be combined with options that need the desktop or speech
     assert.equal(code, 1, options.join(' '));
     assert.match(output, new RegExp(`--headless cannot be combined with ${options[0]}`));
   }
+
+  // Without a runtime directory the reason names it, not --no-desktop.
+  const withoutRuntime = { ...machine.env };
+  delete withoutRuntime.XDG_RUNTIME_DIR;
+  const child = startChild(
+    process.execPath,
+    listenerArguments(machine.config, ['--headless']),
+    withoutRuntime,
+  );
+  assert.equal(await child.exited, 1);
+  assert.match(child.output(), /--headless needs XDG_RUNTIME_DIR/);
+  assert.doesNotMatch(child.output(), /--no-desktop/);
 });
 
 test('without a desktop: conversations work through the gateway, desktop abilities are refused with their reason', async (context) => {
@@ -170,6 +182,13 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
   context.after(async () => {
     local.socket.destroy();
   });
+
+  // Its first snapshot already says paused; no cleanup switch is offered.
+  await waitFor(() => local.messages.some((message) => message.type === 'state'), 5000);
+  const firstState = local.messages.find((message) => message.type === 'state')!;
+  assert.equal(firstState.paused, true);
+  assert.equal(firstState.transcriptionCleanup, null);
+
   const localRefusals: Array<[Record<string, unknown>, RegExp]> = [
     [{ action: 'toggle-pause' }, /has no microphone: listening stays off/],
     [{ action: 'toggle-sounds' }, /has no sound feedback/],
@@ -256,11 +275,13 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
   );
   assert.equal(afterStop.session.status, 'cancelled');
 
-  // Close, then reopen from Previous sessions.
+  // Close, then reopen from Previous sessions. Earlier events are dropped,
+  // so only the reopened conversation's own event can match.
   assert.match(String((await remote(phone, { action: 'close-agent', id })).result), /^closed/);
   await phone.engine('agent-removed', (event) => event.id === id);
+  phone.messages.length = 0;
   assert.equal((await remote(phone, { action: 'reopen-agent', id })).result, 'reopened');
-  await phone.engine('agent-session', (event) => event.session.id === id);
+  await phone.engine('agent-restored', (event) => event.session.id === id);
 
   // Nothing in the listener's log is an error; it stops cleanly on SIGINT.
   assert.doesNotMatch(listener.output(), / error /);

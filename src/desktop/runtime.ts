@@ -1052,6 +1052,12 @@ export class DesktopRuntime {
     await this.databaseLock.acquire();
 
     try {
+      // Nothing can listen: shown as paused, and Resume is refused. Decided
+      // before the socket opens, so the first snapshot a client gets says so.
+      if (this.nothingCanListen() && !this.pause.paused) {
+        this.pause.toggle();
+      }
+
       await this.server.start();
 
       // The phone gateway reaches widget views through a private socket next
@@ -1095,11 +1101,6 @@ export class DesktopRuntime {
       // and without a desktop there is nothing to play them on.
       if (!this.options.preview && !this.options.headless) {
         await this.sounds.initialize();
-      }
-
-      // Nothing can listen: shown as paused, and Resume is refused.
-      if (this.nothingCanListen() && !this.pause.paused) {
-        this.pause.toggle();
       }
 
       this.ready = true;
