@@ -159,29 +159,25 @@ chat.attach(bridge);
 // exactly as a click on it in the list does (Workspace's list: leave the
 // settings screen, then select).
 //
-// A click moves the keyboard focus to the list; speech does not, so a text
-// box that has the focus is left first (README "Rule: spoken navigation").
-// Otherwise the chat page hands the focus to the next conversation's text
-// box, and a key already on its way (Enter) would send that conversation's
-// unsent text. After a spoken switch nothing in the page has the focus.
+// A click moves the keyboard focus to what was clicked; speech does not, so
+// whatever has the focus is left first (README "Rule: spoken navigation"):
+// the chat page would otherwise hand a text box's focus to the next
+// conversation's text box, and a key already on its way (Enter) would send
+// that conversation's unsent text, or activate a focused list button and
+// switch back. After a spoken switch nothing in the page has the focus.
 const spokenSelection = new SpokenSelection({
   store,
   open: (id) => {
-    leaveTextField();
+    leaveFocus();
     settingsView.setShown(false);
     store.open(id);
   },
 });
 
-/** Take the keyboard focus out of a text field (the text box), if one has it. */
-function leaveTextField(): void {
+/** Take the keyboard focus from whatever has it in the page. */
+function leaveFocus(): void {
   const focused = document.activeElement;
-  if (!(focused instanceof HTMLElement)) {
-    return;
-  }
-  const textField =
-    focused.tagName === 'TEXTAREA' || focused.tagName === 'INPUT' || focused.isContentEditable;
-  if (textField) {
+  if (focused instanceof HTMLElement && focused !== document.body) {
     focused.blur();
   }
 }

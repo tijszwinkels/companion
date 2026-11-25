@@ -170,6 +170,20 @@ test(
       "Z's unsent text was not sent",
     );
 
+    // 2b. The list button of Y has the focus (Y was just clicked): "go to
+    // session 3" switches to Z, and an Enter right after does not activate
+    // Y's button again.
+    assert.equal(await page.evaluate<string>(`document.activeElement?.tagName ?? ''`), 'BUTTON');
+    await say('go to session 3');
+    await page.waitFor(
+      `document.querySelector('.chat-bar-title')?.textContent.includes('Z conversation')`,
+      15_000,
+    );
+    await pressEnter(page);
+    assert.equal(await page.evaluate<string>(`document.activeElement?.tagName ?? ''`), 'BODY');
+    await waitFor(() => shownBy(ids[2]) && !shownBy(y), 15_000);
+    assert.match(await shownTitle(page), /Z conversation/);
+
     // 3. Under the settings screen A still has Y open: "go to session 1"
     // leaves the settings screen and shows X, as a click in the list does.
     await click(page, '.chat-bar .settings-toggle');

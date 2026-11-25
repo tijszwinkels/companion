@@ -1030,10 +1030,11 @@ conversation in the list**: it leaves the settings screen and selects the
 conversation. A focused text box does not stop it, and unsent text stays with
 its conversation, as on a click (it is there again on return). **After a
 spoken switch nothing in the page has the keyboard focus**: a click moves the
-focus to the list, speech does not, so a text box that had it is left first
-(otherwise the chat page would hand the focus to the next conversation's text
-box, and an Enter already on its way would send that conversation's unsent
-text). Click or press Tab to type again. It refuses
+focus to what was clicked, speech does not, so whatever had the focus (a text
+box, a list button) is left first. Otherwise the chat page would hand a text
+box's focus to the next conversation's text box, and an Enter already on its
+way would send that conversation's unsent text, or activate a focused list
+button and switch back. Click or press Tab to type again. It refuses
 only what the desktop's own go-to refuses (`AgentSessionState.qml`: the
 navigation token, the order revision, the conversation listed): nothing
 happens when this tab no longer shows what it showed at speech end (`from`;
@@ -1045,21 +1046,22 @@ browser does not offer). A started conversation is selected once it is
 listed, unless what is shown changed meanwhile (the rule of Start in
 Activity, `src/activity/select-started.ts`).
 
-| Case                                                                   | What happens                                                                                                       |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Follow-up spoken here; this tab shows Y, the desktop X                 | goes to Y                                                                                                          |
-| Follow-up spoken here; this tab shows Activity or Previous sessions    | no conversation: not delivered                                                                                     |
-| "Go to session 3" spoken here                                          | this tab selects conversation 3; the desktop stays                                                                 |
-| … while the text box has the focus and holds unsent text               | selects it; the text stays with its conversation; no text box has the focus, so an Enter right after sends nothing |
-| … while a send or a choice of the shown conversation awaits its answer | selects it (the send or choice continues there)                                                                    |
-| … under the settings screen                                            | leaves the settings screen and selects it                                                                          |
-| … while the tab is in the background                                   | selects it there                                                                                                   |
-| … after the reader selected another conversation meanwhile             | nothing                                                                                                            |
-| … after the order changed meanwhile, or the conversation closed        | nothing                                                                                                            |
-| "Pop out session 1" spoken here                                        | nothing (refused by the listener)                                                                                  |
-| A quick question or new session spoken here                            | shown here once listed; the desktop keeps its view                                                                 |
-| … after the reader selected another conversation meanwhile             | listed, not selected                                                                                               |
-| Speech heard by the computer's microphone, or by another device's tab  | this tab does not change                                                                                           |
+| Case                                                                   | What happens                                                                                                   |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Follow-up spoken here; this tab shows Y, the desktop X                 | goes to Y                                                                                                      |
+| Follow-up spoken here; this tab shows Activity or Previous sessions    | no conversation: not delivered                                                                                 |
+| "Go to session 3" spoken here                                          | this tab selects conversation 3; the desktop stays                                                             |
+| … while the text box has the focus and holds unsent text               | selects it; the text stays with its conversation; nothing has the focus, so an Enter right after sends nothing |
+| … while a list button has the focus (after a click)                    | selects it; nothing has the focus, so an Enter right after does not switch back                                |
+| … while a send or a choice of the shown conversation awaits its answer | selects it (the send or choice continues there)                                                                |
+| … under the settings screen                                            | leaves the settings screen and selects it                                                                      |
+| … while the tab is in the background                                   | selects it there                                                                                               |
+| … after the reader selected another conversation meanwhile             | nothing                                                                                                        |
+| … after the order changed meanwhile, or the conversation closed        | nothing                                                                                                        |
+| "Pop out session 1" spoken here                                        | nothing (refused by the listener)                                                                              |
+| A quick question or new session spoken here                            | shown here once listed; the desktop keeps its view                                                             |
+| … after the reader selected another conversation meanwhile             | listed, not selected                                                                                           |
+| Speech heard by the computer's microphone, or by another device's tab  | this tab does not change                                                                                       |
 
 The Listen here row does not name the target conversation: the chat bar
 already shows which conversation this tab has open.
@@ -1147,7 +1149,8 @@ unchanged:
   (not the desktop fixture, not another device's tab) while the text box has
   the focus and holds unsent text, which is still there on return, with
   Enter pressed right after the switch sending nothing of the destination's
-  own unsent text (and no text box keeping the focus), "go to
+  own unsent text (and no text box keeping the focus), the same after a click
+  in the list with Enter not switching back, "go to
   session 1" under the settings screen, and a quick question shown in the tab
   only.
 - `listen-soak.test.ts` (opt-in, COMPANION_LISTEN_SOAK_MINUTES) listens for
