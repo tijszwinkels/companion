@@ -88,6 +88,8 @@ async function press(page: TestPage, label: string, scope = 'document'): Promise
 }
 
 const bar = `document.querySelector('.application-bar')`;
+/** The chat beside the application, with its own header (⇥ Hide chat). */
+const chatPane = `document.querySelector('#application-chat')`;
 const applicationIframeExpression = `document.querySelector('#application-pane iframe')`;
 const rowsElement = `document.querySelector('#application-permissions')`;
 
@@ -153,12 +155,17 @@ test(
     assert.ok(split.barLeft <= split.paneLeft && split.barRight === 1280, JSON.stringify(split));
     assert.ok(split.paneTop >= split.barBottom, JSON.stringify(split));
     assert.equal(await horizontalOverflow(page), 0);
-    // The bar: the name and version, the permission status, App only and Permissions….
+    // The bar: the name and version, the permission status and
+    // Permissions…; App only is the chat's own ⇥ Hide chat, not in the bar.
     const barText = await page.evaluate<string>(`${bar}.textContent`);
     assert.match(barText, /chat-probe · v1/);
     assert.match(barText, /Chat reading off · sending off/);
-    assert.match(barText, /▣ App only/);
+    assert.doesNotMatch(barText, /App only|Hide chat/);
     assert.match(barText, /Permissions…/);
+    assert.equal(
+      await page.evaluate(`${chatPane}.querySelector('.chat-pane-header')?.textContent`),
+      'Chat⇥ Hide chat',
+    );
 
     // 1600 px: still split, the chat still 420 px.
     await setSize(page, 1600, 900);
@@ -187,7 +194,12 @@ test(
       true,
     );
     assert.equal(await applicationAddress(page), address);
-    assert.doesNotMatch(await page.evaluate<string>(`${bar}.textContent`), /Chat at the right/);
+    assert.doesNotMatch(
+      await page.evaluate<string>(`${bar}.textContent`),
+      /Chat at the right|Show chat/,
+    );
+    // The switch layout has no chat header.
+    assert.equal(await page.evaluate(`document.querySelector('.chat-pane-header')`), null);
     assert.equal(await horizontalOverflow(page), 0);
 
     // Chat, then the application again, with the switch.
@@ -312,16 +324,27 @@ test(
       assert.equal(await remembered(page, 'applicationChatWidth'), expected, key);
     }
 
-    // App only: the switch, remembered; after a reload still App only, with ◫.
-    await press(page, '▣ App only', bar);
-    await page.waitFor(`${drawn}.layout === 'switch'`);
+    // ⇥ Hide chat (App only): the switch showing the application,
+    // remembered; keyboard focus moves to ⇤ Show chat, which takes its
+    // place; ⇤ Show chat brings the chat back with the focus on ⇥ Hide chat.
+    await press(page, '⇥ Hide chat', chatPane);
+    await page.waitFor(`${drawn}.layout === 'switch' && ${drawn}.app && !${drawn}.chat`);
     assert.equal(await remembered(page, 'applicationLayout'), 'app-only');
+    await page.waitFor(`document.activeElement?.id === 'show-chat-beside'`);
+    assert.equal(await page.evaluate(`document.activeElement.textContent.trim()`), '⇤ Show chat');
+    await press(page, '⇤ Show chat', bar);
+    await page.waitFor(`${drawn}.layout === 'split'`);
+    assert.equal(await remembered(page, 'applicationLayout'), 'split');
+    await page.waitFor(`document.activeElement?.id === 'hide-chat'`);
+    // After a reload still App only, with ⇤ Show chat.
+    await press(page, '⇥ Hide chat', chatPane);
+    await page.waitFor(`${drawn}.layout === 'switch'`);
     await page.navigate(`${fixture.origin}/`);
     await openConversation(page, title);
     await page.waitFor(`${drawn}.layout === 'switch' && ${drawn}.app`);
-    assert.match(await page.evaluate<string>(`${bar}.textContent`), /◫ Chat at the right/);
+    assert.match(await page.evaluate<string>(`${bar}.textContent`), /⇤ Show chat/);
     // Back: the chat at the right, at its remembered width, after a reload too.
-    await press(page, '◫ Chat at the right', bar);
+    await press(page, '⇤ Show chat', bar);
     await page.waitFor(`${drawn}.layout === 'split'`);
     await page.navigate(`${fixture.origin}/`);
     await openConversation(page, title);
@@ -337,7 +360,7 @@ test(
     // second follows, but shows its chat and keeps the text box focused.
     await click(second.page, '#application-chat textarea');
     await second.page.waitFor(composerFocused);
-    await press(page, '▣ App only', bar);
+    await press(page, '⇥ Hide chat', chatPane);
     await second.page.waitFor(`${drawn}.layout === 'switch'`);
     assert.deepEqual(await second.page.evaluate(drawn), {
       layout: 'switch',
@@ -345,24 +368,31 @@ test(
       chat: true,
     });
     assert.equal(await second.page.evaluate(composerFocused), true);
-    await press(page, '◫ Chat at the right', bar);
+    // The second tab shows its chat: its bar offers ◫ Chat at the right.
+    assert.match(await second.page.evaluate<string>(`${bar}.textContent`), /◫ Chat at the right/);
+    await press(page, '⇤ Show chat', bar);
     await second.page.waitFor(`${drawn}.layout === 'split'`);
-    await press(page, '▣ App only', bar);
+    await press(page, '⇥ Hide chat', chatPane);
     await second.page.waitFor(`${drawn}.layout === 'switch'`);
-    await press(second.page, '◫ Chat at the right', bar);
+    // Here ⇤ Show chat has the focus (⇥ Hide chat was pressed); the other
+    // tab brings the chat back: the focus moves to ⇥ Hide chat here too.
+    await page.waitFor(`document.activeElement?.id === 'show-chat-beside'`);
+    await second.page.waitFor(`Boolean(document.querySelector('#show-chat-beside'))`);
+    await click(second.page, '#show-chat-beside');
     await page.waitFor(`${drawn}.layout === 'split'`);
+    await page.waitFor(`document.activeElement?.id === 'hide-chat'`);
     await second.page.close();
 
-    // The switch last showed the chat here: ▣ App only shows the application.
-    await press(page, '▣ App only', bar);
+    // The switch last showed the chat here: ⇥ Hide chat shows the application.
+    await press(page, '⇥ Hide chat', chatPane);
     await page.waitFor(`${drawn}.layout === 'switch'`);
     await press(page, 'Chat', bar);
     await page.waitFor(`${drawn}.chat && !${drawn}.app`);
     await press(page, '◫ Chat at the right', bar);
     await page.waitFor(`${drawn}.layout === 'split'`);
-    await press(page, '▣ App only', bar);
+    await press(page, '⇥ Hide chat', chatPane);
     await page.waitFor(`${drawn}.layout === 'switch' && ${drawn}.app && !${drawn}.chat`);
-    await press(page, '◫ Chat at the right', bar);
+    await press(page, '⇤ Show chat', bar);
     await page.waitFor(`${drawn}.layout === 'split'`);
 
     // Activity beside the chat at 1280 px: one more column; the area
@@ -389,7 +419,10 @@ test(
     await page.navigate(`${fixture.origin}/`);
     await openConversation(page, title);
     await page.waitFor(`${drawn}.layout === 'switch'`);
-    assert.doesNotMatch(await page.evaluate<string>(`${bar}.textContent`), /Chat at the right/);
+    assert.doesNotMatch(
+      await page.evaluate<string>(`${bar}.textContent`),
+      /Chat at the right|Show chat/,
+    );
     assert.equal(await horizontalOverflow(page), 0);
 
     assertTwoOrigins(fixture, page);
@@ -505,13 +538,11 @@ test(
     );
     await applicationShown(page);
 
-    // ▣ App only pressed while the text box keeps the focus (a press that
+    // ⇥ Hide chat pressed while the text box keeps the focus (a press that
     // does not move it): the reader's choice, the application is shown.
-    await page.evaluate(
-      `[...document.querySelectorAll('.application-bar button')].find((button) => button.textContent.trim() === '▣ App only').click()`,
-    );
+    await page.evaluate(`document.querySelector('#hide-chat').click()`);
     await page.waitFor(`${drawn}.layout === 'switch' && ${drawn}.app && !${drawn}.chat`);
-    await press(page, '◫ Chat at the right', bar);
+    await press(page, '⇤ Show chat', bar);
     await page.waitFor(`${drawn}.layout === 'split'`);
     await typeInComposer(page, '');
 
@@ -1266,7 +1297,7 @@ test(
     await setSize(page, 1280, 800);
     await save('application-1280-permissions.png');
     await press(page, 'Hide permissions', bar);
-    await press(page, '▣ App only', bar);
+    await press(page, '⇥ Hide chat', chatPane);
     await page.waitFor(`${drawn}.layout === 'switch'`);
     await save('application-1280-app-only.png');
     await setSize(page, 1600, 900);
@@ -1281,7 +1312,7 @@ test(
     await press(page, 'chat-probe · v1', bar);
     await setSize(page, 1280, 800);
     await page.waitFor(`${drawn}.layout === 'switch'`);
-    await press(page, '◫ Chat at the right', bar);
+    await press(page, '⇤ Show chat', bar);
     await page.waitFor(`${drawn}.layout === 'split'`);
 
     // A broken application: could not load.

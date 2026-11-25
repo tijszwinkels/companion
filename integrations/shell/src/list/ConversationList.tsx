@@ -94,7 +94,7 @@ export function ConversationList(props: {
   onShowSettings: () => void;
   /** The reader chose a conversation or Previous sessions: leave the settings screen. */
   onLeaveSettings: () => void;
-  /** The Display switches (whether running turn timers are shown). */
+  /** The Display switches (running turn timers, the second line under each title). */
   display: DisplaySettingsValues;
   ticker: TurnTicker;
 }) {
@@ -486,6 +486,11 @@ export function ConversationList(props: {
   }
 
   const classes = ['conversations', props.appearance];
+  // Settings → Display can hide the second line under each conversation's
+  // title (the full list's last line; the strip never draws it).
+  if (!props.display.listSubtitles) {
+    classes.push('no-subtitles');
+  }
   if (drag) {
     classes.push('dragging');
   }

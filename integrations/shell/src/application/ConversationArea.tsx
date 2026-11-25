@@ -6,9 +6,10 @@
  *
  *   split (wide window, chat at the right)      switch (App only, narrower)
  *   ┌───────────────────────────┬──────────┐    ┌──────────────────────────┐
- *   │ notes · v2  reading off  ▣ App only  │    │ Chat|notes · v2 … ◫ Perm…│
+ *   │ notes · v2  reading off     Perm…    │    │ Chat|notes · v2 ⇤ Perm…  │
  *   │ (permission rows)                    │    │ (permission rows)        │
- *   │ application               ┊ chat     │    │ application, or the chat │
+ *   │ application               ┊Chat ⇥Hide│    │ application, or the chat │
+ *   │                           ┊ chat     │    │                          │
  *   └───────────────────────────┴──────────┘    └──────────────────────────┘
  *
  * The element tree is the same in every case: the bar, the rows, the
@@ -25,6 +26,10 @@
  * application the switch layout shows (application-view.ts) and the
  * permission rows' state (chat-permissions.ts). This component applies
  * the application-change rule with every drawing, before reading them.
+ *
+ * Keyboard focus follows the reader between the chat pane's ⇥ Hide chat
+ * and the bar's ⇤ Show chat: each button goes away when pressed, so focus
+ * moves to the other, which takes its place as the way back.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -47,8 +52,14 @@ import {
   widestChatPane,
 } from './application-layout.ts';
 import type { ApplicationModes, SurfaceMode } from './application-view.ts';
-import { ApplicationBar, applicationChatId, NotSetUpBar } from './ApplicationBar.tsx';
+import {
+  ApplicationBar,
+  applicationChatId,
+  NotSetUpBar,
+  showChatButtonId,
+} from './ApplicationBar.tsx';
 import { ApplicationPane } from './ApplicationPane.tsx';
+import { ChatPaneHeader, hideChatButtonId } from './ChatPaneHeader.tsx';
 import {
   permissionIdentity,
   permissionSummary,
@@ -158,6 +169,33 @@ export function ConversationArea(props: {
     redraw();
   }
 
+  /**
+   * App only (the chat pane's ⇥ Hide chat): the application alone, also
+   * when the switch last showed the chat here; remembered.
+   */
+  function showAppOnly() {
+    modes.choose(id, 'app');
+    appOnlyPressed.current = true;
+    props.layout.setChoice('app-only');
+  }
+
+  // The button to focus after the drawing in which ⇥ Hide chat or ⇤ Show
+  // chat went away while focused (pressed here, or the layout changed in
+  // another tab), or ''. Used once; a button that is not drawn then (no
+  // room for the split) is not waited for.
+  const focusAfterLayout = useRef('');
+  useLayoutEffect(() => {
+    const target = focusAfterLayout.current;
+    focusAfterLayout.current = '';
+    if (target === '') {
+      return;
+    }
+    const button = document.getElementById(target);
+    if (button && !button.closest('[inert]')) {
+      button.focus();
+    }
+  });
+
   // The chat page's own application button, while the switch layout shows
   // the chat in place of the application (as on the desktop).
   const offered = paneApplication !== null && layout === 'switch' && mode === 'chat';
@@ -228,13 +266,15 @@ export function ConversationArea(props: {
         onMode={choose}
         splitPossible={possible}
         onSplit={(split) => {
-          // ▣ App only shows the application alone, also when the switch
-          // last showed the chat here.
           if (!split) {
-            modes.choose(id, 'app');
-            appOnlyPressed.current = true;
+            showAppOnly();
+            return;
           }
-          props.layout.setChoice(split ? 'split' : 'app-only');
+          focusAfterLayout.current = hideChatButtonId;
+          props.layout.setChoice('split');
+        }}
+        onShowChatFocusLost={() => {
+          focusAfterLayout.current = hideChatButtonId;
         }}
         summary={permissionSummary(access, admitted)}
         permissions={asks}
@@ -352,6 +392,20 @@ export function ConversationArea(props: {
           style={chatStyle}
           inert={!chatShown || props.covered}
         >
+          {/* The chat's own header, only beside the application. (Absent
+              otherwise; the chat below keeps its place among the
+              children, so it is not drawn anew.) */}
+          {layout === 'split' && (
+            <ChatPaneHeader
+              onHide={() => {
+                focusAfterLayout.current = showChatButtonId;
+                showAppOnly();
+              }}
+              onFocusLost={() => {
+                focusAfterLayout.current = showChatButtonId;
+              }}
+            />
+          )}
           {/* A new chat view for each conversation lifetime: the same ID
               reopened elsewhere (a new tool epoch) starts at its live end
               with a fresh editor, like a different conversation. */}

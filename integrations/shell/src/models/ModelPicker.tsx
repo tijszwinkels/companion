@@ -181,7 +181,19 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
         title={buttonLabel}
         onClick={toggle}
       >
-        <span class="model-name">{buttonText}</span>
+        {/* The part that tells the model apart (model-choice.ts
+            `closedModelName`); the full name is the button's title and
+            accessible name. Too narrow, the lead shortens first. */}
+        <span class="model-name">
+          {choice.current ? (
+            <>
+              {choice.closedName.lead && <span class="model-lead">{choice.closedName.lead}</span>}
+              <span class="model-distinct">{choice.closedName.distinct}</span>
+            </>
+          ) : (
+            <span class="model-distinct">{buttonText}</span>
+          )}
+        </span>
         <span aria-hidden="true"> ▾</span>
       </button>
       {open && (

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { chatMessage, type AgentSession } from '../../src/agents/types.ts';
 import {
+  closedModelName,
   modelChoice,
   type ModelCatalogs,
   type PickerState,
@@ -281,3 +282,72 @@ for (const testCase of cases) {
     }
   });
 }
+
+// ---- The closed picker's text (README "Model picker", rule 9) ---------------------
+
+test('closed picker: the part of the name that tells the model apart', () => {
+  const cases: { name: string; known: string[]; lead: string; distinct: string }[] = [
+    {
+      name: 'claude-sonnet-5',
+      known: ['claude-sonnet-5', 'claude-a'],
+      lead: '',
+      distinct: 'claude-sonnet-5',
+    },
+    {
+      name: 'openai-codex/gpt-5.1-codex-max',
+      known: ['local/qwen3-coder-30b', 'openai-codex/gpt-5.1-codex-max'],
+      lead: '',
+      distinct: 'gpt-5.1-codex-max',
+    },
+    { name: 'local/qwen', known: ['local/qwen', 'cloud/large'], lead: '', distinct: 'qwen' },
+    { name: 'local/qwen', known: ['cloud/qwen'], lead: 'local/', distinct: 'qwen' },
+    // A known name equal to the shorter ending also makes it ambiguous.
+    {
+      name: 'openrouter/openai/gpt-5',
+      known: ['openai/gpt-5'],
+      lead: 'openrouter/openai/',
+      distinct: 'gpt-5',
+    },
+    { name: 'openrouter/openai/gpt-5', known: ['azure/gpt-5'], lead: 'openai/', distinct: 'gpt-5' },
+    { name: 'ghost/model/', known: [], lead: '', distinct: 'ghost/model/' },
+    { name: 'gone/model', known: [], lead: '', distinct: 'model' },
+    {
+      name: 'synthetic/model',
+      known: ['synthetic/model', 'ghost/model'],
+      lead: 'synthetic/',
+      distinct: 'model',
+    },
+  ];
+  for (const testCase of cases) {
+    assert.deepEqual(
+      closedModelName(testCase.name, testCase.known),
+      { lead: testCase.lead, distinct: testCase.distinct },
+      `${testCase.name} among ${testCase.known.join(', ')}`,
+    );
+  }
+});
+
+test("closed picker: the choice names the next turn's model by its distinct part", () => {
+  // Pi, the profile default, the catalogue read.
+  assert.deepEqual(modelChoice(pi(), piCatalog, idle).closedName, { lead: '', distinct: 'large' });
+  // Pi before the catalogue is read: only the conversation's own model is known.
+  const unread: ModelCatalogs = { ...piCatalog, models: undefined };
+  assert.deepEqual(modelChoice(pi({ model: 'cloud/qwen' }), unread, idle).closedName, {
+    lead: '',
+    distinct: 'qwen',
+  });
+  // Pi, an own choice whose last part another known model shares.
+  const shared: ModelCatalogs = {
+    ...piCatalog,
+    models: { ...piCatalog.models!, models: ['local/qwen', 'cloud/qwen'] },
+  };
+  assert.deepEqual(modelChoice(pi({ modelOverride: 'cloud/qwen' }), shared, idle).closedName, {
+    lead: 'cloud/',
+    distinct: 'qwen',
+  });
+  // Claude Code: the name whole.
+  assert.deepEqual(modelChoice(claude(), claudeCatalog, idle).closedName, {
+    lead: '',
+    distinct: 'claude-b',
+  });
+});

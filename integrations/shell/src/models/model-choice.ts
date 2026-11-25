@@ -21,6 +21,11 @@
  *   the picker returns to the conversation's model. A model chosen
  *   elsewhere appears here with the conversation's next update.
  *
+ * - The closed picker (the button in the bar) names the model by the part
+ *   that tells it apart from the other models this page knows of
+ *   (`closedModelName`); the open list and the button's title text keep
+ *   the full name.
+ *
  * Input: the conversation, the phone Store's two catalogues and their
  * loading state, and this picker's own state. Output: `ModelChoice`, pure
  * data the component draws.
@@ -54,11 +59,25 @@ export interface ModelOption {
   value: string;
 }
 
+/**
+ * The closed picker's text, in two parts the button draws side by side:
+ * `lead` (a provider prefix such as `openai/`, kept only where the name
+ * would otherwise be ambiguous; often '') and `distinct` (the name's last
+ * part). Where the button is too narrow for both, the lead is shortened
+ * first, so the button never shows a prefix alone.
+ */
+export interface ClosedModelName {
+  lead: string;
+  distinct: string;
+}
+
 export interface ModelChoice {
   /** Which catalogue applies. */
   claude: boolean;
   /** The model the next turn uses, for the bar ('' when not known yet). */
   current: string;
+  /** `current` as the closed picker shows it (see `closedModelName`). */
+  closedName: ClosedModelName;
   /** Whether `current` is the profile's default (Pi, no own choice). */
   usesDefault: boolean;
   /** "This session · next turn model" (Pi) or "… Claude model". */
@@ -77,6 +96,49 @@ export interface ModelChoice {
   /** Whether the catalogue has loaded (else the component asks for it). */
   loaded: boolean;
   loading: boolean;
+}
+
+/**
+ * The closed picker's text for `name` among the `known` model names (the
+ * catalogue's models and the conversation's own; `name` itself may be
+ * among them):
+ *
+ * - a name without `/` (Claude Code's `claude-sonnet-5`) is shown whole;
+ * - otherwise the shortest ending of whole `/`-separated parts that no
+ *   other known name has: `openai-codex/gpt-5.1-codex` becomes
+ *   `gpt-5.1-codex` unless another known name also ends in
+ *   `/gpt-5.1-codex` (then `openai-codex/gpt-5.1-codex`, and so on);
+ * - the whole name when no shorter ending is unique, or when its last part
+ *   is empty.
+ *
+ * The result's `distinct` is the last part, `lead` what is kept before it
+ * (with its `/`).
+ */
+export function closedModelName(name: string, known: readonly string[]): ClosedModelName {
+  const parts = name.split('/');
+  const lastPart = parts[parts.length - 1];
+  if (parts.length === 1 || lastPart === '') {
+    return { lead: '', distinct: name };
+  }
+
+  const others = known.filter((other) => other !== name);
+  for (let count = 1; count < parts.length; count++) {
+    const ending = parts.slice(parts.length - count).join('/');
+    const shared = others.some((other) => other === ending || other.endsWith('/' + ending));
+    if (!shared) {
+      return splitLastPart(ending);
+    }
+  }
+  return splitLastPart(name);
+}
+
+/** `text` as the lead up to and including its last `/`, and the rest. */
+function splitLastPart(text: string): ClosedModelName {
+  const slash = text.lastIndexOf('/');
+  if (slash < 0) {
+    return { lead: '', distinct: text };
+  }
+  return { lead: text.slice(0, slash + 1), distinct: text.slice(slash + 1) };
 }
 
 /** Whether `session` is a Claude Code conversation. */
@@ -137,6 +199,12 @@ function piChoice(session: AgentSession, catalogs: ModelCatalogs, picker: Picker
     current = defaultModel || session.model || '';
   }
 
+  // Every model name this page knows of, for the closed picker's text.
+  const known: string[] = [current, override, defaultModel, session.model || ''];
+  if (catalog) {
+    known.push(...catalog.models);
+  }
+
   let showAllLabel = '';
   if (catalog && catalog.pinned !== undefined && catalog.pinned.length < catalog.models.length) {
     showAllLabel = picker.showAll ? 'Pinned models only' : 'Show all models';
@@ -154,6 +222,7 @@ function piChoice(session: AgentSession, catalogs: ModelCatalogs, picker: Picker
   return {
     claude: false,
     current: current,
+    closedName: closedModelName(current, known),
     usesDefault: override === '',
     caption: 'This session · next turn model',
     options: options,
@@ -201,9 +270,12 @@ function claudeChoice(session: AgentSession, catalogs: ModelCatalogs, picker: Pi
     status = catalogs.claudeModelsError;
   }
 
+  const current = model || session.model || '';
+
   return {
     claude: true,
-    current: model || session.model || '',
+    current: current,
+    closedName: closedModelName(current, [model, ...listed]),
     usesDefault: false,
     caption: 'This session · next turn Claude model',
     options: options,

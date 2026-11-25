@@ -26,7 +26,12 @@
  */
 
 import { narrowWindowBelow } from './activity-width.ts';
-import { dividerLayoutWidth, shownListWidth } from './list-width.ts';
+import {
+  defaultListStyle,
+  dividerLayoutWidth,
+  shownListWidth,
+  type ListStyle,
+} from './list-width.ts';
 
 /** Where the person put the pinned widget in this browser. */
 export type PinnedPlacePreference = 'auto' | 'right' | 'top';
@@ -60,6 +65,8 @@ export interface PlaceInputs {
   /** Whether the conversation list is shown, and its preferred width. */
   listShown: boolean;
   listPreference: number;
+  /** The list's style (Settings → Display); `by-width` when not given. */
+  listStyle?: ListStyle;
   /**
    * The width the shown Activity column and its divider take beside the
    * chat (activity-width.ts `activityReservedWidth`), 0 while it is hidden.
@@ -80,11 +87,12 @@ export function spaceBesideList(
   listShown: boolean,
   listPreference: number,
   activityReserved: number,
+  listStyle: ListStyle = defaultListStyle,
 ): number {
   if (!listShown) {
     return windowWidth;
   }
-  const listWidth = shownListWidth(listPreference, windowWidth - activityReserved);
+  const listWidth = shownListWidth(listPreference, windowWidth - activityReserved, listStyle);
   return windowWidth - listWidth - dividerLayoutWidth;
 }
 
@@ -102,6 +110,7 @@ export function pinnedPlace(inputs: PlaceInputs): PinnedPlace {
     inputs.listShown,
     inputs.listPreference,
     inputs.activityReserved,
+    inputs.listStyle,
   );
   if (spaceWidth > inputs.windowHeight) {
     return 'right';

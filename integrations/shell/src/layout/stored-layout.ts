@@ -5,7 +5,9 @@
  * Kept in `localStorage` as independent entries, each JSON
  * `{ "version": 1, "value": … }`:
  *
- * - `companion.shell.layout.listWidth`: the list's preferred width in pixels;
+ * - `companion.shell.layout.listWidth`: the list's preferred width in pixels,
+ *   a whole number from the strip's width to the widest list, the same for
+ *   every list style (each style reads it by its own range, list-width.ts);
  * - `companion.shell.layout.listShown`: whether the list is shown;
  * - `companion.shell.layout.activityWidth`: the Activity column's preferred
  *   width in pixels;
@@ -44,7 +46,7 @@ import {
   type ApplicationLayoutChoice,
 } from '../application/application-layout.ts';
 import { activityDefaultWidth, validActivityWidth } from './activity-width.ts';
-import { stripWidth, validListWidth } from './list-width.ts';
+import { storedListWidth, stripWidth } from './list-width.ts';
 import {
   defaultPinnedPlace,
   isPinnedPlacePreference,
@@ -65,7 +67,10 @@ export const applicationLayoutKey = `${layoutStoragePrefix}applicationLayout`;
 export const applicationChatWidthKey = `${layoutStoragePrefix}applicationChatWidth`;
 
 export interface ListLayout {
-  /** Preferred width in CSS pixels: the strip's, or a full list's (see list-width.ts). */
+  /**
+   * Preferred width in CSS pixels, from the strip's width to the widest
+   * list; the list style decides how it is shown (see list-width.ts).
+   */
   listWidth: number;
   /** Whether the list is shown (the ☰ button hides and shows it). */
   listShown: boolean;
@@ -168,7 +173,7 @@ export function readLayout(storage: LayoutStorage): ListLayout {
   const layout = { ...defaultLayout };
   const width = readEntry(storage, listWidthKey);
   if (typeof width === 'number') {
-    layout.listWidth = validListWidth(width);
+    layout.listWidth = storedListWidth(width);
   }
   const shown = readEntry(storage, listShownKey);
   if (typeof shown === 'boolean') {
@@ -179,7 +184,7 @@ export function readLayout(storage: LayoutStorage): ListLayout {
 
 /** Remember the preferred width (and only it). */
 export function writeListWidth(storage: LayoutStorage, width: number): void {
-  writeEntry(storage, listWidthKey, validListWidth(width));
+  writeEntry(storage, listWidthKey, storedListWidth(width));
 }
 
 /** Remember whether the list is shown (and only that). */

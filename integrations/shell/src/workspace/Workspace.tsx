@@ -73,7 +73,14 @@ import {
 } from '../layout/activity-width.ts';
 import type { ActivityOverlay } from '../layout/activity-overlay.ts';
 import { Divider } from '../layout/Divider.tsx';
-import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width.ts';
+import {
+  narrowestListWidth,
+  stripWidth,
+  widthFromKey,
+  widthFromPointer,
+  type ListAppearance,
+  type ListStyle,
+} from '../layout/list-width.ts';
 import {
   bandPercent,
   pinnedPlace,
@@ -96,6 +103,7 @@ import type { InlineWidgetEnvironment } from '../widgets/InlineWidget.tsx';
 import { pinnedWidget } from '../widgets/pinned-widget.ts';
 import { BarState } from './BarState.tsx';
 import { ChatBar } from './ChatBar.tsx';
+import { NewWindowButton } from './NewWindowButton.tsx';
 import { PinnedWidgetPanel, pinnedWidgetId } from './PinnedWidget.tsx';
 import { PreviousSessions } from './PreviousSessions.tsx';
 
@@ -181,6 +189,7 @@ export function Workspace(props: {
       windowHeight: pinnedLayout.windowHeight,
       listShown,
       listPreference,
+      listStyle: display.listStyle,
       activityReserved: activityReservedWidth(
         activity.preference,
         activity.shown,
@@ -202,7 +211,7 @@ export function Workspace(props: {
       windowWidth,
       listShown,
     );
-  });
+  }, display.listStyle);
   const columnWidth = sideColumnWidth(activity.preference, windowWidth, layout.shown);
   const place = placeFor(layout.shown, layout.preference);
   const pinnedRight = pinned !== null && place === 'right';
@@ -484,14 +493,16 @@ export function Workspace(props: {
           />
           <Divider
             width={layout.width}
-            narrowest={stripWidth}
+            narrowest={Math.min(narrowestListWidth(layout.style), layout.widest)}
             widest={layout.widest}
             label="Conversation list width"
             title="Drag to change the width of the conversation list"
-            valueText={listValueText(layout.width)}
+            valueText={listValueText(layout.width, layout.appearance, layout.style)}
             controls={conversationListId}
-            fromPointer={(clientX, container) => widthFromPointer(clientX - container.left)}
-            fromKey={widthFromKey}
+            fromPointer={(clientX, container) =>
+              widthFromPointer(clientX - container.left, layout.style)
+            }
+            fromKey={(key, shownWidth) => widthFromKey(key, shownWidth, layout.style)}
             onWidth={layout.setWidth}
             onRemember={layout.remember}
           />
@@ -573,9 +584,12 @@ export function Workspace(props: {
   );
 }
 
-/** The list divider's value in words. */
-function listValueText(width: number): string {
-  if (width === stripWidth) {
+/** The list divider's value in words: the appearance, and the width where it can vary. */
+function listValueText(width: number, appearance: ListAppearance, style: ListStyle): string {
+  if (style === 'compact') {
+    return `Compact list, ${width} pixels`;
+  }
+  if (appearance === 'strip' || width === stripWidth) {
     return 'Strip';
   }
   return `Full list, ${width} pixels`;
@@ -654,7 +668,9 @@ function MainArea(props: {
         }
         model={<ModelPicker key={lifetime} session={selected} admitted={props.bridge.admitted} />}
         {...barControls}
-      />
+      >
+        <NewWindowButton sessionId={selected.id} />
+      </ChatBar>
     );
     content = (
       <ConversationArea

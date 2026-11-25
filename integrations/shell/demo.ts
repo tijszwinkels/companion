@@ -217,9 +217,9 @@ try {
     join(directory, 'companion-agent.json'),
     JSON.stringify({
       executable: 'demo-no-executable',
-      model: 'cloud/demo-model',
+      model: 'openai-codex/gpt-5.1-codex-max',
       thinking: 'medium',
-      quickQuestion: { model: 'local/qwen-demo', thinking: 'off' },
+      quickQuestion: { model: 'local/qwen3-coder-30b', thinking: 'off' },
     }),
     { mode: 0o600 },
   );
@@ -765,11 +765,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
         run: scriptedRun,
         async models() {
           return {
-            models: ['local/qwen-demo', 'cloud/demo-model'],
-            pinned: ['local/qwen-demo'],
+            models: ['local/qwen3-coder-30b', 'openai-codex/gpt-5.1-codex-max'],
+            pinned: ['local/qwen3-coder-30b'],
             thinkingLevels: {
-              'local/qwen-demo': ['off', 'low'],
-              'cloud/demo-model': ['off', 'low', 'medium', 'high'],
+              'local/qwen3-coder-30b': ['off', 'low'],
+              'openai-codex/gpt-5.1-codex-max': ['off', 'low', 'medium', 'high'],
             },
           };
         },

@@ -10,7 +10,9 @@ A paired browser can:
 
 1. pair with the gateway and reconnect, exactly as the phone panel does;
 2. show the open conversations in a list on the left, as a narrow strip or a
-   full list, and switch between them (see
+   full list (by its width, or always one of them: see
+   [list style](#list-style)), and switch between them, also in a
+   [new window](#a-conversation-in-a-new-window) (see
    [conversation list and layout](#conversation-list-and-layout)), with
    unread answers marked the same on every browser and phone (see
    [markers](#markers)); close them, reorder them by dragging, by keyboard
@@ -69,10 +71,11 @@ The arrangement is the same at every window width, as in the agreed design:
   icon (a leading emoji of the title, or "Q" and its number; with an emoji
   the number is drawn beside it). The emoji is the title's first character
   as the reader sees it (one grapheme cluster), so "🧪Investigate" keeps
-  its first word in the title. At the strip's width a short name is below
+  its first word in the title. As the strip a short name is below
   the icon; as a full list the title and the conversation's last line (one
-  muted line) are next to it. Each entry is a button named by its number,
-  title and markers, with the last line as its description.
+  muted line, which Settings → Display can hide) are next to it. Each
+  entry is a button named by its number, title and markers, with the last
+  line as its description.
 - **The divider** between the list and the chat changes the list's width by
   dragging, or from the keyboard (it is a focusable separator named
   "Conversation list width").
@@ -119,7 +122,13 @@ The arrangement is the same at every window width, as in the agreed design:
 - **Look**: only the current Companion's values: the chat page's default
   theme and PanelAction buttons (`../session-apps/chat/styles.css`) and the
   native rail's tabs (`../session-apps/rail/styles.css` at theme unit 1).
-  The full list's and the bar's text sizes are those of the agreed design.
+  The full list's and the bar's text sizes are those of the agreed design,
+  except the conversation titles (2026-11-25, the user found them smaller
+  than in the desktop sidebar): in the strip 11.25 px (was 9 px), the
+  desktop rail's title (9 units of its tab unit, which is 1.25 × the theme
+  unit), and in the full list 14 px (was 13 px). Activity, Previous
+  sessions and Settings keep 9 px and 13 px, and the last lines, numbers
+  and timers keep their sizes.
 
 Only actions the gateway's remote role already allows leave the page:
 `move-agent` with the order revision, `close-agent`, `reopen-agent` and those
@@ -129,9 +138,14 @@ of slice 1.
 
 Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
 
+This is the rule of the **By width** list style, the default; Compact and
+Full change rules 1 to 3 and 5 (see [list style](#list-style)).
+
 1. The list has two appearances. The **strip** is exactly 78 px wide; the
-   **full list** is 150 to 420 px wide. The width remembered is always one
-   of these.
+   **full list** is 150 to 420 px wide. The width remembered is a whole
+   number from 78 to 420 px (the same entry for every style); By width
+   shows a remembered width under 114 px as the strip and one from 114 to
+   149 px as the 150 px full list.
 2. Dragging the divider: a pointer left of 114 px (halfway between the two)
    gives the strip; at or right of it a full list as wide as the pointer's
    position, within 150 and 420 px. The width follows the pointer while
@@ -156,9 +170,10 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
    each `{"version":1,"value":…}`. They describe only this page's
    arrangement, not the person or their conversations, so they are not
    cleared on sign-out. An entry that is missing, unreadable, of another
-   version or of the wrong type gives its own default (the strip; shown). A
-   change writes only its own entry. A storage that cannot be written keeps
-   the page's values for this page.
+   version or of the wrong type gives its own default (the strip; shown); a
+   width outside 78 to 420 px is read as the nearer end. A change writes
+   only its own entry. A storage that cannot be written keeps the page's
+   values for this page.
 7. Tabs of the same browser share the entries: a tab follows each entry
    another tab writes (also one written while it was starting), and since
    each change writes only its own entry, changes of different entries in
@@ -186,6 +201,114 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
 | Width changed in another tab, then ☰ here                                    | This tab shows that width; ☰ keeps it             |
 | Width and ☰ in two tabs at the same moment                                   | Both kept                                          |
 | Sign-out and pairing again                                                    | Layout kept                                        |
+
+### List style
+
+Before 2026-11-25 the list's appearance followed its width only, so a
+reader who liked the strip's small text could not make it wider: past
+114 px it became the full list. Settings → Display → **Conversation list**
+chooses the style (`src/layout/list-width.ts`, stored by
+`src/settings/display-settings.ts`):
+
+1. **By width** (the default): the rules above, unchanged.
+2. **Compact**: always the strip's appearance (the icon, the short name
+   below it in small text, the running time under the name), at any width
+   from 78 to 420 px. Dragging the divider gives the pointer's position
+   within 78 and 420 px, without snapping; Right and Left change it by
+   20 px within that range, Home gives 78 px, End 420 px. With more width
+   the name shows more of the title on its two lines; nothing else changes.
+   The window narrows it as in rule 5, but never under 78 px.
+3. **Full**: always the full list, from 150 to 420 px: dragging gives the
+   pointer's position within 150 and 420 px; Right and Left change it by
+   20 px within that range, Home gives 150 px, End 420 px. Only a window
+   too narrow for a 150 px list beside the chat's 320 px shows the strip,
+   as By width does (rule 5); a wider window shows the full list again.
+4. The remembered width is one entry for every style (rule 6), read by the
+   chosen style's range: switching the style never rewrites it. A width
+   remembered as 100 px is the strip in By width, a 100 px compact list in
+   Compact and a 150 px full list in Full.
+5. ☰ hides and shows the list in every style; the divider works in every
+   style; the remembered hidden state is the same entry for every style.
+6. The style is remembered in this browser as
+   `companion.shell.display.listStyle`, `{"version":1,"value":"by-width"|"compact"|"full"}`,
+   with the Display switches' rules: missing, unreadable, of another version
+   or another value gives By width; a change writes only that entry; a
+   storage that refuses writes keeps the choice for this page; other tabs
+   follow it when they see it written; not cleared on sign-out.
+
+| Case                                                  | Result                                                   |
+| ----------------------------------------------------- | -------------------------------------------------------- |
+| Nothing remembered                                    | By width: the strip at 78 px, as before                  |
+| Compact; divider dragged to 100 / 200 / 600 px        | The strip's appearance at 100 / 200 / 420 px, remembered |
+| Compact; divider dragged to 40 px                     | 78 px                                                    |
+| Compact; Right from 78 px, Left from 98 px, Home, End | 98, 78, 78, 420 px                                       |
+| Full; divider dragged to 40 / 200 / 600 px            | Full list at 150 / 200 / 420 px                          |
+| Full; Left from 150 px, Home, End                     | 150, 150, 420 px                                         |
+| Compact, 200 px remembered; window 420 px             | Compact at 99 px (420 − 321)                             |
+| Compact, 200 px remembered; window 300 px             | Compact at 78 px                                         |
+| Full, 300 px remembered; window 470 / 471 px          | Strip / full list at 150 px                              |
+| 100 px remembered: By width, Compact, Full            | Strip, compact at 100 px, full list at 150 px            |
+| Compact chosen in another tab                         | This tab shows the compact list at the remembered width  |
+| Style entry `"wide"`, `3`, of version 2, not JSON     | By width                                                 |
+| Storage refuses writes; Compact chosen                | Compact for this page; a reload shows By width           |
+| ☰ in Compact or Full                                 | Hidden; again: shown at its width in the same style      |
+
+The second line under each title is a Display switch of its own,
+"Show a second line under each conversation title" (on by default): off,
+the full list shows each conversation's title only, centred beside its
+icon (entries keep their 52 px minimum height; one whose running time
+wraps under a narrow list gets lower by the missing line); the unread and working markers, the
+running time and the ⋯ and × buttons stay; Activity, Previous sessions and
+Settings keep their line (Activity's carries the listening state). The
+strip never draws the second line. The last line stays the entry's
+accessible description either way.
+
+### A conversation in a new window
+
+To keep an eye on one conversation while the main window shows others,
+the bar above a conversation has **⧉** ("Open this conversation in a new
+window", left of the gear). Rule (`src/workspace/new-window.ts`):
+
+1. ⧉ opens this page's own address with `#conversation=<id>` in a new
+   browser window (760 × 860 px where the browser allows it: wider than a
+   narrow window, so a remembered Activity column is beside the chat, not
+   over it), without a handle between the two windows (`noopener`). It is on the
+   bar of a conversation only, not on Previous sessions, the empty view or
+   the settings screen.
+2. The new window is an ordinary tab of the shell: the same pairing (this
+   browser's storage; a browser that refused to store the pairing keeps it
+   in the first window only, so the new one asks to pair), the same
+   display settings and layout, and one more
+   of this browser's connections. The gateway admits at most four per
+   device: a fifth window shows the [limit page](#the-limit-page) ("This
+   browser already has four Companion tabs connected. Close one you do not
+   need, then Retry.") and opens the conversation once Retry is admitted.
+   Nothing else is asked or allowed.
+3. A page whose address has `#conversation=<id>` when it loads shows, once
+   this connection's first snapshot has arrived: the conversation, if it is
+   open (in place of the empty view, so Back does not lead to it); Previous
+   sessions with the toast "That conversation was closed meanwhile. It is
+   in Previous sessions.", if it was closed; else the empty view with the
+   toast "That conversation is not open in Companion."
+4. Each tab keeps its own selection (as before), so the new window stays on
+   its conversation while the main window switches, and the other way
+   round. The fragment is read once, when the page loads, and nothing
+   writes it: it stays in the address, so reloading that window shows the
+   conversation again, also after the reader chose another one there.
+   Editing the fragment by hand is a step in the page's history: like Back
+   to an entry the page does not know (as before this rule), it shows the
+   empty view; the named conversation is shown after a reload.
+
+| Case                                                     | Result                                                         |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| ⧉ on a conversation                                      | A new window at this address with `#conversation=<id>`         |
+| A window opened on a conversation that is open           | It shows that conversation; the main window's choice unchanged |
+| The main window switches to another conversation         | The new window stays on its own                                |
+| Opened on one that was closed meanwhile                  | Previous sessions and the toast                                |
+| Opened on an unknown ID, or with broken percent-encoding | The empty view and the toast (nothing for broken encoding)     |
+| Reload of the new window                                 | The same conversation again                                    |
+| A fifth window of this browser                           | The limit page; after Retry is admitted, the conversation      |
+| Previous sessions, the empty view, the settings screen   | No ⧉                                                           |
 
 ### Reordering by dragging
 
@@ -1203,7 +1326,9 @@ on.
    (Copy, Discard).
 
 It has two sections. **Display**: three switches with one line each, the
-agreed design's wording, this browser's own (rules below). **Listening**:
+agreed design's wording, then the conversation list's style (Compact, Full,
+By width; see [list style](#list-style)) and the switch "Show a second line
+under each conversation title", all this browser's own (rules below). **Listening**:
 the listener's Sound feedback switch and one switch per intent and per
 shortcut, as the phone panel offers them. These are Companion's own
 settings, shared with the computer and every client.
@@ -1212,11 +1337,14 @@ settings, shared with the computer and every client.
 
 Rule (`src/settings/display-settings.ts`):
 
-1. Turn timers, Last turn duration and Message timestamps are each **on**
-   unless switched off here, and apply at once (rows already shown included).
+1. Turn timers, Last turn duration, Message timestamps and the second line
+   under each conversation title are each **on** unless switched off here,
+   and apply at once (rows already shown included). The list's style is By
+   width unless chosen here, and applies at once.
 2. Each is remembered in this browser's `localStorage` as its own entry,
-   `companion.shell.display.turnTimers`, `….lastTurnDuration` and
-   `….messageTimestamps`, `{"version":1,"value":true|false}`, with the layout
+   `companion.shell.display.turnTimers`, `….lastTurnDuration`,
+   `….messageTimestamps` and `….listSubtitles`,
+   `{"version":1,"value":true|false}`, and `….listStyle` (list style, rule 6), with the layout
    entries' rules: an entry that is missing, unreadable, of another version
    or not a boolean gives its default (on); a change writes only its own
    entry; a storage that refuses writes keeps the switch for this page; not
@@ -1225,7 +1353,7 @@ Rule (`src/settings/display-settings.ts`):
 
 | Case                                                | Result                                                       |
 | --------------------------------------------------- | ------------------------------------------------------------ |
-| Nothing remembered                                  | All three on                                                 |
+| Nothing remembered                                  | All four on; list style By width                             |
 | Turn timers switched off                            | Its entry `false`; the other two not written; on as before   |
 | Last turn duration switched off                     | Its entry `false` only                                       |
 | Message timestamps switched off                     | Its entry `false` only                                       |
@@ -1234,7 +1362,8 @@ Rule (`src/settings/display-settings.ts`):
 | Another tab switches one                            | This tab follows that switch only                            |
 | Two tabs switch different ones at the same moment   | Both kept, in both tabs                                      |
 | Storage refuses writes; one switched off            | Off for this page; a reload shows it on (nothing remembered) |
-| Storage cannot be used at all                       | All on; switches work for this page                          |
+| Storage cannot be used at all                       | All on, By width; switches and style work for this page      |
+| Second line switched off                            | Its entry `false` only; the full list shows titles only      |
 | Entry not JSON, of version 2, `"no"`, `0` or `null` | That switch on (its default); the others as remembered       |
 | Another tab clears the whole storage                | This tab reloads (the pairing is gone too); all on           |
 | Sign-out and pairing again                          | Kept                                                         |
@@ -1586,22 +1715,61 @@ The rule:
 8. **No conversation shown** (Previous sessions, nothing selected) and **the
    settings screen open**: the bar has no picker. The picker belongs to one
    conversation lifetime: another conversation starts with it closed.
-9. Keyboard: the button opens and closes it (Enter, Space); Tab moves
-   through its controls; the model list is a native select; Escape closes it
-   wherever the focus is and returns focus to the button. A click outside closes it, and so does
-   keyboard focus moving on to another control of the page. At 420 px it
-   stays inside the window.
+9. **The closed picker's text** (2026-11-25: names such as
+   `openai-codex/gpt-5.1-codex-max` were cut to `openai-codex/gpt-…`): the
+   part of the model's name that tells it apart from the other models this
+   page knows of (the catalogue, once read, and the conversation's own and
+   default model): a name without `/` whole; otherwise the shortest ending
+   of whole `/`-separated parts that no other known name has, else the whole
+   name. The open list and the button's title text and accessible name
+   keep the full name. At 1280 px and wider the button may take the
+   heading's whole width (on a line of its own under the title where it
+   does not fit beside it; 22 characters below 1280 px), and where even
+   the heading is narrower (the widest list and Activity column together)
+   that part wraps onto a second line, so it is shown in full; below
+   1280 px, where the
+   button is narrower than its text (a 420 px window), the part before the
+   last `/` (when shown) gives up its room first and the last part is
+   shortened last, so the button never shows a prefix alone. Until the
+   catalogue is read (the picker was not opened yet), only the
+   conversation's own models are known, so a name can be shortened that
+   becomes longer once the catalogue shows another model with the same
+   ending.
+10. Keyboard: the button opens and closes it (Enter, Space); Tab moves
+    through its controls; the model list is a native select; Escape closes it
+    wherever the focus is and returns focus to the button. A click outside closes it, and so does
+    keyboard focus moving on to another control of the page. At 420 px it
+    stays inside the window.
 
 `test/shell/model-choice.test.ts` plays the rule's table for the data it
 shows (Pi and Claude Code, idle and running, a quick question, an unlisted
 choice, changed elsewhere, the list not read yet, loading or failed, a
-change on its way, not connected). `test/shell/details-browser.test.ts`
+change on its way, not connected) and the closed picker's table of names
+(rule 9); `test/shell/model-button.test.ts` draws it at 420, 1280 and
+1600 px. `test/shell/details-browser.test.ts`
 covers the rows that need the page against the real gateway and listener:
 opened by keyboard, Show all models, a change during a running turn reaching
 the listener, a refusal shown, Escape with focus back, a refusal arriving after
 the picker was closed (a toast), Tab out of the picker closing it, a change made
 elsewhere appearing, the settings screen and Previous sessions without a
 picker, and a Claude Code conversation's models and fixed effort.
+
+| Model name (others known)                                  | Closed text                            |
+| ---------------------------------------------------------- | -------------------------------------- |
+| `claude-sonnet-5` (Claude Code)                            | `claude-sonnet-5`                      |
+| `openai-codex/gpt-5.1-codex-max` (`local/qwen3-coder-30b`) | `gpt-5.1-codex-max`                    |
+| `local/qwen` (`cloud/large`)                               | `qwen`                                 |
+| `local/qwen` (`cloud/qwen`)                                | `local/qwen`, `local/` shortened first |
+| `openrouter/openai/gpt-5` (`openai/gpt-5`)                 | `openrouter/openai/gpt-5`              |
+| `openrouter/openai/gpt-5` (`azure/gpt-5`)                  | `openai/gpt-5`                         |
+| `ghost/model/` (an empty last part)                        | `ghost/model/`                         |
+| None known yet                                             | `Model`                                |
+
+Known limit (open, 2026-11-25): at 1280 px with the widest list and
+Activity column together, a model whose closed text needs its provider
+part (another model has the same long ending) can have that part shortened
+to nothing while the long ending wraps, so the two look alike there; the
+title and the open list still tell them apart.
 
 Known limit: the picker keeps its "change on its way" state while it is
 drawn. Leaving the conversation for the settings screen and coming back
@@ -2220,9 +2388,10 @@ the agreed design of 2026-11-20:
  wide window: the chat at the right                 App only, and every narrower window
 ┌──────┬┬─────────────────────────────────────────┐ ┌──────┬┬───────────────────────────┐
 │ list ││ ☰ title              ready  model ⚙ ☰  │ │ list ││ ☰ title    ready  ⚙ ☰    │
-│      ││ notes · v2  Chat reading off ▣ Perm…   │ │      ││ Chat|notes · v2 ◫ Perm…   │
+│      ││ notes · v2  Chat reading off    Perm…   │ │      ││ Chat|notes · v2 ⇤ Perm…   │
 │      ││ (permission rows, when shown)           │ │      ││ (permission rows)         │
-│      ││ application             ┊ chat (420 px) │ │      ││ the application, or chat  │
+│      ││ application             ┊Chat ⇥Hide chat│ │      ││ the application, or chat  │
+│      ││                         ┊ chat (420 px) │ │      ││                           │
 └──────┴┴─────────────────────────────────────────┘ └──────┴┴───────────────────────────┘
 ```
 
@@ -2248,20 +2417,26 @@ drawn by `src/application/ConversationArea.tsx`):
    address it is only named (the application-change rule, case "No frame
    address").
 2. The reader chooses, in this browser, between **the chat at the right**
-   (`split`, the default) and **App only** (`app-only`): **▣ App only** in
-   the bar of the split layout (which also makes the switch show the
-   application, whatever it showed for this conversation before), **◫ Chat
-   at the right** in the bar of the switch layout.
+   (`split`, the default) and **App only** (`app-only`): **⇥ Hide chat** in
+   the chat's own header in the split layout (which also makes the switch
+   show the application, whatever it showed for this conversation before),
+   and in the bar of the switch layout **⇤ Show chat** while the
+   application is shown, **◫ Chat at the right** while the chat is (both
+   choose the chat at the right). Keyboard focus moves from ⇥ Hide chat to
+   ⇤ Show chat and back, as each takes the other's place. (Until
+   2026-11-25 the split layout's bar had ▣ App only instead; the user did
+   not find it there, and it would now duplicate ⇥ Hide chat, so it is
+   gone.)
 3. The **split layout** is drawn when the choice is the chat at the right,
    the window is at least **1100 px** wide, and the area beside the list and
    the right column (as their own rules leave it) is at least **641 px**:
    the application's 320 px minimum, the divider and the chat's 320 px.
-   Otherwise the **switch layout** is drawn. ◫ Chat at the right is offered
-   only where the split layout can be drawn. The window never changes the
+   Otherwise the **switch layout** is drawn. ⇤ Show chat and ◫ Chat at the
+   right are offered only where the split layout can be drawn. The window never changes the
    choice, so the split layout returns when the window is wide again.
 4. **Split:** the application at the left, the chat at the right, 420 px
-   wide at first, a divider between them (a focusable separator named
-   "Chat width"). The chat is 320 to 640 px wide, and never so wide that
+   wide at first, under its own one-line header ("Chat" and ⇥ Hide chat),
+   a divider between them (a focusable separator named "Chat width"). The chat is 320 to 640 px wide, and never so wide that
    the application has less than 320 px. Dragging gives the chat the
    distance from the pointer to the area's right edge, remembered once,
    when the drag ends; a press that does not move changes nothing; Left
@@ -2314,32 +2489,35 @@ drawn by `src/application/ConversationArea.tsx`):
    see written, so two tabs that choose differently one after the other
    both show the last choice.
 
-| Case                                                              | Shown                                                             |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Nothing remembered, 1280 × 800, strip                             | Split; the chat 420 px at the right; ▣ App only and Permissions…  |
-| 1600 × 900                                                        | Split; the chat 420 px                                            |
-| 1100 / 1099 px, strip, Activity hidden                            | Split / switch                                                    |
-| 900 and 420 px                                                    | Switch, the application shown first; no ◫ (no room)               |
-| 1100 px, strip, Activity 320 px beside it (area 700 px)           | Split; the chat 379 px (700 − 1 − 320)                            |
-| 1100 px, full list 420, Activity 520 remembered (area 320 px)     | Switch; no ◫                                                      |
-| 1280 px, full list 300 px (area 979 px)                           | Split; the chat 420 px                                            |
-| ▣ App only                                                        | Switch, remembered; after a reload: switch, ◫ offered             |
-| ◫ Chat at the right                                               | Split, remembered                                                 |
-| Chat at the right chosen; 1280 → 900 → 1280 px                    | Split, switch, split; the same frame throughout, not loaded again |
-| App only chosen; 1280 → 900 → 1280 px                             | Switch throughout                                                 |
-| Typing in the chat at the right; 1280 → 900 px                    | Switch showing the chat; the text box keeps the focus             |
-| Chat, then the application, with the switch                       | Each in turn; the same frame, not loaded again                    |
-| Divider dragged to 500 px from the area's right edge              | 500 px, remembered on release                                     |
-| Divider dragged to 100 / 900 px                                   | 320 / 640 px (and at most the area less 321 px)                   |
-| Press on the divider without moving                               | Nothing changes or is written                                     |
-| Left / Right / Home / End on the divider                          | +20 / −20 / 320 / 640 px, each remembered                         |
-| Reload                                                            | Choice and width as remembered                                    |
-| Entry `"wide"`, `3`, of version 2, not JSON; width `"500"`, `NaN` | The chat at the right; 420 px                                     |
-| Storage refuses writes; ▣ App only                                | Switch for this page                                              |
-| Two tabs; App only in one, then Chat at the right in the other    | The last choice, in both                                          |
-| Activity shown beside (wide window)                               | One more column; the area narrower (rule 3)                       |
-| Activity shown in a narrow window                                 | Over the bar, the application and the chat; the frame not visible |
-| A conversation with an application and a pinned widget (no Pin)   | No pinned widget; its message shows its inline frame              |
+| Case                                                              | Shown                                                              |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Nothing remembered, 1280 × 800, strip                             | Split; the chat 420 px at the right with ⇥ Hide chat; Permissions… |
+| 1600 × 900                                                        | Split; the chat 420 px                                             |
+| 1100 / 1099 px, strip, Activity hidden                            | Split / switch                                                     |
+| 900 and 420 px                                                    | Switch, the application shown first; no ⇤ or ◫ (no room)           |
+| 1100 px, strip, Activity 320 px beside it (area 700 px)           | Split; the chat 379 px (700 − 1 − 320)                             |
+| 1100 px, full list 420, Activity 520 remembered (area 320 px)     | Switch; no ◫                                                       |
+| 1280 px, full list 300 px (area 979 px)                           | Split; the chat 420 px                                             |
+| ⇥ Hide chat                                                       | Switch showing the app, remembered; ⇤ Show chat has the focus      |
+| ⇥ Hide chat, then a reload                                        | Switch showing the app; ⇤ Show chat offered                        |
+| ⇤ Show chat                                                       | Split, remembered; ⇥ Hide chat has the focus                       |
+| Switch showing the chat (Chat pressed), split possible            | ◫ Chat at the right offered; pressed: split, remembered            |
+| Split layout's bar                                                | No ▣ App only (⇥ Hide chat is on the chat)                         |
+| Chat at the right chosen; 1280 → 900 → 1280 px                    | Split, switch, split; the same frame throughout, not loaded again  |
+| App only chosen; 1280 → 900 → 1280 px                             | Switch throughout                                                  |
+| Typing in the chat at the right; 1280 → 900 px                    | Switch showing the chat; the text box keeps the focus              |
+| Chat, then the application, with the switch                       | Each in turn; the same frame, not loaded again                     |
+| Divider dragged to 500 px from the area's right edge              | 500 px, remembered on release                                      |
+| Divider dragged to 100 / 900 px                                   | 320 / 640 px (and at most the area less 321 px)                    |
+| Press on the divider without moving                               | Nothing changes or is written                                      |
+| Left / Right / Home / End on the divider                          | +20 / −20 / 320 / 640 px, each remembered                          |
+| Reload                                                            | Choice and width as remembered                                     |
+| Entry `"wide"`, `3`, of version 2, not JSON; width `"500"`, `NaN` | The chat at the right; 420 px                                      |
+| Storage refuses writes; ⇥ Hide chat                               | Switch for this page                                               |
+| Two tabs; App only in one, then Chat at the right in the other    | The last choice, in both                                           |
+| Activity shown beside (wide window)                               | One more column; the area narrower (rule 3)                        |
+| Activity shown in a narrow window                                 | Over the bar, the application and the chat; the frame not visible  |
+| A conversation with an application and a pinned widget (no Pin)   | No pinned widget; its message shows its inline frame               |
 
 ### Rule: application changes
 
@@ -3017,7 +3195,9 @@ the flaky-test conversation's turn keeps running (its timer counts), and the
 others show how long their last turn took. The bug-fix conversation has a
 tool group (one call's output is long enough to page through), the city
 trip kept its synthetic screenshot (View screenshot), and the bar's model
-picker lists two Pi models. The gateway runs with `--allow-microphone`
+picker lists two Pi models (`openai-codex/gpt-5.1-codex-max` and
+`local/qwen3-coder-30b`, so the closed picker shows `gpt-5.1-codex-max`).
+The gateway runs with `--allow-microphone`
 and the listener has microphones with the test recogniser, so Listen here
 works (Resume first): what the browser hears appears in Activity as words
 for its loudness ("w3 w5"), named after the browser. No model or screen
@@ -3203,7 +3383,7 @@ The [session application](#session-applications) rules have one table each:
   messages changing nothing, the page's policy unchanged; could not load
   (Show the chat, Try again) and no frame address; an inline widget beside an
   application (no Pin; not visible while the application is in the chat's
-  place); a review closed by Previous sessions; ▣ App only after the switch
+  place); a review closed by Previous sessions; ⇥ Hide chat after the switch
   showed the chat; the ready notice only in the switch layout; and browser
   Back from typing in another conversation not holding a new version back. Every test checks that
   no request left the two origins and no policy was violated. With
@@ -3226,6 +3406,8 @@ only with a host component (see
 `layout.test.ts` and `reorder-gesture.test.ts` check the list's pure rules in
 Node, each with the cases of its README table above: the remembered width and
 hidden state (initial, invalid, dragged, keys, narrow windows, reload), the
+list styles (dragged, keys and narrow windows per style, one remembered width
+read by each), the
 entries' icons (also without `Intl.Segmenter`), changes from two tabs, and the
 reorder gesture (every row of the reordering table, plus the drawn insertion
 line). `move-steps.test.ts` has the moving table's request side (first,
@@ -3319,6 +3501,20 @@ count of sends says at once whether one went out. With
 `COMPANION_SHELL_SCREENSHOTS` it saves an open menu in the strip at 420 and
 1280 px and in the full list at 1280 px.
 
+`list-style-browser.test.ts` draws every list style with the second line on
+and off at 420, 900, 1280 and 1600 px in headless Chromium: the appearance
+and width the rules give, no overflow of the page or of an entry, the unread
+and working markers visible, the second line drawn only where the rule says,
+and the title sizes; and uses the settings screen: Compact, Full and By width
+applied at once, the divider in Compact and Full, ☰, a second tab following
+the style, the width and the second line, a reload, and a storage that
+refuses writes. `new-window.test.ts` checks the address and fragment rules in
+Node and, in the browser, ⧉ opening the address in a new window, windows on
+an open, a closed and an unknown conversation, each window keeping its own
+conversation, and a reload. `model-button.test.ts` draws the closed model
+picker at 420, 1280 and 1600 px with a long provider-prefixed name and one
+whose last part another model shares.
+
 `times.test.ts` and `listening-switches.test.ts` check the rules of
 [Settings, turn timers and message times](#settings-turn-timers-and-message-times)
 in Node, each table row by row: the turn timer cases through the listener
@@ -3326,8 +3522,9 @@ clock's offset and the ticker with a controlled clock and timeouts (each
 second, across an hour, two timers, a new offset), the elapsed-time format,
 the message time cases in named time zones (today, yesterday, older, another
 year, midnight, the listener's clock ahead, Tokyo and Amsterdam, a daylight
-saving day, no or invalid `createdAt`), the Display switches' storage (each
-switch, reload, two tabs, refused and unusable storage, invalid entries), the
+saving day, no or invalid `createdAt`), the Display switches' and the list
+style's storage (each switch, each style, reload, two tabs, refused and
+unusable storage, invalid entries), the
 bridge's rows with and without `time` (switched off they are exactly the Qt
 host's), a streaming answer keeping its time, a new offset sending the
 changed rows again and one that changes no time sending nothing, midnight

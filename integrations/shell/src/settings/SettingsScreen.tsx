@@ -3,14 +3,16 @@
  * says "Settings"). Two sections:
  *
  * - **Display**: this browser's switches for the times the listener
- *   publishes (./display-settings.ts), applied at once and remembered in
- *   this browser only;
+ *   publishes, the conversation list's style and its second line
+ *   (./display-settings.ts), applied at once and remembered in this
+ *   browser only;
  * - **Listening**: the listener's own Sound feedback and intent and
  *   shortcut switches (./listening-switches.ts), shared with the desktop and
  *   other clients, changed through the gateway (`toggle-sounds`,
  *   `set-intent-enabled`).
  *
- * Switches are buttons with the `switch` role. An unavailable one stays
+ * Switches are buttons with the `switch` role; the list's style is a group
+ * of three native radio buttons. An unavailable switch stays
  * focusable and is marked `aria-disabled` (as the Activity column's
  * buttons, ../activity/ActionButton.tsx), so a keyboard press whose request
  * makes it unavailable while the answer is on its way does not lose focus.
@@ -19,11 +21,8 @@
 
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import type { ActivityRequests } from '../activity/requests.ts';
-import {
-  displaySettingNames,
-  type DisplaySettingName,
-  type DisplaySettings,
-} from './display-settings.ts';
+import type { ListStyle } from '../layout/list-width.ts';
+import type { DisplaySettingName, DisplaySettings } from './display-settings.ts';
 import { listeningView, type ListeningSwitch } from './listening-switches.ts';
 import { useDisplaySettings } from './useDisplaySettings.ts';
 
@@ -45,7 +44,25 @@ const displayWording: Record<DisplaySettingName, { title: string; description: s
     title: 'Message timestamps',
     description: 'Show the time on each message.',
   },
+  listSubtitles: {
+    title: 'Show a second line under each conversation title',
+    description: "The conversation's last line, in the full conversation list.",
+  },
 };
+
+/** The switches shown above the list's style, in the screen's order. */
+const timeSwitchNames: readonly DisplaySettingName[] = [
+  'turnTimers',
+  'lastTurnDuration',
+  'messageTimestamps',
+];
+
+/** The list's styles, in the order the screen offers them, with their labels. */
+const listStyleChoices: readonly { style: ListStyle; label: string }[] = [
+  { style: 'compact', label: 'Compact' },
+  { style: 'full', label: 'Full' },
+  { style: 'by-width', label: 'By width' },
+];
 
 export function SettingsScreen(props: {
   settings: DisplaySettings;
@@ -62,20 +79,82 @@ export function SettingsScreen(props: {
         <h2 class="settings-heading" id="settings-display">
           Display
         </h2>
-        {displaySettingNames.map((name) => (
-          <SettingSwitch
-            key={name}
-            id={`setting-${name}`}
-            title={displayWording[name].title}
-            description={displayWording[name].description}
-            checked={values[name]}
-            available={true}
-            onPress={() => props.settings.set(name, !props.settings.values[name])}
-          />
+        {timeSwitchNames.map((name) => (
+          <DisplaySwitch key={name} name={name} settings={props.settings} checked={values[name]} />
         ))}
+        <ListStyleChoice
+          style={values.listStyle}
+          onChoose={(style) => props.settings.setListStyle(style)}
+        />
+        <DisplaySwitch
+          name="listSubtitles"
+          settings={props.settings}
+          checked={values.listSubtitles}
+        />
         <p class="settings-hint">Kept in this browser only.</p>
       </section>
       <ListeningSection admitted={props.admitted} requests={props.requests} />
+    </div>
+  );
+}
+
+/** One of this browser's Display switches. */
+function DisplaySwitch(props: {
+  name: DisplaySettingName;
+  settings: DisplaySettings;
+  checked: boolean;
+}) {
+  const { name, settings } = props;
+  return (
+    <SettingSwitch
+      id={`setting-${name}`}
+      title={displayWording[name].title}
+      description={displayWording[name].description}
+      checked={props.checked}
+      available={true}
+      onPress={() => settings.set(name, !settings.values[name])}
+    />
+  );
+}
+
+/**
+ * The conversation list's style: Compact, Full or By width, as three native
+ * radio buttons (arrow keys move between them, as in any radio group).
+ */
+function ListStyleChoice(props: { style: ListStyle; onChoose: (style: ListStyle) => void }) {
+  const titleId = 'setting-listStyle-title';
+  const descriptionId = 'setting-listStyle-description';
+
+  return (
+    <div class="setting-row setting-choice-row">
+      <div class="setting-text">
+        <span class="setting-title" id={titleId}>
+          Conversation list
+        </span>
+        <span class="setting-description" id={descriptionId}>
+          Compact: small names under the icons, at any width. Full: titles beside the icons, at any
+          width the window has room for. By width: compact when narrow, full when wider.
+        </span>
+      </div>
+      <div
+        class="setting-choice"
+        role="radiogroup"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+      >
+        {listStyleChoices.map((choice) => (
+          <label key={choice.style} class="setting-option">
+            <input
+              type="radio"
+              name="list-style"
+              value={choice.style}
+              checked={props.style === choice.style}
+              onChange={() => props.onChoose(choice.style)}
+            />
+            <span>{choice.label}</span>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }
