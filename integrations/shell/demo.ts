@@ -941,7 +941,9 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   // continue the conversation the listening tab shows. Without a typed
   // phrase, the words for its loudness are dispatched as before.
   let nextPhrase = '';
-  const typedPhrases = new Set<string>();
+  // The phrase the latest utterance was recognised as, until its intent is
+  // chosen: only that one utterance is a typed phrase.
+  let typedPhrase = '';
   const demoSessions = sessions;
   microphones = microphonesFixture(
     {
@@ -958,14 +960,16 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
         }
         const phrase = nextPhrase;
         nextPhrase = '';
-        typedPhrases.add(phrase);
+        typedPhrase = phrase;
         console.log(`Heard as: ${phrase}`);
         return phrase;
       },
       // A typed phrase without a shortcut is a follow-up to the
       // conversation the tab shows; loudness words are "sent" as before.
       detect: async (input) => {
-        if (!typedPhrases.has(input.utterance)) {
+        const typed = typedPhrase !== '' && input.utterance === typedPhrase;
+        typedPhrase = '';
+        if (!typed) {
           return 'SEND';
         }
         return input.interaction?.agentSessionId ? 'CONTINUE_OPEN_AGENT_CONVERSATION' : 'IGNORE';

@@ -341,6 +341,15 @@ export class Relay {
     const parsed = parseRemoteRequest(value, { drafts: this.drafts });
     if (!parsed.ok) {
       this.sendPhone({ type: 'error', requestId: parsed.requestId, message: parsed.message });
+      // A selection report the gateway cannot pass on still means the page
+      // moved on: while this page listens, the listener must not keep the
+      // previous selection as where its speech goes. The bounded refusal
+      // notice (sent only when it lowers what the listener holds) ends it.
+      // A page that does not listen is answered exactly as before.
+      const action = (value as { action?: unknown } | null)?.action;
+      if (action === 'panel-state' && this.audio.phase === 'open') {
+        this.reportRefused('');
+      }
       return;
     }
 
@@ -902,6 +911,10 @@ export class Relay {
     if (typeof from !== 'string' || (from !== '' && !sessionIdPattern.test(from))) {
       return;
     }
+    // A browser has no pop-out windows: a presentation is never passed on.
+    if (message.presentation !== undefined) {
+      return;
+    }
 
     if (message.started === true && message.orderRevision === undefined) {
       this.sendPhone({ type: 'agent-select', id, from, started: true });
@@ -910,7 +923,6 @@ export class Relay {
     const orderRevision = message.orderRevision;
     if (
       message.started === undefined &&
-      message.presentation === undefined &&
       typeof orderRevision === 'string' &&
       orderRevision.length > 0 &&
       orderRevision.length <= 128

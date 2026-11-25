@@ -225,6 +225,20 @@ export class BrowserMicrophones {
   }
 
   /**
+   * When the sound the stream `id`'s voice detector is reading now arrived
+   * (`performance.now()`): speech ending at this moment was heard no later.
+   * Undefined for an ended stream or before its first piece was read.
+   */
+  heardAt(id: string): number | undefined {
+    for (const stream of this.streams.values()) {
+      if (stream.id === id) {
+        return stream.source.lastReadArrival;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Start a stream for connection `owner`, named after its device. Ends the
    * connection's earlier stream first (`replaced`). Throws, starting
    * nothing, while paused, at shutdown, or when `maximumPeriods` periods

@@ -588,8 +588,10 @@ starts reuse an existing saved screenshot; they do not capture a new one.
 ## Listening browsers
 
 A paired browser can be one more microphone of Companion ("Listen here" in the
-browser shell). Its speech is treated exactly as speech at the computer; the
-listener's side is described in [microphones and listening
+browser shell). Its speech is treated as speech at the computer, except that
+the conversation it addresses, and the view "go to session N" moves, follow
+the tab that recorded it (see [speech follows the device that recorded
+it](#speech-follows-the-device-that-recorded-it)); the listener's side is described in [microphones and listening
 periods](../sensors/audio/README.md) and [the desktop
 protocol](../desktop/README.md#microphones-and-listening-browsers).
 
@@ -771,6 +773,11 @@ The gateway's part ([`relay.ts`](relay.ts) `listenerSelected`):
    that conversation as a click in its list would, but only while it still
    shows `from`, and for a go-to only while its order revision is still
    `orderRevision` and the conversation is listed.
+4. While the connection's stream is open, a `panel-state` the gateway
+   refuses as malformed (before it reaches the listener) is followed by the
+   bounded `report-refused` notice for no conversation, so the listener never
+   keeps the previous selection as where this page's speech goes. A
+   connection without an open stream is answered exactly as before.
 
 **What a paired device can now steer.** Nothing a paired device may reach
 changes: it could already select any open conversation in its own view and

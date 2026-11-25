@@ -855,8 +855,15 @@ open; otherwise the follow-up, close or choice is skipped ("The selected
 agent conversation or its focus changed"). For a browser's utterance the
 same check uses that connection's own **view revision**, which advances on
 every change of its reported selection (also away and back), when one of its
-reports is refused and its selection dropped, and when its conversation
-closes; a closed connection has no view at all. Desktop changes do not
+reports is refused and its selection dropped (also a report the gateway
+itself refuses as malformed while the stream is open), when its conversation closes, and when its page
+has gone while its requests still drain (`withdraw-visibility`); a closed
+connection has no view at all. A browser's sound can wait for the voice
+detector (up to five seconds, for example while the detector loads), so the
+view is the one the tab showed when the sound at speech end **arrived**: if
+the view changed after that, the utterance counts as changed since speech
+end (the piece being read gives the time, so a change at most one piece,
+100 ms, before the speech end can still count as before it). Desktop changes do not
 affect it, and a browser's changes do not affect the computer's utterances.
 The stream that heard the utterance may end meanwhile: accepted speech
 continues (as everywhere), and the tab still shows what the speaker saw. Its
@@ -898,6 +905,17 @@ Tests: `test/unit/speech-follows-device.test.ts` runs this table through the
 real gateway, the real control socket, the real processors, synthetic audio
 and the test recogniser; `test/unit/pipeline-one-microphone-reference.test.ts`
 is unchanged.
+
+Known limits, kept on purpose (minor, and their fix needs new structure):
+the tab checks `from` (what it showed) rather than a token of its own, so a
+go-to that crosses the reader's own click away and back on the wire (a
+few milliseconds), or speech while the tab moves between Activity and
+Previous sessions (both report no conversation), can still select; an
+`agent-select` already queued in the gateway's output when the stream ends
+still reaches the tab that heard the speech; and a conversation a browser's
+speech started carries `openInBackground: true` to every client, as
+conversations started from a paired device's typed request or by an agent
+already do (remote clients ignore it).
 
 Left out on purpose: speech from the computer's microphone following a
 browser on the same machine (switch the computer's microphone off and Listen

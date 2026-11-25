@@ -25,9 +25,13 @@ export interface BrowserView {
    * Advances whenever `selection` changes (also away and back), when the
    * connection's report is refused and when its conversation closes. An
    * utterance captured before such a change is not delivered: the same
-   * rule as the desktop's interaction revision.
+   * rule as the desktop's interaction revision. Also advances when the
+   * connection's page has gone while its requests drain
+   * (`withdraw-visibility`): speech from a closed page is not delivered.
    */
   viewRevision: number;
+  /** When `viewRevision` last advanced (`performance.now()`). */
+  viewChangedAt: number;
 }
 
 /** The order of open conversations, as `AgentSessions.order()` returns it. */
@@ -59,6 +63,14 @@ export function browserInteraction(input: {
   view: BrowserView | undefined;
   order: ConversationOrder | undefined;
   isOpen: (id: string) => boolean;
+  /**
+   * When the sound at this speech end arrived (`performance.now()`). Browser
+   * sound can wait for the voice detector (up to five seconds, for example
+   * while it loads): if the view changed after the sound arrived, the
+   * speaker saw the earlier view, so the utterance is captured as already
+   * stale, exactly as if the view had changed after speech end.
+   */
+  heardAt: number | undefined;
 }): Omit<InteractionContext, 'agentChoices' | 'agentRunId' | 'agentConversation'> {
   const agentView = {
     kind: 'browser',
@@ -81,11 +93,17 @@ export function browserInteraction(input: {
     id = view.selection;
   }
 
+  // Stale from the start: no delivery, no navigation and no started
+  // conversation shown can match this revision or token.
+  const stale = input.heardAt !== undefined && view.viewChangedAt > input.heardAt;
+  const revision = stale ? -1 : view.viewRevision;
+  const token = stale ? 'browser:stale' : navigationToken(view);
+
   let agentNavigation: InteractionContext['agentNavigation'];
   if (input.order) {
     agentNavigation = {
       clientId: input.clientId,
-      token: navigationToken(view),
+      token,
       ids: input.order.ids,
       orderRevision: input.order.revision,
       // A browser has no pop-out windows: "pop out session N" is refused.
@@ -99,7 +117,7 @@ export function browserInteraction(input: {
     agentComposerFocused: false,
     agentTargetSource: id ? 'browser' : undefined,
     agentView,
-    revision: view.viewRevision,
+    revision,
   };
 }
 

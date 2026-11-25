@@ -474,6 +474,23 @@ const cases: Case[] = [
     expected: { followUp: 'none' },
   },
 
+  {
+    name: 'A, follow-up; a selection report of A the gateway refuses meanwhile: refused',
+    microphone: 'A',
+    say: 'follow-up',
+    meanwhile: async (setup) => {
+      // Malformed (not a lowercase conversation ID): refused by the gateway
+      // itself, which tells the listener that A's selection has ended.
+      const reply = await setup.request(setup.a.phone, {
+        action: 'panel-state',
+        id: setup.ids.z.toUpperCase(),
+        visible: true,
+      });
+      assert.equal(reply.type, 'error');
+    },
+    expected: { followUp: 'none' },
+  },
+
   // ---- Browser B: shows nothing -----------------------------------------
   {
     name: 'B (shows nothing), follow-up: no conversation, never the desktop’s',
@@ -592,7 +609,11 @@ test('the gateway passes agent-select only for the connection’s own open strea
     };
     const order = setup.sessions.order();
     for (const clientId of runtime.remoteClients.keys()) {
-      for (const streamId of [setup.a.streamId, setup.b.streamId.replace(/.$/, '0'), undefined]) {
+      for (const streamId of [
+        setup.a.streamId,
+        'ffffffff-ffff-4fff-bfff-ffffffffffff',
+        undefined,
+      ]) {
         runtime.server.publishTo(clientId, {
           type: 'agent-select',
           id: setup.ids.x,
@@ -617,6 +638,14 @@ test('the gateway passes agent-select only for the connection’s own open strea
         streamId: setup.a.streamId,
         from: setup.ids.y,
         orderRevision: order.revision,
+        presentation: 'window',
+      });
+      runtime.server.publishTo(clientId, {
+        type: 'agent-select',
+        id: setup.ids.x,
+        streamId: setup.a.streamId,
+        from: setup.ids.y,
+        started: true,
         presentation: 'window',
       });
     }
@@ -692,6 +721,42 @@ test('a connection without a stream, and the phone panel, receive what they rece
     }
     // The new conversation reaches it, as every conversation does.
     assert.ok(engineKinds.has('agent-session'));
+  } finally {
+    await setup.close();
+  }
+});
+
+test('sound that waited for the voice detector counts from when it arrived', async () => {
+  const setup = await createWorld();
+  try {
+    // A's voice detector is behind: its whole utterance arrives (and waits)
+    // while A shows Y; then A selects Z; only then the detector reaches the
+    // speech end. The speaker saw Y, so nothing goes to Z (or to Y).
+    const detector = setup.microphones.detectors[0];
+    let release!: () => void;
+    detector.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    for (const piece of pieces(utterance(markers['follow-up']))) {
+      setup.a.phone.socket.send(piece);
+    }
+    await waitFor(() => detector.held > 0, 5000);
+    // Every piece has reached the listener before A's next report.
+    await setup.shows(setup.a.phone, setup.ids.y);
+    await setup.shows(setup.a.phone, setup.ids.z);
+    detector.gate = undefined;
+    release();
+
+    await waitFor(() => setup.microphones.transcriptions.length === 1, 5000);
+    await setup.deliver();
+    await setup.settled();
+    assert.deepEqual(setup.followedUp(), []);
+
+    // A later utterance, heard while A shows Z, goes to Z.
+    await setup.say(setup.a, 'follow-up');
+    await setup.deliver();
+    await setup.settled();
+    assert.deepEqual(setup.followedUp(), [setup.ids.z]);
   } finally {
     await setup.close();
   }

@@ -195,6 +195,8 @@ interface RemoteClient {
    * connection's browser heard is delivered only while it is unchanged.
    */
   viewRevision: number;
+  /** When `viewRevision` last advanced (`performance.now()`). */
+  viewChangedAt: number;
 }
 
 /**
@@ -1433,7 +1435,13 @@ export class DesktopRuntime {
       return;
     }
     remote.selection = id;
+    this.advanceRemoteView(remote);
+  }
+
+  /** Invalidate speech captured for this connection's view until now. */
+  private advanceRemoteView(remote: RemoteClient): void {
     remote.viewRevision = ++this.remoteViewRevision;
+    remote.viewChangedAt = performance.now();
   }
 
   /** The view of a remote connection, for the speech its browser heard. */
@@ -1449,13 +1457,15 @@ export class DesktopRuntime {
    */
   private browserInteractionContext(streamId: string): InteractionContext {
     const agents = this.options.agents;
-    const clientId = this.microphones?.browsers.ownerOf(streamId) ?? 0;
+    const browsers = this.microphones?.browsers;
+    const clientId = browsers?.ownerOf(streamId) ?? 0;
     const context = browserInteraction({
       clientId,
       streamId,
       view: this.browserView(clientId),
       order: agents?.order(),
       isOpen: (id) => agents?.has(id) === true,
+      heardAt: browsers?.heardAt(streamId),
     });
     return { ...context, ...agents?.interaction(context.agentSessionId) };
   }
@@ -2498,6 +2508,7 @@ export class DesktopRuntime {
         visibleSelection: '',
         lastActionsKey: '',
         viewRevision: ++this.remoteViewRevision,
+        viewChangedAt: performance.now(),
       });
       // A remote panel only ever receives controls for its own selection.
       this.viewActionKeys.delete(clientId);
@@ -2514,6 +2525,10 @@ export class DesktopRuntime {
         throw Error('Only remote panels can withdraw their visibility');
       }
       remote.visibleSelection = '';
+      // Speech its browser heard is no longer delivered (the desktop's
+      // disconnect clears its panel state the same way); the selection
+      // itself stays for the draining requests.
+      this.advanceRemoteView(remote);
       // Nobody sees its drafts any more either: it stops being a draft host,
       // so agent proposals no longer count it as a reviewer, and its pending
       // send no longer blocks them. Requests it sent before this one were
