@@ -124,6 +124,14 @@ test('--headless cannot be combined with options that need the desktop or speech
   assert.equal(await child.exited, 1);
   assert.match(child.output(), /--headless needs XDG_RUNTIME_DIR/);
   assert.doesNotMatch(child.output(), /--no-desktop/);
+
+  // A relative runtime directory is refused the same way.
+  const relative = startChild(process.execPath, listenerArguments(machine.config, ['--headless']), {
+    ...machine.env,
+    XDG_RUNTIME_DIR: 'run',
+  });
+  assert.equal(await relative.exited, 1);
+  assert.match(relative.output(), /--headless needs XDG_RUNTIME_DIR: the absolute path/);
 });
 
 test('without a desktop: conversations work through the gateway, desktop abilities are refused with their reason', async (context) => {
@@ -269,11 +277,12 @@ test('without a desktop: conversations work through the gateway, desktop abiliti
     runId: running.actions.stopRunId,
   });
   assert.equal(stoppedRun.result, 'stopped');
-  const afterStop = await phone.engine(
+  // Selecting the conversation above may republish its earlier `completed`
+  // state, so wait for the stopped turn's own outcome.
+  await phone.engine(
     'agent-session',
-    (event) => event.session.id === id && !['starting', 'running'].includes(event.session.status),
+    (event) => event.session.id === id && event.session.status === 'cancelled',
   );
-  assert.equal(afterStop.session.status, 'cancelled');
 
   // Close, then reopen from Previous sessions. Earlier events are dropped,
   // so only the reopened conversation's own event can match.

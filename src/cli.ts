@@ -1,4 +1,4 @@
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, styleText, stripVTControlCharacters } from 'node:util';
 
@@ -157,11 +157,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     // A server started outside a login session may have no runtime
     // directory. The default message would suggest --no-desktop, which
-    // conflicts with --headless.
-    if (!process.env.XDG_RUNTIME_DIR) {
+    // conflicts with --headless. A relative path would put the control
+    // socket under the working directory, where a gateway started elsewhere
+    // does not look, and the widget socket requires an absolute path.
+    // (The control socket's own directory below it is made private, 0700.)
+    const runtimeDirectory = process.env.XDG_RUNTIME_DIR;
+    if (!runtimeDirectory || !isAbsolute(runtimeDirectory)) {
       throw Error(
-        '--headless needs XDG_RUNTIME_DIR: a private (0700) directory for the control ' +
-          'socket, the same one the gateway is started with',
+        '--headless needs XDG_RUNTIME_DIR: the absolute path of a private directory for ' +
+          'the control socket, the same one the gateway is started with',
       );
     }
   }

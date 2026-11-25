@@ -852,8 +852,15 @@ frames on a second port:
 npm run shell:build
 bin/companion-remote serve --app-directory integrations/shell/dist \
   --frames-listen 127.0.0.1:8788 --frame-origin http://127.0.0.1:8788
-bin/companion-remote pair   # a one-time code for the browser
+bin/companion-remote pair   # in a second terminal: a one-time code for the browser
 ```
+
+Both ports stay on the server's loopback. A browser on another computer
+reaches them with the same port numbers, for example through an SSH tunnel
+`ssh -L 8787:127.0.0.1:8787 -L 8788:127.0.0.1:8788 server`, and opens
+`http://127.0.0.1:8787/`. The page then has the gateway's loopback origin,
+and widget frames load from `http://127.0.0.1:8788`; forwarding only the
+first port leaves conversations working and widgets blank.
 
 Two desktop abilities are left as they are, because only a local desktop
 panel or an explicit opt-in reaches them: a widget pop-out still opens when
