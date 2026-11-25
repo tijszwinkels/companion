@@ -314,8 +314,9 @@ To start Companion paused after each desktop login instead, see
 [Start Companion after login](installation.md#8-start-companion-after-login-optional).
 
 On a machine without a desktop (a server or VM), `npm start -- --headless`
-serves typed conversations, agents and widgets to a paired browser through
-the gateway, without microphone, screenshots, typing or sounds; see
+serves conversations, agents and widgets to a paired browser through the
+gateway, and listens through paired browsers ("Listen here"), without the
+computer's microphone, screenshots, typing or sounds; see
 [running without a desktop](../src/desktop/README.md#running-without-a-desktop).
 
 - **“insert hello”** types `hello`, without pressing Enter.

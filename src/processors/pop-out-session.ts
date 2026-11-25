@@ -1,6 +1,6 @@
 import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import type { Activity } from '../core/activity.ts';
-import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { IntentContext, Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { IntentMode, UserSensorRouter } from '../core/router.ts';
 import { inferredIndex, shortcutIndex } from './go-to-session.ts';
 
@@ -19,10 +19,12 @@ import { inferredIndex, shortcutIndex } from './go-to-session.ts';
  * Offered only while the UI that owns navigation can show pop-out windows
  * (the standalone native host); otherwise the command does not exist.
  */
-export class PopOutSession implements UserSensorProcessor {
+export class PopOutSession implements ScreenlessProcessor {
   readonly id = 'pop-out-session';
   readonly label = `Pop out session 1–${MAX_OPEN_AGENT_SESSIONS}`;
   readonly name = 'POP_OUT_SESSION';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes = ['pop out session'];
   readonly acceptsEmptyPrefix = true;
   readonly dependencies = {};
@@ -54,7 +56,7 @@ export class PopOutSession implements UserSensorProcessor {
   }
 
   async process(
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     route: IntentMode = 'shortcut',
   ): Promise<void> {

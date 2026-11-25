@@ -1,5 +1,5 @@
 import type { Activity } from '../core/activity.ts';
-import type { IntentContext, Log, UserSensorFrame } from '../core/frame.ts';
+import type { IntentContext, Log, SensorFrame } from '../core/frame.ts';
 import { stripPrefix } from '../core/prefix.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { ScopedIntent } from '../core/scoped-intent.ts';
@@ -155,7 +155,7 @@ export class AgentChoiceIntents {
     return `Choose the open agent's option ${JSON.stringify(choice.label)}${preview ? `: ${JSON.stringify(preview)}` : ''}. Select only if the utterance expresses this choice; otherwise keep it as a freeform follow-up.`;
   }
 
-  private skip(frame: UserSensorFrame, reason: string): void {
+  private skip(frame: SensorFrame, reason: string): void {
     this.log('skipped', reason, frame.id);
     this.activity.outcome?.(frame.id, 'skipped');
   }

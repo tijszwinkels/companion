@@ -1,12 +1,14 @@
 import type { Activity } from '../core/activity.ts';
-import type { Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 
 /** Negative feedback records a mistake without guessing the intended action. */
-export class LabelPreviousIncorrect implements UserSensorProcessor {
+export class LabelPreviousIncorrect implements ScreenlessProcessor {
   readonly id = 'label-previous-incorrect';
   readonly label = 'Label previous incorrect';
   readonly name = 'LABEL_PREVIOUS_INCORRECT';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes = ['label previous incorrect'];
   readonly acceptsEmptyPrefix = true;
   readonly dependencies = {};
@@ -21,7 +23,7 @@ export class LabelPreviousIncorrect implements UserSensorProcessor {
     router.register(this);
   }
 
-  async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
+  async process(frame: SensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
 
     if (frame.utterance.trim()) {

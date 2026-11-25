@@ -3,8 +3,11 @@
 // XDG_RUNTIME_DIR, a PATH that holds only `node` and `flock` (no compositor,
 // screenshot, typing, sound or PipeWire program can be found), the synthetic
 // Claude Code fixture (test/fixtures/claude-stream.mjs) as the coding
-// harness, and the real listener and gateway as child processes on loopback.
-// No model is called and no personal state is read.
+// harness, the test recogniser as the speech recognition worker
+// (test/fixtures/asr-scripted.cjs: it answers with the phrase the test
+// chose, see `nextPhrase`), the real voice detector, and the real listener
+// and gateway as child processes on loopback. No model is called unless a
+// test passes its own synthetic one, and no personal state is read.
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -82,9 +85,10 @@ export async function interrupt(child: Child): Promise<number | null> {
 /**
  * A temporary machine without a desktop: HOME, a private runtime directory,
  * a PATH with only node and flock, a synthetic Claude Code as the coding
- * harness and a synthetic intent model address that is never contacted.
+ * harness, the test recogniser, and an intent model address: a synthetic
+ * one the test serves (`llmBaseUrl`), or one that is never contacted.
  */
-export async function headlessMachine(context: Context) {
+export async function headlessMachine(context: Context, options: { llmBaseUrl?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-headless-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
 
@@ -110,8 +114,21 @@ export async function headlessMachine(context: Context) {
     }),
   );
 
+  // The test recogniser: its "model directory" holds the next phrase.
+  const speech = join(directory, 'speech');
+  await mkdir(speech);
+  const recogniser = join(directory, 'asr-worker');
+  await copyFile(join(root, 'test/fixtures/asr-scripted.cjs'), recogniser);
+  await chmod(recogniser, 0o700);
+
   const config = join(directory, 'config.json');
-  await writeFile(config, JSON.stringify({ llm: { baseUrl: 'http://127.0.0.1:1/v1' } }));
+  await writeFile(
+    config,
+    JSON.stringify({
+      llm: { baseUrl: options.llmBaseUrl ?? 'http://127.0.0.1:1/v1', model: 'synthetic' },
+      asr: { workerBinary: recogniser, modelDir: speech },
+    }),
+  );
 
   // No desktop variables at all, and nothing inherited from this process.
   const env: NodeJS.ProcessEnv = {
@@ -129,6 +146,10 @@ export async function headlessMachine(context: Context) {
     config,
     controlSocket: join(runtime, 'companion', 'control.sock'),
     remoteState: join(home, 'companion', 'remote'),
+    /** The phrase the test recogniser answers for the next sound it is given. */
+    async nextPhrase(text: string): Promise<void> {
+      await writeFile(join(speech, 'next.txt'), text);
+    },
   };
 }
 
@@ -149,15 +170,16 @@ export function listenerArguments(config: string, extra: string[]): string[] {
 export async function startHeadlessCompanion(
   context: Context,
   machine: HeadlessMachine,
-  options: { appDirectory?: string } = {},
+  options: { appDirectory?: string; intentModel?: boolean; allowMicrophone?: boolean } = {},
 ) {
+  const extra = options.intentModel ? ['--headless', '--intent-model'] : ['--headless'];
   const listener = startChild(
     process.execPath,
-    listenerArguments(machine.config, ['--headless']),
+    listenerArguments(machine.config, extra),
     machine.env,
   );
   context.after(() => interrupt(listener));
-  await printed(listener, 'Without a desktop: typed conversations only');
+  await printed(listener, 'Without a desktop: paired browsers listen');
 
   const port = await freePort();
   let appDirectory = options.appDirectory;
@@ -180,6 +202,7 @@ export async function startHeadlessCompanion(
       machine.remoteState,
       '--app-directory',
       appDirectory,
+      ...(options.allowMicrophone ? ['--allow-microphone'] : []),
     ],
     machine.env,
   );

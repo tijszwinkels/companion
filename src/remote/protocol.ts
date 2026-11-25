@@ -490,6 +490,11 @@ export interface MicrophonesState {
   /** The computer's microphone switch is on. */
   computer: boolean;
   /**
+   * Present, and false, only when the computer has no microphone of its own
+   * (a listener without a desktop): offer no switch for it.
+   */
+  computerAvailable?: false;
+  /**
    * Microphones listening now, the computer's first. Empty while paused,
    * and when the computer's is switched off and no browser listens:
    * Companion then hears nothing. A browser finds its own entry by the

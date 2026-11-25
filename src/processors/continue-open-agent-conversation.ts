@@ -1,5 +1,5 @@
 import type { Activity } from '../core/activity.ts';
-import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { IntentContext, Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 
@@ -7,10 +7,12 @@ const unfocusedInstruction =
   "The user has a coding agent conversation selected in the open sidebar, but its input field is not selected. Choose this intent if the utterance is a follow-up, answer, correction, or request addressed to that conversation. Use the selected conversation's title and message excerpts together with the utterance and screenshot to judge this. The open sidebar alone is not a reason to choose this intent. Choose another intent if the utterance is intended for the active application, starts an independent request to the assistant, or is not addressed to the assistant.";
 
 /** Send a follow-up directly to the conversation captured at speech end. */
-export class ContinueOpenAgentConversation implements UserSensorProcessor {
+export class ContinueOpenAgentConversation implements ScreenlessProcessor {
   readonly id = 'continue-agent-conversation';
   readonly label = 'Continue the open agent conversation';
   readonly name = 'CONTINUE_OPEN_AGENT_CONVERSATION';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes = ['continue session'];
 
   // Exact user-supplied prompt, including its spacing. Use this strong default
@@ -45,7 +47,7 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
     return Boolean(frame.interaction?.agentSessionId);
   }
 
-  async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
+  async process(frame: SensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     const context = frame.interaction;
 

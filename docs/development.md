@@ -294,18 +294,24 @@ listener with this protocol are separate user decisions.
 
 `npm start -- --headless` runs the listener on a machine without a desktop (a
 server or VM): the control socket for the gateway, conversations and their
-store, widgets, agents and wake timers stay; the computer's microphone,
+store, widgets, agents and wake timers stay, and so does speech, with paired
+browsers ("Listen here") as the only microphones. The computer's microphone,
 screenshots, typing into applications, sounds, media pause, the panel browser
 and pop-out windows are absent. Each absent ability is refused with a reason
-starting "This Companion runs without a desktop", or shown honestly (listening
-**Paused**, no microphone switch); never a crash, hang or silent nothing.
-Speech is not started in this mode yet. Without the option nothing changes.
+starting "This Companion runs without a desktop", or shown honestly (no
+switch for the computer's microphone); never a crash, hang or silent nothing.
+Without the option nothing changes.
 
 | Ability                                    | With a desktop          | Without a desktop                                                 |
 | ------------------------------------------ | ----------------------- | ----------------------------------------------------------------- |
 | Typed conversations, store, widgets, wakes | Yes                     | The same, through the gateway                                     |
-| Listening and Resume                       | On; Pause/Resume        | Paused from the start; Resume refused (no microphone)             |
-| Computer's microphone switch, Listen here  | Offered                 | Not offered; requests refused                                     |
+| Listening, Pause and Resume                | On; Pause/Resume        | On; Pause/Resume, one Pause for every listening browser           |
+| Computer's microphone switch               | Offered                 | Not offered (`computerAvailable: false`); requests refused        |
+| Listen here                                | Offered                 | Offered: the only microphones                                     |
+| Where speech goes                          | Desktop's or tab's view | The view of the tab that heard it                                 |
+| "insert …", "enter …"                      | Typed                   | Never typed: "Not typed: … runs without a desktop" in Activity    |
+| Other words, no intent model (default)     | —                       | A message to the conversation the tab shows; with none: not sent  |
+| Other words, `--intent-model`              | The model decides       | The model decides among non-typing intents, without a screenshot  |
 | Record into the text box                   | Desktop panel           | Refused (no microphone)                                           |
 | Sound feedback                             | `pw-play` cues          | Switch stays off; `toggle-sounds` refused                         |
 | Typing into applications                   | `wtype`                 | `paste`/`submit-utterance` refused                                |
@@ -313,17 +319,30 @@ Speech is not started in this mode yet. Without the option nothing changes.
 | Panel browser, pop-out windows (agents)    | Native panel            | Agent gets `unsupported` "runs without a desktop", not "no panel" |
 | Widget pop-out                             | Native window           | Refused ("requires a Wayland desktop")                            |
 
-The exact refusals, the options it cannot be combined with and its
-requirements are in the [desktop protocol](../src/desktop/README.md#running-without-a-desktop).
-`test/unit/headless-listener.test.ts` plays this table against a real
+The exact refusals, the speech rule, the options it cannot be combined with
+and its requirements are in the [desktop protocol](../src/desktop/README.md#running-without-a-desktop).
+Speech needs the recognition worker (`npm run asr:build`) and the Parakeet
+model ([installation guide](installation.md), step 3); a missing one stops the
+start with its reason. The intent model is off by default here:
+`--intent-model` uses the configuration's `llm` section and
+`COMPANION_LLM_API_KEY`, as with a desktop.
+
+`test/unit/headless-listener.test.ts` plays the table against a real
 `src/cli.ts --headless` process, its control socket and a real gateway, with a
-`PATH` that holds only `node` and `flock` (no desktop program) and the
-synthetic Claude Code fixture as the agent (`test/headless-fixture.ts`). The
-agent-tool rows (panel browser, pop-out windows) use the runtime in-process
-with `headless: true`. `test/shell/headless.test.ts` (in `npm run test:shell`)
-plays the user's path in the built browser shell against the same processes:
-pair, Resume refused, start a typed conversation, follow up, Stop, close and
-reopen.
+`PATH` that holds only `node` and `flock` (no desktop program), the synthetic
+Claude Code fixture as the agent (`test/headless-fixture.ts`) and the test
+recogniser (`test/fixtures/asr-scripted.cjs`). The agent-tool rows (panel
+browser, pop-out windows) use the runtime in-process with `headless: true`.
+The speech rule is one table of cases (`test/headless-voice-table.ts`:
+utterance × what the listening tab shows × intent model absent or present,
+and paused), played by `test/unit/headless-voice.test.ts` and
+`test/unit/headless-voice-model.test.ts` with real speech through the real
+voice detector and a synthetic intent model on loopback.
+`test/shell/headless.test.ts` (in `npm run test:shell`) plays the user's path
+in the built browser shell against the same processes: pair, Pause and
+Resume, no switch for the computer's microphone, start a typed conversation,
+Listen here (Chromium's fake microphone) reaching that conversation, follow
+up, Stop, close and reopen.
 
 ## Self-wake scheduling
 

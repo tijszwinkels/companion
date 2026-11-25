@@ -1,4 +1,4 @@
-import type { InteractionContext, Log, Screenshot } from './frame.ts';
+import type { InteractionContext, Log, Screenshot, SensorFrame } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
 import type { Activity, TranscriptSource } from './activity.ts';
 import { notAdmitted, type CaptureAdmission } from '../capture-storage/policy.ts';
@@ -26,15 +26,23 @@ export const computerMicrophone = 'computer';
 
 /** The exact objects used for capture, transcription, and dispatch. */
 export type PipelineDependencies = {
-  readonly screen: ScreenSensor;
+  /**
+   * The computer's screen. Absent without a desktop (`--headless`): frames
+   * then carry no screenshot (see `SensorFrame`), and nothing stands in for one.
+   */
+  readonly screen?: ScreenSensor;
   readonly transcriber: SpeechTranscriber;
   readonly router: UserSensorRouter;
 };
 
 // Capture starts before its job reaches the worker. Store failures as values so
 // an early rejection cannot become an unhandled promise while the job is queued.
+// Without a screen sensor nothing is captured: `noScreen`, neither a
+// screenshot nor an error.
 type CaptureResult = (
-  { screenshot: Screenshot; error?: never } | { error: unknown; screenshot?: never }
+  | { screenshot: Screenshot; error?: never; noScreen?: never }
+  | { error: unknown; screenshot?: never; noScreen?: never }
+  | { noScreen: true; screenshot?: never; error?: never }
 ) & { application?: Screenshot['window'] };
 
 /** Spoken or typed input plus the already-running capture for a future frame. */
@@ -401,28 +409,36 @@ export class SensorPipeline implements InspectableModule {
     // The view of the microphone that heard it: the desktop for the
     // computer's microphone and typed text, the owning tab for a browser.
     const interaction = this.activity.interactionContext?.(microphone);
-    this.log('capture', 'Capturing active window', id);
 
-    // Capture at speech end, even if ASR is busy. Handle rejection immediately.
-    let application: Screenshot['window'] | undefined;
-    const capture = this.dependencies.screen
-      .capture(routeSignal, (window) => {
-        application = window;
-      })
-      .then(
-        (screenshot): CaptureResult => {
-          if (target && screenshot.window.address !== target) {
-            return { error: Error('Application focus changed before capture'), application };
-          }
-          this.log(
-            'screen',
-            `${JSON.stringify(screenshot.window.app)} ${screenshot.width}x${screenshot.height}`,
-            id,
-          );
-          return { screenshot, application: screenshot.window };
-        },
-        (error) => ({ error, application }),
-      );
+    let capture: Promise<CaptureResult>;
+    const screen = this.dependencies.screen;
+    if (screen) {
+      this.log('capture', 'Capturing active window', id);
+
+      // Capture at speech end, even if ASR is busy. Handle rejection immediately.
+      let application: Screenshot['window'] | undefined;
+      capture = screen
+        .capture(routeSignal, (window) => {
+          application = window;
+        })
+        .then(
+          (screenshot): CaptureResult => {
+            if (target && screenshot.window.address !== target) {
+              return { error: Error('Application focus changed before capture'), application };
+            }
+            this.log(
+              'screen',
+              `${JSON.stringify(screenshot.window.app)} ${screenshot.width}x${screenshot.height}`,
+              id,
+            );
+            return { screenshot, application: screenshot.window };
+          },
+          (error) => ({ error, application }),
+        );
+    } else {
+      // No desktop: there is no screen to capture (see PipelineDependencies).
+      capture = Promise.resolve({ noScreen: true });
+    }
 
     let markFinished!: () => void;
     const finished = new Promise<void>((resolve) => {
@@ -861,25 +877,35 @@ export class SensorPipeline implements InspectableModule {
 
         job.routeSignal.throwIfAborted();
 
-        if (!capture.screenshot) {
+        if (!capture.screenshot && !capture.noScreen) {
           stage = 'capture';
           throw capture.error;
         }
 
         stage = 'routing';
-        this.log('frame', 'Utterance + screenshot', job.id);
-        await this.dependencies.router.route(
-          {
+        let frame: SensorFrame;
+        if (capture.screenshot) {
+          this.log('frame', 'Utterance + screenshot', job.id);
+          frame = {
             id: job.id,
             observedAt: job.observedAt,
             utterance,
             screenshot: capture.screenshot,
             interaction: job.interaction,
             storage: job.storage,
-          },
-          job.routeSignal,
-          job.attempt,
-        );
+          };
+        } else {
+          // Without a desktop: the utterance alone, no screenshot.
+          this.log('frame', 'Utterance without a screen', job.id);
+          frame = {
+            id: job.id,
+            observedAt: job.observedAt,
+            utterance,
+            interaction: job.interaction,
+            storage: job.storage,
+          };
+        }
+        await this.dependencies.router.route(frame, job.routeSignal, job.attempt);
 
         this.log('done', `${Date.now() - job.observedAt} ms since speech end`, job.id);
       } catch (error) {

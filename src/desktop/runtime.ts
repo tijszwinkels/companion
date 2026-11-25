@@ -230,8 +230,11 @@ interface RemoteClient {
  * (`connectMicrophones`). See src/sensors/audio/README.md.
  */
 export interface ListenerMicrophones {
-  /** The computer's microphone switch (D8). */
-  computer: ComputerMicrophoneSwitch;
+  /**
+   * The computer's microphone switch (D8). Absent without a desktop
+   * (`--headless`): the computer has no microphone, only browsers listen.
+   */
+  computer?: ComputerMicrophoneSwitch;
   /** Listening browsers' streams. */
   browsers: BrowserMicrophones;
 }
@@ -241,8 +244,15 @@ export interface ListenerMicrophones {
  * modes and in older listeners. See src/desktop/README.md, "Microphones and listening browsers".
  */
 export interface MicrophonesState {
-  /** The computer's microphone switch is on. */
+  /** The computer's microphone switch is on (always false without one). */
   computer: boolean;
+  /**
+   * Present, and false, only when the computer has no microphone of its own
+   * (a listener without a desktop, `--headless`): no switch is offered and
+   * `set-computer-microphone` is refused. Absent everywhere else, so the
+   * state of a listener with a desktop is exactly as before.
+   */
+  computerAvailable?: false;
   /**
    * The microphones that listen now, the computer's first: empty while
    * paused, and when the computer's is switched off and no browser listens
@@ -414,6 +424,10 @@ export class DesktopRuntime {
   // The computer's microphone switch and listening browsers; absent outside
   // microphone mode.
   private microphones?: ListenerMicrophones;
+  /** The database lock was taken by claimDatabase and not yet used by start. */
+  private databasePreclaimed = false;
+  /** The router to attach during `start` (connectRouterAtStart, headless only). */
+  private routerAtStart?: UserSensorRouter;
   // This run's Activity entries heard by a browser's microphone, by entry ID:
   // the device name shown with the entry. The computer's speech and typed
   // text have none.
@@ -765,6 +779,20 @@ export class DesktopRuntime {
   }
 
   /** Attach after processor registration, before accepting any sensor frames. */
+  /**
+   * Without a desktop (`--headless`): attach `router` during `start`, right
+   * after legacy settings (the intent switches among them) have been moved
+   * into place and before the runtime reports itself ready. A browser that
+   * reconnects then never sees `ready` while the router is missing, and its
+   * Listen here is not refused. Call before `start`.
+   */
+  connectRouterAtStart(router: UserSensorRouter): void {
+    if (this.router || this.routerAtStart) {
+      throw Error('Desktop router already connected');
+    }
+    this.routerAtStart = router;
+  }
+
   async connectRouter(router: UserSensorRouter): Promise<void> {
     if (this.router) {
       throw Error('Desktop router already connected');
@@ -1080,11 +1108,31 @@ export class DesktopRuntime {
     }
   }
 
+  /**
+   * Take database ownership ahead of `start`, so a second listener stops
+   * with "Companion is already running" before it loads anything heavy
+   * (without a desktop, the recogniser is loaded before `start`). `start`
+   * takes it itself when this was not called. Released by `close`.
+   */
+  async claimDatabase(): Promise<void> {
+    if (this.databasePreclaimed) {
+      return;
+    }
+    await this.databaseLock.acquire();
+    this.databasePreclaimed = true;
+  }
+
   async start(): Promise<void> {
     // Hold database ownership from before recovery until after SQLite closes.
     // The separate socket lock protects stale-socket recovery, including when
     // another caller uses the same database with a different socket path.
-    await this.databaseLock.acquire();
+    // A claim made ahead (claimDatabase) serves this one start only, so a
+    // second start is refused by the lock before anything is cleaned up.
+    if (this.databasePreclaimed) {
+      this.databasePreclaimed = false;
+    } else {
+      await this.databaseLock.acquire();
+    }
 
     try {
       // Nothing can listen: shown as paused, and Resume is refused. Decided
@@ -1116,6 +1164,12 @@ export class DesktopRuntime {
         if (migrated) {
           this.log('desktop', `Migrated history from ${legacyDatabase}`);
         }
+      }
+
+      // Only without a desktop (connectRouterAtStart); otherwise the CLI
+      // connects the router after start, as before.
+      if (this.routerAtStart) {
+        await this.connectRouter(this.routerAtStart);
       }
 
       await this.history.open();
@@ -1153,9 +1207,10 @@ export class DesktopRuntime {
    * good: without a desktop (`--headless`) no microphone of the computer is
    * opened, and no listening browsers are attached either. This is the one
    * place that decides it; `start` then shows listening as paused and
-   * `toggle-pause` refuses to resume. Once browsers may listen without a
-   * desktop, Pause and Resume apply to them (one Pause for everything) and
-   * this answer becomes false.
+   * `toggle-pause` refuses to resume. The CLI attaches the listening
+   * browsers without a desktop before `start` (src/cli.ts), so there this
+   * answer is false from the first snapshot on, and Pause and Resume apply
+   * to the browsers (one Pause for everything).
    */
   private nothingCanListen(): boolean {
     return this.options.headless === true && this.microphones === undefined;
@@ -1210,7 +1265,7 @@ export class DesktopRuntime {
    */
   connectMicrophones(microphones: ListenerMicrophones): void {
     this.microphones = microphones;
-    microphones.computer.on('change', this.microphonesChanged);
+    microphones.computer?.on('change', this.microphonesChanged);
     microphones.browsers.changed = this.microphonesChanged;
     microphones.browsers.ended = (owner, streamId, reason) => {
       this.browserStreamEnded(owner, streamId, reason);
@@ -1237,12 +1292,13 @@ export class DesktopRuntime {
       return undefined;
     }
 
+    const computer = microphones.computer;
     const listening: MicrophonesState['listening'] = [];
     if (!this.pause.paused) {
       // Listed only while its ordinary listening period actually runs: not
       // while switched off, between a lost recorder and its retry, or while
       // Record has the microphone.
-      if (microphones.computer.enabled && microphones.computer.listening) {
+      if (computer && computer.enabled && computer.listening) {
         listening.push({ ...computerMicrophoneEntry });
       }
       for (const browser of microphones.browsers.list) {
@@ -1250,7 +1306,11 @@ export class DesktopRuntime {
       }
     }
 
-    return { computer: microphones.computer.enabled, listening, streams: true };
+    // Without a desktop the computer has no microphone (see MicrophonesState).
+    if (!computer) {
+      return { computer: false, computerAvailable: false, listening, streams: true };
+    }
+    return { computer: computer.enabled, listening, streams: true };
   }
 
   /** Remember which browser heard frame `id`, for its Activity entry. */
@@ -1938,6 +1998,13 @@ export class DesktopRuntime {
    * is never revived by turning storage on before it is routed.
    */
   private async labelPrevious(frameId: number, correct: boolean): Promise<LabelPreviousResult> {
+    // Without a desktop no utterance has an original screenshot to label,
+    // and the previous labelable entry would be one of an earlier run with
+    // a desktop: never label across that boundary.
+    if (this.options.headless) {
+      return { outcome: 'skipped', reason: `${withoutDesktop}: spoken labels need a screenshot.` };
+    }
+
     const storage = this.options.captureStorage;
     const command = this.frameStorage.get(frameId);
     if (!storage.allows(command)) {
@@ -2527,6 +2594,12 @@ export class DesktopRuntime {
     if (!browsers) {
       throw Error('Listening here is not available');
     }
+    // Without a desktop the router is attached during start, before the
+    // runtime is ready (connectRouterAtStart); no stream opens before its
+    // intent switches apply.
+    if (this.options.headless && !this.router) {
+      throw Error('Companion is still starting; try again in a moment');
+    }
 
     if (request.action === 'audio-start') {
       const name = request.deviceName;
@@ -2678,13 +2751,14 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'set-computer-microphone') {
-      if (!this.microphones) {
+      const computer = this.microphones?.computer;
+      if (!computer) {
         throw Error("The computer's microphone switch is unavailable");
       }
       if (typeof request.enabled !== 'boolean') {
         throw Error('Expected enabled: true or false');
       }
-      if (this.microphones.computer.set(request.enabled)) {
+      if (computer.set(request.enabled)) {
         this.log(
           'microphone',
           request.enabled ? "Computer's microphone on" : "Computer's microphone off",
@@ -3699,7 +3773,7 @@ export class DesktopRuntime {
     this.dictation?.abandon('shutdown');
     this.dictation?.off('change', this.dictationChanged);
     this.dictation?.off('finished', this.dictationFinished);
-    this.microphones?.computer.off('change', this.microphonesChanged);
+    this.microphones?.computer?.off('change', this.microphonesChanged);
     this.options.agents?.setCloseGuard(undefined);
     this.abandonRecordingAppends(undefined, 'Companion is shutting down.');
     this.ready = false;
@@ -3716,6 +3790,7 @@ export class DesktopRuntime {
       await this.sounds.close();
     } finally {
       this.history.close();
+      this.databasePreclaimed = false;
       await this.databaseLock.close();
     }
   }

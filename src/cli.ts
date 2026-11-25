@@ -20,6 +20,9 @@ import { ContinueOpenAgentConversation } from './processors/continue-open-agent-
 import { CloseAgentSession } from './processors/close-agent-session.ts';
 import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts';
+import { subscribeHeadlessProcessors } from './processors/headless/subscribe.ts';
+import { NoIntentModel } from './core/no-intent-model.ts';
+import type { Detector } from './core/router.ts';
 import { ExternalSessionServer } from './agents/external/server.ts';
 import { externalSocketPath } from './agents/external/paths.ts';
 import { AgentSessions } from './agents/sessions.ts';
@@ -69,6 +72,89 @@ const log: Log = (stage, detail, id) => {
   console.log(`${prefix} ${message}`);
 };
 
+/**
+ * Speech for a listener without a desktop (`--headless`): the intent router
+ * with the headless processors, the recogniser (loaded now, so a missing
+ * worker or model stops the start with its reason, as with a desktop), and
+ * the listening browsers, each with its own voice detector. No screen
+ * sensor: frames carry no screenshot. No computer microphone and no manual
+ * recording.
+ *
+ * The caller owns the returned objects and closes them in its `finally`,
+ * exactly as in microphone mode. If loading fails, the transcriber is closed
+ * here before the error is passed on.
+ */
+async function startHeadlessSpeech(options: {
+  desktop: DesktopRuntime;
+  agents: AgentSessions;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  pause: PauseControl;
+  intentModel: boolean;
+  signal: AbortSignal;
+}): Promise<{ transcriber: Transcriber; pipeline: SensorPipeline; browsers: BrowserMicrophones }> {
+  const { desktop, config, signal } = options;
+  const activity = desktop.activity;
+
+  // Without a model, the fixed rule of NoIntentModel; with one, the model
+  // classifies the utterance without a screenshot.
+  let detector: Detector;
+  if (options.intentModel) {
+    detector = new IntentDetector(config.llm, undefined, 'detector', activity);
+  } else {
+    detector = new NoIntentModel();
+  }
+  const router = new UserSensorRouter({ detector }, log, activity, 'router');
+  subscribeHeadlessProcessors(router, {
+    sessions: options.agents,
+    log,
+    activity,
+    intentModel: options.intentModel,
+  });
+  // Attached during `desktop.start()`, once the runtime has moved legacy
+  // settings (the intent switches among them) into place, and before it
+  // reports itself ready (DesktopRuntime.connectRouterAtStart).
+  desktop.connectRouterAtStart(router);
+
+  const transcriber = new Transcriber(config.asr);
+  const pipeline = new SensorPipeline({ transcriber, router }, log, signal, activity);
+
+  // Loaded only here, as in microphone mode: other modes need no ONNX runtime.
+  const { VoiceActivityDetector } = await import('./sensors/audio/vad.ts');
+  const vadModel = config.vadModel;
+
+  try {
+    log('asr-start', 'Loading Parakeet transcription worker');
+    await transcriber.start(signal);
+
+    // Each stream creates its own detector when it starts. Load the model
+    // once now, so a missing model fails the start instead of every
+    // Listen here.
+    const check = await VoiceActivityDetector.create(vadModel);
+    await check.close();
+  } catch (error) {
+    await transcriber.close();
+    throw error;
+  }
+
+  // "Hearing speech" is on while any browser hears speech. There is no
+  // computer microphone, so no pause bookkeeping for its loop either
+  // (SensorPipeline.pauseStarted is only for the computer's loop).
+  const speech = new SpeechIndicator((speaking) => activity.speechChanged?.(speaking));
+  const browsers = new BrowserMicrophones({
+    pipeline,
+    pause: options.pause,
+    signal,
+    createVad: () => VoiceActivityDetector.create(vadModel),
+    activity,
+    speech,
+    log,
+  });
+  desktop.connectMicrophones({ browsers });
+
+  log('registered', 'Without a desktop: ' + [...router.processors.keys()].join(', '));
+  return { transcriber, pipeline, browsers };
+}
+
 /** Compose the modules, run the chosen input mode, and own their shared lifetime. */
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -84,6 +170,7 @@ async function main(): Promise<void> {
       'no-sounds': { type: 'boolean', default: false },
       'no-desktop': { type: 'boolean', default: false },
       headless: { type: 'boolean', default: false },
+      'intent-model': { type: 'boolean', default: false },
       'external-sessions': { type: 'boolean', default: false },
       'external-socket': { type: 'string' },
       'widget-library': { type: 'string' },
@@ -108,8 +195,12 @@ Usage: npm start -- [options]
   --no-sounds        Start with audible feedback muted
   --no-desktop       Disable history, sounds, and desktop control
   --headless         Run without a desktop (a server or VM): conversations, agents,
-                     widgets and the control socket for the gateway only; no
-                     microphone, screenshots, typing, sounds or pop-out windows
+                     widgets and the control socket for the gateway; paired
+                     browsers listen ("Listen here"); no microphone of the
+                     computer, screenshots, typing, sounds or pop-out windows
+  --intent-model     With --headless: classify speech with the configured intent
+                     model (llm in the config); without it, speech that is not a
+                     command goes to the conversation the listening tab shows
   --external-sessions Enable the same-user Unix session API (off by default)
   --external-socket PATH Override its private socket path; requires --external-sessions
   --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
@@ -178,6 +269,11 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       const reason = error instanceof Error ? error.message : String(error);
       throw Error(`--headless needs a private XDG_RUNTIME_DIR: ${reason}`);
     }
+  }
+  if (values['intent-model'] && !values.headless) {
+    throw Error(
+      '--intent-model applies only to --headless (with a desktop the model is always used)',
+    );
   }
   if (values.graph !== undefined && !['json', 'mermaid'].includes(values.graph)) {
     throw Error('--graph requires json or mermaid');
@@ -287,19 +383,20 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // the switch. Without the desktop service it stays off.
   const cleanup = new TranscriptionCleanupSetting();
 
-  // Without a desktop (--headless) the runtime itself shows listening as
-  // paused, because nothing can listen (DesktopRuntime.nothingCanListen).
   if (values.paused) {
     pause.toggle();
   }
 
   try {
     if (!values.graph) {
-      let mode = values.preview ? 'preview' : 'type into focused application';
       if (values.headless) {
-        mode = 'headless: conversations and agents, no desktop';
+        // The configured model name is shown only when it is used.
+        const model = values['intent-model'] ? config.llm.model : 'no intent model';
+        log('start', `Companion · ${model} · headless: browsers listen, no desktop`);
+      } else {
+        const mode = values.preview ? 'preview' : 'type into focused application';
+        log('start', `Companion · ${config.llm.model} · ${mode}`);
       }
-      log('start', `Companion · ${config.llm.model} · ${mode}`);
       log('widgets', `Library ${widgetLibrary}`);
     }
 
@@ -317,6 +414,29 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         cleanup: values.headless ? undefined : cleanup,
         captureStorage,
       });
+
+      // Without a desktop, speech is attached before the control socket
+      // opens: the runtime decides at start whether anything can listen
+      // (DesktopRuntime.nothingCanListen), and the first snapshot a browser
+      // gets must already offer Listen here. The router is attached during
+      // start, once legacy settings have been moved into place and before
+      // the runtime reports itself ready.
+      if (values.headless) {
+        // A second listener stops here, before loading the recogniser.
+        await desktop.claimDatabase();
+        const speech = await startHeadlessSpeech({
+          desktop,
+          agents,
+          config,
+          pause,
+          intentModel: values['intent-model'],
+          signal: controller.signal,
+        });
+        transcriber = speech.transcriber;
+        pipeline = speech.pipeline;
+        browsers = speech.browsers;
+      }
+
       await desktop.start();
     }
 
@@ -332,14 +452,14 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       log('external', 'Same-user session API enabled');
     }
 
-    // Without a desktop the listener serves conversations only: the control
-    // socket (for the gateway), the conversations and their store, widgets,
-    // agents and their wake timers, all owned by the runtime and `agents`
-    // above. Nothing below is built: no intent routing, transcription,
-    // screenshots, voice detection or microphone. Runs until Ctrl+C or
+    // Without a desktop the listener serves conversations and the speech of
+    // listening browsers: the control socket (for the gateway), the
+    // conversations and their store, widgets, agents and their wake timers,
+    // and the speech built above. Nothing below is built: no screenshots,
+    // no computer microphone, no manual recording. Runs until Ctrl+C or
     // SIGTERM; the finally block closes everything as in the other modes.
     if (values.headless) {
-      log('listening', 'Without a desktop: typed conversations only · Ctrl+C to stop');
+      log('listening', 'Without a desktop: paired browsers listen · Ctrl+C to stop');
       await new Promise<void>((resolveStop) => {
         if (controller.signal.aborted) {
           resolveStop();

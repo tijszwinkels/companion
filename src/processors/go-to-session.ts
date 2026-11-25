@@ -1,6 +1,6 @@
 import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import type { Activity } from '../core/activity.ts';
-import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { IntentContext, Log, SensorFrame, ScreenlessProcessor } from '../core/frame.ts';
 import type { IntentMode, UserSensorRouter } from '../core/router.ts';
 import { voiceLabel } from '../core/voice-shortcut.ts';
 
@@ -181,10 +181,12 @@ export function inferredIndex(utterance: string): number {
  * Reserve the entire command prefix, including invalid/out-of-range requests.
  * Inference may also choose this intent; its target comes only from the words.
  */
-export class GoToSession implements UserSensorProcessor {
+export class GoToSession implements ScreenlessProcessor {
   readonly id = 'go-to-session';
   readonly label = `Go to session 1–${MAX_OPEN_AGENT_SESSIONS}`;
   readonly name = 'GO_TO_SESSION';
+  /** Never reads the screenshot: also handles speech without a desktop. */
+  readonly screenless = true;
   readonly prefixes = ['go to session'];
   readonly acceptsEmptyPrefix = true;
   readonly dependencies = {};
@@ -211,7 +213,7 @@ export class GoToSession implements UserSensorProcessor {
   }
 
   async process(
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     route: IntentMode = 'shortcut',
   ): Promise<void> {

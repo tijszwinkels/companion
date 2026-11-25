@@ -1,6 +1,16 @@
 import { EventEmitter } from 'node:events';
 
-import type { Intent, IntentContext, Log, UserSensorFrame, UserSensorProcessor } from './frame.ts';
+import {
+  hasScreenshot,
+  isScreenlessProcessor,
+  type RegisteredSensorProcessor,
+  type Intent,
+  type IntentContext,
+  type Log,
+  type SensorFrame,
+  type UserSensorFrame,
+  type UserSensorProcessor,
+} from './frame.ts';
 import { stripPrefix } from './prefix.ts';
 import type { Activity } from './activity.ts';
 import type { InspectableModule, RegisteredProcessor } from './module.ts';
@@ -41,6 +51,20 @@ export interface Detector extends InspectableModule {
     intents: readonly Intent[],
     signal: AbortSignal,
   ): Promise<CleanupDetection>;
+
+  /**
+   * Classify a frame without a screenshot (a listener without a desktop,
+   * `--headless`): the same choice as `detect`, from the utterance and the
+   * interaction context alone. Absent: such frames cannot be classified, and
+   * the router refuses them with a reason instead of inventing a screen.
+   */
+  // A function property, so strict parameter checks reject an implementation
+  // that accepts only frames with a screenshot.
+  detectWithoutScreenshot?: (
+    frame: SensorFrame,
+    intents: readonly Intent[],
+    signal: AbortSignal,
+  ) => Promise<string>;
 
   /**
    * True when a provisional speech attempt must not start this detector's
@@ -205,7 +229,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     }
   }
 
-  private skip(frame: UserSensorFrame, name: string, reason: string): string {
+  private skip(frame: SensorFrame, name: string, reason: string): string {
     this.log('skipped', reason, frame.id);
     this.activity.intentRecognized?.(frame.id, name);
     this.activity.outcome?.(frame.id, 'skipped');
@@ -214,13 +238,23 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
   private async dispatch(
     processor: UserSensorProcessor,
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     intentSignal: AbortSignal,
     route: IntentMode,
   ): Promise<void> {
+    const processorSignal = AbortSignal.any([signal, intentSignal]);
     try {
-      await processor.process(frame, AbortSignal.any([signal, intentSignal]), route);
+      // A frame without a screenshot (no desktop) reaches only a processor
+      // that never reads one. Prefix routing and the model's choices already
+      // leave the others out (see `handles`); this keeps the type honest.
+      if (hasScreenshot(frame)) {
+        await processor.process(frame, processorSignal, route);
+      } else if (isScreenlessProcessor(processor)) {
+        await processor.process(frame, processorSignal, route);
+      } else {
+        throw Error(`${processor.name} needs a screenshot of the computer's screen`);
+      }
     } catch (error) {
       // Preserve partial-delivery uncertainty. Cancellation before typing is a
       // normal user control, even though the overall listener remains active.
@@ -229,6 +263,14 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       }
       throw error;
     }
+  }
+
+  /**
+   * Whether `processor` can handle `frame`: always with a screenshot (every
+   * frame with a desktop); without one only a screenless processor can.
+   */
+  private handles(processor: UserSensorProcessor, frame: SensorFrame): boolean {
+    return hasScreenshot(frame) || isScreenlessProcessor(processor);
   }
 
   /**
@@ -254,7 +296,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     return registrations;
   }
 
-  register(processor: UserSensorProcessor): void {
+  register(processor: RegisteredSensorProcessor): void {
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(processor.name)) {
       throw Error('Processor requires an intent identifier (letters, digits, and underscores)');
     }
@@ -310,7 +352,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
    * attempt until then. Typed input and direct callers pass none.
    */
   async route(
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     commitment?: DispatchCommitment,
   ): Promise<string> {
@@ -363,12 +405,17 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
   private async cleanShortcutText(
     route: TextRoute,
     text: string,
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     intentSignal: AbortSignal,
     reportCleanup: (record: TranscriptionCleanupRecord) => void,
   ): Promise<string> {
     this.log('cleanup', `Cleaning ${route} shortcut text`, frame.id);
+
+    // Cleanup is never switched on without a desktop (src/cli.ts).
+    if (!hasScreenshot(frame)) {
+      throw Error('Transcription cleanup needs a screenshot');
+    }
 
     let result: FixedRouteCleanup;
     try {
@@ -403,7 +450,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
   }
 
   private async routeFrame(
-    frame: UserSensorFrame,
+    frame: SensorFrame,
     signal: AbortSignal,
     commitment: DispatchCommitment | undefined,
     cleanupEnabled: boolean,
@@ -423,7 +470,13 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       await commitment?.commit('shortcut', signal);
 
       const intentSignal = this.intentControllers.get(processor.name)!.shortcut.signal;
-      if (intentSignal.aborted || processor.availableForPrefix?.(frame) === false) {
+      // `handles` first: a processor that needs a screenshot is never asked
+      // about a frame without one, not even for its availability.
+      if (
+        intentSignal.aborted ||
+        !this.handles(processor, frame) ||
+        processor.availableForPrefix?.(frame) === false
+      ) {
         // Consume a disabled explicit command instead of reinterpreting it as
         // dictation, or as a shorter prefix owned by another processor.
         return this.skip(frame, processor.name, 'Intent is disabled or unavailable here');
@@ -519,6 +572,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       if (
         processor.instruction !== undefined &&
         !this.intentControllers.get(processor.name)!.inference.signal.aborted &&
+        this.handles(processor, frame) &&
         (processor.availableForInference?.(frame) ?? true)
       ) {
         // Resolve once from the captured frame. Keep the result local instead
@@ -563,14 +617,22 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     // request that returns the intent and the cleaned text together.
     let name: string;
     let detection: CleanupDetection | undefined;
-    if (cleanupEnabled) {
-      if (!this.dependencies.detector.detectWithCleanup) {
+    // Without a screenshot (no desktop) the detector classifies from the
+    // utterance and its interaction context alone; cleanup is never on then.
+    const detector = this.dependencies.detector;
+    if (!hasScreenshot(frame)) {
+      if (!detector.detectWithoutScreenshot) {
+        throw Error('This intent detector needs a screenshot');
+      }
+      name = await detector.detectWithoutScreenshot(frame, intents, signal);
+    } else if (cleanupEnabled) {
+      if (!detector.detectWithCleanup) {
         throw Error('This intent detector cannot clean up transcriptions');
       }
-      detection = await this.dependencies.detector.detectWithCleanup(frame, intents, signal);
+      detection = await detector.detectWithCleanup(frame, intents, signal);
       name = detection.intent;
     } else {
-      name = await this.dependencies.detector.detect(frame, intents, signal);
+      name = await detector.detect(frame, intents, signal);
     }
 
     // Cancellation during inference must prevent the processor's side effect.
