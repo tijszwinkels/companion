@@ -29,7 +29,17 @@ import { SAMPLE_RATE } from './segmenter.ts';
 export class NetworkAudioSource {
   /** Pieces received and not yet read, oldest first. */
   private readonly queue: Buffer[] = [];
+  /** When each queued piece arrived (`performance.now()`), in the same order. */
+  private readonly arrivals: number[] = [];
   private queuedBytes = 0;
+  /**
+   * When the piece last handed to the reader arrived (`performance.now()`),
+   * or undefined before the first. Speech that ends at the frame being read
+   * was heard no later than this, however long it waited for the voice
+   * detector (src/desktop/browser-views.ts uses it to tell what the tab
+   * showed then).
+   */
+  private readArrival: number | undefined;
   /** Wakes the reader waiting for the next piece, if any. */
   private wake?: () => void;
   private reading = false;
@@ -49,6 +59,11 @@ export class NetworkAudioSource {
     return (this.queuedBytes / 2 / SAMPLE_RATE) * 1000;
   }
 
+  /** When the piece last handed to the reader arrived; see `readArrival`. */
+  get lastReadArrival(): number | undefined {
+    return this.readArrival;
+  }
+
   /**
    * Add one piece of 16-bit samples. Returns false, keeping nothing, when it
    * would make more than the bound wait: the caller ends the stream.
@@ -62,6 +77,7 @@ export class NetworkAudioSource {
     }
 
     this.queue.push(bytes);
+    this.arrivals.push(performance.now());
     this.queuedBytes += bytes.length;
 
     const wake = this.wake;
@@ -73,6 +89,7 @@ export class NetworkAudioSource {
   /** Drop every piece not read yet (the stream has ended). */
   clear(): void {
     this.queue.length = 0;
+    this.arrivals.length = 0;
     this.queuedBytes = 0;
   }
 
@@ -97,6 +114,7 @@ export class NetworkAudioSource {
 
         const piece = this.queue.shift();
         if (piece) {
+          this.readArrival = this.arrivals.shift();
           this.queuedBytes -= piece.length;
           yield piece;
           continue;
@@ -107,6 +125,7 @@ export class NetworkAudioSource {
     } finally {
       // The period has ended: nothing will read what is still queued.
       this.queue.length = 0;
+      this.arrivals.length = 0;
       this.queuedBytes = 0;
     }
   }

@@ -34,7 +34,13 @@ import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import { MAX_DIRECT_USER_MESSAGE_LENGTH } from '../agents/message-limits.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
-import type { SensorPipeline } from '../core/pipeline.ts';
+import { computerMicrophone, type SensorPipeline } from '../core/pipeline.ts';
+import {
+  browserInteraction,
+  browserInteractionCurrent,
+  browserNavigationTarget,
+  type BrowserView,
+} from './browser-views.ts';
 import type { ComputerMicrophoneSwitch } from '../sensors/audio/computer-microphone.ts';
 import type { BrowserMicrophones, BrowserStreamEnd } from '../sensors/audio/browser-microphones.ts';
 import type {
@@ -210,6 +216,13 @@ interface RemoteClient {
   visibleSelection: string;
   /** Last actions sent to this client, to avoid resending unchanged controls. */
   lastActionsKey: string;
+  /**
+   * Advances on every change of `selection` (browser-views.ts): speech this
+   * connection's browser heard is delivered only while it is unchanged.
+   */
+  viewRevision: number;
+  /** When `viewRevision` last advanced (`performance.now()`). */
+  viewChangedAt: number;
 }
 
 /**
@@ -381,6 +394,13 @@ export class DesktopRuntime {
   private draftReportSequence = 0;
   // Connections that declared the remote role, keyed by server client ID.
   private readonly remoteClients = new Map<number, RemoteClient>();
+  // Allocates RemoteClient.viewRevision values, unique across connections.
+  private remoteViewRevision = 0;
+  // The order of open conversations (IDs and revision) as last seen, and
+  // when it last changed (`performance.now()`): a browser's buffered "go to
+  // session N" is refused when the order changed after its sound arrived.
+  private lastOrderKey = '';
+  private orderChangedAt = 0;
   // Desktop connections that reported panel state, with the fingerprint of
   // the `agent-view-actions` last sent to each (see publishViewAgentActions).
   private readonly viewActionKeys = new Map<number, string>();
@@ -539,6 +559,7 @@ export class DesktopRuntime {
     });
     options.agents?.setViewers({ showsVisibly: (id) => this.showsVisibly(id) });
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
+      this.noteOrderChange();
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
       }
@@ -554,7 +575,7 @@ export class DesktopRuntime {
         // again (its controls are republished below).
         for (const remote of this.remoteClients.values()) {
           if (remote.selection === event.id) {
-            remote.selection = '';
+            this.setRemoteSelection(remote, '');
           }
           if (remote.visibleSelection === event.id) {
             remote.visibleSelection = '';
@@ -582,22 +603,36 @@ export class DesktopRuntime {
     });
 
     this.activity = {
-      interactionContext: () => {
+      interactionContext: (microphone) => {
         // The pipeline calls this synchronously at speech end, before screen
         // capture and ASR. Ordinary UI reads use interactionContext() directly
         // and do not repeatedly copy transcript excerpts during streaming.
-        const context = this.interactionContext();
+        // The computer's microphone and typed text follow the desktop as
+        // before; a browser's stream follows the tab that owns it.
+        let context: InteractionContext;
+        if (microphone === undefined || microphone === computerMicrophone) {
+          context = this.interactionContext();
+        } else {
+          context = this.browserInteractionContext(microphone);
+        }
         return {
           ...context,
           agentConversation: this.options.agents?.conversationContext(context.agentSessionId),
         };
       },
-      interactionCurrent: (context) =>
-        context.revision === this.interactionRevision &&
-        context.agentSessionId === (this.voiceTarget()?.id ?? '') &&
-        this.options.agents?.has(context.agentSessionId) === true,
+      interactionCurrent: (context) => {
+        if (context.agentView) {
+          return this.browserInteractionCurrent(context);
+        }
+        return (
+          context.revision === this.interactionRevision &&
+          context.agentSessionId === (this.voiceTarget()?.id ?? '') &&
+          this.options.agents?.has(context.agentSessionId) === true
+        );
+      },
       selectSession: (context, index) => this.navigateToSession(context, index, 'sidebar'),
       popOutSession: (context, index) => this.navigateToSession(context, index, 'window'),
+      showStartedSession: (context, id) => this.showStartedInBrowser(context, id),
       speechChanged: (speaking) => {
         const next = speaking && !this.pause.paused;
         if (this.speaking !== next) {
@@ -1457,6 +1492,135 @@ export class DesktopRuntime {
     };
   }
 
+  // ---- Speech heard by a listening browser (browser-views.ts) --------------
+
+  /** Change what a remote connection reports as shown; any change advances its view. */
+  private setRemoteSelection(remote: RemoteClient, id: string): void {
+    if (remote.selection === id) {
+      return;
+    }
+    remote.selection = id;
+    this.advanceRemoteView(remote);
+  }
+
+  /** Record when the order of open conversations (or its membership) changed. */
+  private noteOrderChange(): void {
+    const order = this.options.agents?.order();
+    if (!order) {
+      return;
+    }
+    const key = JSON.stringify([order.revision, order.ids]);
+    if (key !== this.lastOrderKey) {
+      this.lastOrderKey = key;
+      this.orderChangedAt = performance.now();
+    }
+  }
+
+  /** Invalidate speech captured for this connection's view until now. */
+  private advanceRemoteView(remote: RemoteClient): void {
+    remote.viewRevision = ++this.remoteViewRevision;
+    remote.viewChangedAt = performance.now();
+  }
+
+  /** The view of a remote connection, for the speech its browser heard. */
+  private browserView(clientId: number): BrowserView | undefined {
+    return this.remoteClients.get(clientId);
+  }
+
+  /**
+   * The interaction context of speech heard by the browser stream
+   * `streamId`: what the connection that owns the stream shows. A stream
+   * that has already ended, or a connection without the remote role, gives
+   * an utterance without a conversation; never the desktop's.
+   */
+  private browserInteractionContext(streamId: string): InteractionContext {
+    const agents = this.options.agents;
+    const browsers = this.microphones?.browsers;
+    const clientId = browsers?.ownerOf(streamId) ?? 0;
+    const context = browserInteraction({
+      clientId,
+      streamId,
+      view: this.browserView(clientId),
+      order: agents?.order(),
+      isOpen: (id) => agents?.has(id) === true,
+      heardAt: browsers?.heardAt(streamId),
+      orderChangedAt: this.orderChangedAt,
+    });
+    return { ...context, ...agents?.interaction(context.agentSessionId) };
+  }
+
+  private browserInteractionCurrent(context: InteractionContext): boolean {
+    const agents = this.options.agents;
+    const view = context.agentView ? this.browserView(context.agentView.clientId) : undefined;
+    return browserInteractionCurrent(context, view, (id) => agents?.has(id) === true);
+  }
+
+  /**
+   * "Go to session N" heard by a browser: select conversation N in that
+   * browser tab only. Nothing changes on the desktop and no voice-navigation
+   * choice is recorded: the tab's next report of its selection is what the
+   * following speech from it addresses.
+   */
+  private navigateBrowser(
+    context: InteractionContext,
+    index: number,
+    presentation: 'sidebar' | 'window',
+  ): boolean {
+    const agentView = context.agentView!;
+    const id = browserNavigationTarget({
+      context,
+      index,
+      presentation,
+      view: this.browserView(agentView.clientId),
+      order: this.options.agents?.order(),
+      streamOwner: this.microphones?.browsers.ownerOf(agentView.streamId),
+      maximumIndex: MAX_OPEN_AGENT_SESSIONS,
+    });
+    if (!id) {
+      return false;
+    }
+
+    // `from` is what the tab showed at speech end; the tab selects only
+    // while it still shows that, as the desktop panel checks its token.
+    return this.server.publishTo(agentView.clientId, {
+      type: 'agent-select',
+      id,
+      streamId: agentView.streamId,
+      from: context.agentSessionId,
+      orderRevision: context.agentNavigation!.orderRevision,
+    });
+  }
+
+  /**
+   * A conversation started by a browser's speech (rule 4): it was created in
+   * the background, so the desktop keeps its selection; this asks the tab
+   * that heard it, and only it, to show it. Sent only while that tab's view
+   * is unchanged since speech end and the stream that heard it is still its
+   * open stream; otherwise the conversation simply waits in the list.
+   */
+  private showStartedInBrowser(context: InteractionContext, id: string): boolean {
+    const agentView = context.agentView;
+    if (!agentView) {
+      return false;
+    }
+    const view = this.browserView(agentView.clientId);
+    if (
+      !view ||
+      view.viewRevision !== context.revision ||
+      this.microphones?.browsers.ownerOf(agentView.streamId) !== agentView.clientId ||
+      this.options.agents?.has(id) !== true
+    ) {
+      return false;
+    }
+    return this.server.publishTo(agentView.clientId, {
+      type: 'agent-select',
+      id,
+      streamId: agentView.streamId,
+      from: context.agentSessionId,
+      started: true,
+    });
+  }
+
   /**
    * Voice navigation: "go to session N" (`sidebar`: select its tab, or focus
    * its window when it is popped out) or "pop out session N" (`window`: show
@@ -1473,6 +1637,11 @@ export class DesktopRuntime {
     index: number,
     presentation: 'sidebar' | 'window',
   ): boolean {
+    // Speech a browser heard navigates only that browser tab.
+    if (context.agentView) {
+      return this.navigateBrowser(context, index, presentation);
+    }
+
     const captured = context.agentNavigation;
     const order = this.options.agents?.order();
     if (
@@ -2433,6 +2602,8 @@ export class DesktopRuntime {
         selection: '',
         visibleSelection: '',
         lastActionsKey: '',
+        viewRevision: ++this.remoteViewRevision,
+        viewChangedAt: performance.now(),
       });
       // A remote panel only ever receives controls for its own selection.
       this.viewActionKeys.delete(clientId);
@@ -2449,6 +2620,10 @@ export class DesktopRuntime {
         throw Error('Only remote panels can withdraw their visibility');
       }
       remote.visibleSelection = '';
+      // Speech its browser heard is no longer delivered (the desktop's
+      // disconnect clears its panel state the same way); the selection
+      // itself stays for the draining requests.
+      this.advanceRemoteView(remote);
       // Nobody sees its drafts any more either: it stops being a draft host,
       // so agent proposals no longer count it as a reviewer, and its pending
       // send no longer blocks them. Requests it sent before this one were
@@ -2475,7 +2650,7 @@ export class DesktopRuntime {
       }
       remote.visibleSelection = '';
       if (remote.selection !== request.id) {
-        remote.selection = '';
+        this.setRemoteSelection(remote, '');
         this.publishRemoteAgentActions(clientId);
       }
       return 'report-refused';
@@ -2967,7 +3142,7 @@ export class DesktopRuntime {
       // has left (src/desktop/README.md, "Application chat access from a
       // paired device").
       const refused = (message: string): Error => {
-        remote.selection = '';
+        this.setRemoteSelection(remote, '');
         remote.visibleSelection = '';
         this.publishRemoteAgentActions(clientId);
         return Error(message);
@@ -2995,7 +3170,7 @@ export class DesktopRuntime {
       ) {
         throw refused('Remote panels cannot report pop-out windows');
       }
-      remote.selection = request.id;
+      this.setRemoteSelection(remote, request.id);
       // Every report is complete: one without `visible` (an older phone app)
       // counts as not visible, so it never reads a conversation.
       remote.visibleSelection = request.visible === true ? request.id : '';

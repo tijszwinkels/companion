@@ -12,6 +12,9 @@ import { listenToMicrophone } from '../src/sensors/audio/microphone-loop.ts';
 import { NetworkAudioSource } from '../src/sensors/audio/network-source.ts';
 import { SpeechIndicator } from '../src/sensors/audio/speech-indicator.ts';
 import type { VoiceActivityDetector } from '../src/sensors/audio/vad.ts';
+import type { Activity } from '../src/core/activity.ts';
+import { Ignore } from '../src/processors/ignore.ts';
+import type { Detector } from '../src/core/router.ts';
 import { computerMicrophone } from '../src/core/pipeline.ts';
 import { processor, screenshot, testDetector, testSensors } from './helpers.ts';
 
@@ -119,6 +122,24 @@ export interface MicrophonesFixtureOptions {
    * ignoring cancellation, as the resident ASR worker finishes a request.
    */
   holdTranscriptions?: boolean;
+  /**
+   * Phrases for marker words: an utterance whose test transcript is exactly
+   * one of these words (for example "w3") is recognised as the phrase
+   * ("go to session 2"). Other transcripts are unchanged.
+   */
+  phrases?: Record<string, string>;
+  /**
+   * Replace every nonempty transcript (after `phrases`), for a browser whose
+   * fake microphone's words vary: the test decides what is "said" now.
+   */
+  recognise?: (words: string) => string;
+  /**
+   * Register these processors instead of the recording SEND processor, and
+   * use `detect` as the intent detector (IGNORE by default). For tests of the
+   * real processors (speech following the device that recorded it).
+   */
+  processors?: (router: UserSensorRouter, activity: Activity) => void;
+  detect?: Detector['detect'];
 }
 
 export function microphonesFixture(
@@ -136,17 +157,31 @@ export function microphonesFixture(
     logs.push({ stage, detail });
   };
 
-  const router = new UserSensorRouter(
-    { detector: testDetector({ detect: async () => 'SEND' }) },
-    () => {},
-  );
-  processor('IGNORE').subscribe(router);
+  const detect: Detector['detect'] = options.processors
+    ? (options.detect ?? (async () => 'IGNORE'))
+    : async () => 'SEND';
   const activity = runtime.activity;
-  processor('SEND', async (frame) => {
-    dispatched.push({ utterance: frame.utterance });
-    // As a real processor does, so the runtime publishes the Activity entry.
-    activity.outcome?.(frame.id, 'sent');
-  }).subscribe(router);
+  // With the real processors (`processors`), the router reports to the
+  // runtime's Activity as in src/cli.ts, and IGNORE is the real processor,
+  // so every utterance ends with an outcome. The recording SEND setup is
+  // unchanged.
+  const router = options.processors
+    ? new UserSensorRouter({ detector: testDetector({ detect }) }, () => {}, activity)
+    : new UserSensorRouter({ detector: testDetector({ detect }) }, () => {});
+  if (options.processors) {
+    new Ignore(() => {}, activity).subscribe(router);
+  } else {
+    processor('IGNORE').subscribe(router);
+  }
+  if (options.processors) {
+    options.processors(router, activity);
+  } else {
+    processor('SEND', async (frame) => {
+      dispatched.push({ utterance: frame.utterance });
+      // As a real processor does, so the runtime publishes the Activity entry.
+      activity.outcome?.(frame.id, 'sent');
+    }).subscribe(router);
+  }
 
   const pipeline = new SensorPipeline(
     {
@@ -156,7 +191,12 @@ export function microphonesFixture(
           if (options.holdTranscriptions) {
             await new Promise<void>((resolve) => transcriptions.push(resolve));
           }
-          return transcriptFor(samples);
+          const words = transcriptFor(samples);
+          const phrase = options.phrases?.[words] ?? words;
+          if (phrase && options.recognise) {
+            return options.recognise(phrase);
+          }
+          return phrase;
         },
       }),
       router,
@@ -235,6 +275,8 @@ export function microphonesFixture(
 
   return {
     pipeline,
+    /** The router of every microphone's speech (a demo connects it to the runtime). */
+    router,
     computer,
     browsers,
     detectors,

@@ -40,8 +40,26 @@ export class StartCodingAgentSession implements UserSensorProcessor {
       return;
     }
 
-    const id = this.dependencies.sessions.start(frame, signal, this.profile, this.harness);
+    // Speech from a listening browser starts the conversation in the
+    // background, so the desktop keeps what it shows, and asks that browser
+    // tab to show it instead (src/desktop/README.md, "Speech follows the
+    // device that recorded it"). The computer's speech is unchanged: the
+    // desktop selects the new conversation.
+    const fromBrowser = frame.interaction?.agentView !== undefined;
+    const id = this.dependencies.sessions.start(
+      frame,
+      signal,
+      this.profile,
+      this.harness,
+      fromBrowser,
+    );
     this.log('agent', `Started question ${id}`, frame.id);
+    if (fromBrowser && frame.interaction) {
+      const shown = this.activity.showStartedSession?.(frame.interaction, id) === true;
+      if (!shown) {
+        this.log('agent', `Not shown in the browser that heard it: ${id}`, frame.id);
+      }
+    }
     this.activity.outcome?.(frame.id, 'started', 'new-agent-session');
   }
 

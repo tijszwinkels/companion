@@ -20,8 +20,11 @@ import type { VoiceActivityDetector } from './vad.ts';
  * listening period: its own voice detector, segmenter and `listen` call, on a
  * `NetworkAudioSource`. Its speech enters the same pipeline as the
  * computer's, named by the stream's ID, so continuation stays per microphone
- * (src/core/pipeline.ts). Nothing after the microphone treats it differently.
- * The rules are in src/sensors/audio/README.md.
+ * (src/core/pipeline.ts). After the microphone it is treated as the
+ * computer's speech, except that the conversation it addresses follows the
+ * connection that owns the stream (`ownerOf`, `heardAt`; src/desktop/README.md,
+ * "Speech follows the device that recorded it"). The rules are in
+ * src/sensors/audio/README.md.
  *
  * Inputs (from the listener's control socket, src/desktop/runtime.ts):
  * - `start(owner, name)` for a remote connection's `audio-start`;
@@ -208,6 +211,34 @@ export class BrowserMicrophones {
       }
     }
     return this.names.get(id);
+  }
+
+  /**
+   * The connection that owns the stream `id` while that stream is open;
+   * undefined once it has ended (or for the computer's microphone). Speech
+   * a browser heard follows what that connection shows.
+   */
+  ownerOf(id: string): number | undefined {
+    for (const stream of this.streams.values()) {
+      if (stream.id === id) {
+        return stream.owner;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * When the sound the stream `id`'s voice detector is reading now arrived
+   * (`performance.now()`): speech ending at this moment was heard no later.
+   * Undefined for an ended stream or before its first piece was read.
+   */
+  heardAt(id: string): number | undefined {
+    for (const stream of this.streams.values()) {
+      if (stream.id === id) {
+        return stream.source.lastReadArrival;
+      }
+    }
+    return undefined;
   }
 
   /**

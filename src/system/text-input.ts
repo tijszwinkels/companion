@@ -58,9 +58,15 @@ export async function typeIntoCapturedWindow(
     return;
   }
 
-  const destination = frame.interaction?.agentComposerFocused
-    ? 'the Companion conversation input'
-    : 'the captured window';
+  // A browser's speech says nothing about the desktop's composer focus
+  // (src/desktop/README.md, "Speech follows the device that recorded it"):
+  // the text went to whatever had the computer's keyboard focus.
+  let destination = 'the captured window';
+  if (frame.interaction?.agentView) {
+    destination = "the computer's focused window";
+  } else if (frame.interaction?.agentComposerFocused) {
+    destination = 'the Companion conversation input';
+  }
   log('processor', `Text typed into ${destination}`, frame.id);
   if (pressEnter) {
     log('processor', `Enter pressed in ${destination}`, frame.id);

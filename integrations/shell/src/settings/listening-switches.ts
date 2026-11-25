@@ -122,18 +122,19 @@ function combinedSwitch(intent: Intent): ListeningSwitch {
   };
 }
 
-/** The phone's state words for an intent or shortcut. */
+/**
+ * The state words for an intent or shortcut: the shared switch's value.
+ *
+ * The listener's `inferenceAvailable` and `prefixAvailable` (the phone's
+ * "Needs conversation context") describe what the desktop shows now, the
+ * context of the computer's microphone. This browser's own speech follows
+ * what this tab shows instead (README "Rule: spoken navigation"), so the
+ * shell does not show that availability as if it applied here.
+ */
 function routeState(intent: Intent, mode: IntentMode): string {
   const enabled = modeEnabled(intent, mode);
-  let available = intent.prefixAvailable;
-  if (mode === 'inference') {
-    available = intent.inferenceAvailable;
-  }
   if (!enabled) {
     return 'Off';
-  }
-  if (available === false) {
-    return 'Needs conversation context';
   }
   if (!intent.toggleable) {
     return 'Always on';

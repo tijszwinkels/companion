@@ -219,7 +219,7 @@ test('listening switches: each row of the README table', () => {
   ]);
 });
 
-test('listening switches: the phone’s state words and shortcut prefixes', () => {
+test('listening switches: the switch values (not the desktop’s context availability) and shortcut prefixes', () => {
   const view = listeningView(
     engine({
       intents: [
@@ -234,7 +234,9 @@ test('listening switches: the phone’s state words and shortcut prefixes', () =
   const descriptions = view.switches.map((entry) => entry.description);
   assert.deepEqual(descriptions, [
     'Cues play on the computer.',
-    'Intent · Needs conversation context',
+    // The desktop's context availability is not shown: this tab's speech
+    // follows what this tab shows.
+    'Intent · On',
     'Shortcut · On · note …, remember …',
     'Shortcut · On · dictate',
     'Intent · Off',

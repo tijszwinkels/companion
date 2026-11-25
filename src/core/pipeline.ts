@@ -398,7 +398,9 @@ export class SensorPipeline implements InspectableModule {
 
     // Every provisional endpoint, including a merged one, is a speech end.
     this.activity.processing?.(id);
-    const interaction = this.activity.interactionContext?.();
+    // The view of the microphone that heard it: the desktop for the
+    // computer's microphone and typed text, the owning tab for a browser.
+    const interaction = this.activity.interactionContext?.(microphone);
     this.log('capture', 'Capturing active window', id);
 
     // Capture at speech end, even if ASR is busy. Handle rejection immediately.
