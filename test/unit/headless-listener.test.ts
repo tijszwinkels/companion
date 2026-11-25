@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -132,6 +132,17 @@ test('--headless cannot be combined with options that need the desktop or speech
   });
   assert.equal(await relative.exited, 1);
   assert.match(relative.output(), /--headless needs XDG_RUNTIME_DIR: the absolute path/);
+
+  // So is a runtime directory other users may reach.
+  const shared = join(machine.directory, 'shared-runtime');
+  await mkdir(shared);
+  await chmod(shared, 0o770);
+  const open = startChild(process.execPath, listenerArguments(machine.config, ['--headless']), {
+    ...machine.env,
+    XDG_RUNTIME_DIR: shared,
+  });
+  assert.equal(await open.exited, 1);
+  assert.match(open.output(), /--headless needs a private XDG_RUNTIME_DIR: .*chmod 700/);
 });
 
 test('without a desktop: conversations work through the gateway, desktop abilities are refused with their reason', async (context) => {

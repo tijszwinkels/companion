@@ -51,6 +51,7 @@ import { DesktopRuntime, defaultDatabasePath, desktopPaths } from './desktop/run
 import { CaptureStoragePolicy } from './capture-storage/policy.ts';
 import { CaptureStoragePreference } from './capture-storage/preference.ts';
 import { PhoneAccessHook } from './remote/service/desktop-hook.ts';
+import { assertPrivateDirectory } from './remote/private-directory.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
 import type { Transcript } from './core/activity.ts';
@@ -160,13 +161,21 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // conflicts with --headless. A relative path would put the control
     // socket under the working directory, where a gateway started elsewhere
     // does not look, and the widget socket requires an absolute path.
-    // (The control socket's own directory below it is made private, 0700.)
+    // It must also be private: the control socket's own directory below it
+    // is made 0700, but whoever may write to this one could replace that
+    // directory's name and redirect the gateway (on a shared server).
     const runtimeDirectory = process.env.XDG_RUNTIME_DIR;
     if (!runtimeDirectory || !isAbsolute(runtimeDirectory)) {
       throw Error(
         '--headless needs XDG_RUNTIME_DIR: the absolute path of a private directory for ' +
           'the control socket, the same one the gateway is started with',
       );
+    }
+    try {
+      await assertPrivateDirectory(runtimeDirectory);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw Error(`--headless needs a private XDG_RUNTIME_DIR: ${reason}`);
     }
   }
   if (values.graph !== undefined && !['json', 'mermaid'].includes(values.graph)) {

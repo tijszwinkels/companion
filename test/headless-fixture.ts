@@ -39,6 +39,7 @@ export const desktopPrograms = [
 export interface Child {
   process: ChildProcess;
   output: () => string;
+  /** The exit code, once the process ended and its output was read to the end. */
   exited: Promise<number | null>;
 }
 
@@ -53,8 +54,9 @@ export function startChild(command: string, args: string[], env: NodeJS.ProcessE
   child.stderr!.on('data', (text: string) => {
     output += text;
   });
+  // 'close' rather than 'exit': only then has all of its output arrived.
   const exited = new Promise<number | null>((resolve) => {
-    child.once('exit', (code) => resolve(code));
+    child.once('close', (code) => resolve(code));
   });
   return { process: child, output: () => output, exited };
 }
@@ -69,12 +71,11 @@ export async function printed(child: Child, text: string, milliseconds = 20000):
   assert.ok(child.output().includes(text), `Expected "${text}" in:\n${child.output()}`);
 }
 
-/** Stop a child with SIGINT and return its exit code. */
+/** Stop a child with SIGINT (unless it already ended) and return its exit code. */
 export async function interrupt(child: Child): Promise<number | null> {
-  if (child.process.exitCode !== null || child.process.signalCode !== null) {
-    return child.process.exitCode;
+  if (child.process.exitCode === null && child.process.signalCode === null) {
+    child.process.kill('SIGINT');
   }
-  child.process.kill('SIGINT');
   return child.exited;
 }
 

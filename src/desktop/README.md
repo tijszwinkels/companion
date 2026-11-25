@@ -856,11 +856,20 @@ bin/companion-remote pair   # in a second terminal: a one-time code for the brow
 ```
 
 Both ports stay on the server's loopback. A browser on another computer
-reaches them with the same port numbers, for example through an SSH tunnel
-`ssh -L 8787:127.0.0.1:8787 -L 8788:127.0.0.1:8788 server`, and opens
-`http://127.0.0.1:8787/`. The page then has the gateway's loopback origin,
-and widget frames load from `http://127.0.0.1:8788`; forwarding only the
-first port leaves conversations working and widgets blank.
+reaches them with the same port numbers through a tunnel that is itself
+bound to that computer's loopback and fails rather than half-works, for
+example
+`ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:8787:127.0.0.1:8787 -L 127.0.0.1:8788:127.0.0.1:8788 server`,
+and opens `http://127.0.0.1:8787/`. The page then has the gateway's loopback
+origin, and widget frames load from `http://127.0.0.1:8788`; forwarding only
+the first port leaves conversations working and widgets blank.
+
+The browser keeps its pairing per origin. Two servers reached through the
+same local port share one origin, so the second would receive the first
+one's device token and, refusing it, end that browser's pairing. Give each
+server its own pair of ports (`--port`, `--frames-listen` and
+`--frame-origin`, the same numbers on both ends of the tunnel), or use a
+separate browser profile for each.
 
 Two desktop abilities are left as they are, because only a local desktop
 panel or an explicit opt-in reaches them: a widget pop-out still opens when
