@@ -75,10 +75,16 @@ test('a runtime directory is private only if no other user can replace it or a d
     ['a sticky ancestor owned by this user, not root', underOwnSticky, /own-sticky is writable/],
     ['a symbolic link above it', join(base, 'linked-parent', 'run'), /linked-parent is a symbolic/],
     ['the directory itself is a symbolic link', join(base, 'linked-final'), /symbolic link/],
+    [
+      'the same link written with a trailing slash',
+      join(base, 'linked-final') + '/',
+      /without a trailing slash/,
+    ],
     ['the directory itself is open to its group', sharedFinal, /chmod 700/],
     ['a missing directory', join(base, 'missing'), /ENOENT/],
     ['not canonical', `${base}/ordinary/../ordinary/run`, /absolute, canonical/],
     ['relative', 'run', /absolute, canonical/],
+    ['the root itself', '/', /without a trailing slash/],
   ];
 
   for (const [name, path, expected] of cases) {
@@ -89,6 +95,11 @@ test('a runtime directory is private only if no other user can replace it or a d
       assert.match(reason, expected, name);
     }
   }
+
+  // `/` itself is checked as the first ancestor of every path: here it is
+  // root-owned and not writable by others, so the ordinary case passed it.
+  const root = await stat('/');
+  assert.ok(root.uid === 0 && (root.mode & 0o022) === 0, 'this machine has an ordinary /');
 
   // Every case above lies below the system's temporary directory. When that
   // is the root-owned sticky /tmp, it is an accepted ancestor (the ordinary

@@ -41,9 +41,10 @@ export async function assertPrivateDirectory(path: string): Promise<void> {
  *
  * The rule, the same as the same-user session API's
  * (src/agents/external/paths.ts):
- * - the path is absolute and canonical, and no component of it, the final
- *   one included, is a symbolic link;
- * - every ancestor is owned by the current user or by root, and is writable
+ * - the path is absolute and canonical without a trailing slash (`lstat`
+ *   follows a final symbolic link written as `link/`), and no component of
+ *   it, the final one included, is a symbolic link;
+ * - every ancestor, `/` included, is owned by the current user or by root, and is writable
  *   by nobody else, unless it is root-owned and sticky (like `/tmp`, where
  *   other users cannot rename this user's entries);
  * - the directory itself passes `assertPrivateDirectory`.
@@ -54,16 +55,19 @@ export async function assertPrivateDirectory(path: string): Promise<void> {
  * change made while the listener starts.
  */
 export async function assertPrivateDirectoryPath(path: string): Promise<void> {
-  if (!isAbsolute(path) || normalize(path) !== path) {
-    throw Error(`${path} must be an absolute, canonical path`);
+  if (!isAbsolute(path) || normalize(path) !== path || path.endsWith('/')) {
+    throw Error(`${path} must be an absolute, canonical path without a trailing slash`);
   }
 
+  // Every directory above the final one, from the root down: `/`, then
+  // `/a`, `/a/b`, ... (for `/a/b/c`).
   const components = path.split('/').filter(Boolean);
-  let ancestor = '';
+  const ancestors = ['/'];
+  for (let index = 1; index < components.length; index++) {
+    ancestors.push('/' + components.slice(0, index).join('/'));
+  }
 
-  // Every directory above the final one, from the root down.
-  for (const component of components.slice(0, -1)) {
-    ancestor += '/' + component;
+  for (const ancestor of ancestors) {
     const info = await lstat(ancestor);
 
     if (info.isSymbolicLink()) {

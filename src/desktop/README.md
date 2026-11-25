@@ -999,7 +999,8 @@ and canonical; no component of it may be a symbolic link; every directory
 above it must be owned by this user or root and writable by nobody else,
 unless it is root-owned and sticky (like `/tmp`); and the directory itself
 must be a real directory owned by this user and closed to everyone else
-(`chmod 700`). The ordinary `/run/user/<uid>` passes. The check is made by
+(`chmod 700`). A trailing slash is refused, and `/` itself counts as an
+ancestor. The ordinary `/run/user/<uid>` passes. The check is made by
 path once at start. The default start does not make it.
 
 The browser reaches it through the gateway, started separately with the same
@@ -1029,6 +1030,12 @@ local port is already in use. It does not check the server side: the forwards
 are set up even when nothing listens on the server's ports (the gateway or
 its frame listener not running), and each connection through them then fails
 on its own while `ssh` keeps running. Both server listeners must be running.
+
+The gateway's loopback ports are not private on the server: while the
+gateway is down, another user of that machine could bind them and a
+reconnecting tab would hand its device token to them (see "TCP route" in the
+[gateway guide](../remote/README.md#reaching-it-from-a-phone-over-tailscale)).
+This setup assumes a server whose other users are trusted.
 
 Each server needs its own gateway origin, so its own local port numbers
 (`--port`, `--frames-listen` and `--frame-origin`, the same numbers on both
